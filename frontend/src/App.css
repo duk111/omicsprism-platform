@@ -1,0 +1,46 @@
+.app-shell {
+  min-height: 100vh;
+  background: #f4f7fa;
+  color: #172033;
+}
+
+.app-header {
+  padding: 28px 32px 20px;
+  border-bottom: 1px solid #dce5ee;
+  background: #ffffff;
+}
+
+.app-eyebrow {
+  margin: 0 0 6px;
+  color: #4f657a;
+  font-size: 0.75rem;
+  font-weight: 800;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.app-title {
+  margin: 0;
+  font-size: 1.6rem;
+  line-height: 1.2;
+}
+
+.app-body {
+  padding: 40px 32px 80px;
+  margin-right: 44px;
+}
+
+@media (max-width: 760px) {
+  .app-header {
+    padding: 20px 16px 16px;
+  }
+
+  .app-body {
+    padding: 28px 16px 60px;
+    margin-right: 0;
+  }
+
+  .app-title {
+    font-size: 1.3rem;
+  }
+}

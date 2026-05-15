@@ -1,7 +1,7 @@
 // Auto-generated from FastAPI /openapi.json — run `npm run generate-api-types` to refresh
 // Backend: backend/app/main.py Pydantic models
 
-export type AnalysisType = "differential" | "correlation";
+export type AnalysisType = "correlation";
 
 export type JobStatus = "queued" | "running" | "succeeded" | "failed";
 

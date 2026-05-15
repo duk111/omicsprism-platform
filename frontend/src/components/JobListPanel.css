@@ -1,0 +1,112 @@
+.job-panel {
+  position: fixed;
+  right: 0;
+  top: 0;
+  bottom: 0;
+  width: 320px;
+  background: #ffffff;
+  border-left: 1px solid #dce5ee;
+  box-shadow: -4px 0 20px rgba(37, 53, 75, 0.08);
+  transform: translateX(calc(100% - 44px));
+  transition: transform 0.25s ease;
+  z-index: 100;
+  display: flex;
+  flex-direction: column;
+}
+
+.job-panel.expanded {
+  transform: translateX(0);
+}
+
+.job-panel-toggle {
+  writing-mode: vertical-rl;
+  text-orientation: mixed;
+  position: absolute;
+  left: 0;
+  top: 50%;
+  transform: translate(-100%, -50%);
+  border: 1px solid #dce5ee;
+  border-right: 0;
+  border-radius: 8px 0 0 8px;
+  background: #ffffff;
+  color: #31445a;
+  padding: 14px 8px;
+  cursor: pointer;
+  font: inherit;
+  font-weight: 800;
+  font-size: 0.85rem;
+  white-space: nowrap;
+}
+
+.job-list {
+  flex: 1;
+  overflow-y: auto;
+  padding: 16px;
+  display: grid;
+  gap: 8px;
+  align-content: start;
+}
+
+.job-empty {
+  color: #61758a;
+  text-align: center;
+  padding: 24px 0;
+}
+
+.job-item {
+  display: grid;
+  grid-template-columns: 10px minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: start;
+  width: 100%;
+  border: 1px solid #dce5ee;
+  border-radius: 7px;
+  background: #ffffff;
+  color: #172033;
+  cursor: pointer;
+  padding: 10px;
+  text-align: left;
+}
+
+.job-item.selected {
+  border-color: #0b6b61;
+  box-shadow: 0 0 0 2px rgba(11, 107, 97, 0.12);
+}
+
+.job-item strong {
+  display: block;
+  overflow-wrap: anywhere;
+}
+
+.job-item strong small {
+  display: block;
+  font-weight: 500;
+  color: #61758a;
+  font-size: 0.78rem;
+}
+
+.job-item .job-meta {
+  display: block;
+  margin-top: 4px;
+  color: #61758a;
+  font-size: 0.78rem;
+}
+
+.job-item em {
+  color: #53677c;
+  font-size: 0.78rem;
+  font-style: normal;
+  font-weight: 800;
+}
+
+.status-dot {
+  width: 10px;
+  height: 10px;
+  margin-top: 4px;
+  border-radius: 50%;
+}
+
+.status-queued { background: #d09315; }
+.status-running { background: #1f6feb; }
+.status-succeeded { background: #17803b; }
+.status-failed { background: #b42318; }

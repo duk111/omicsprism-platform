@@ -1,0 +1,91 @@
+.form-container {
+  max-width: 560px;
+  margin: 0 auto;
+}
+
+.back-button {
+  border: 0;
+  background: none;
+  color: #0b6b61;
+  cursor: pointer;
+  font: inherit;
+  font-weight: 800;
+  padding: 0;
+  margin-bottom: 16px;
+}
+
+.back-button:hover {
+  text-decoration: underline;
+}
+
+.form-heading {
+  margin: 0 0 24px;
+  font-size: 1.5rem;
+  color: #172033;
+}
+
+.analysis-form {
+  display: grid;
+  gap: 18px;
+  background: #ffffff;
+  border: 1px solid #dce5ee;
+  border-radius: 10px;
+  padding: 28px;
+  box-shadow: 0 8px 24px rgba(37, 53, 75, 0.06);
+}
+
+.field {
+  display: grid;
+  gap: 6px;
+  color: #31445a;
+  font-weight: 800;
+}
+
+input[type="text"],
+input[type="file"] {
+  width: 100%;
+  box-sizing: border-box;
+  border: 1px solid #cbd7e4;
+  border-radius: 6px;
+  background: #ffffff;
+  color: #172033;
+  font: inherit;
+}
+
+input[type="text"] {
+  min-height: 42px;
+  padding: 0 12px;
+}
+
+input[type="file"] {
+  padding: 10px;
+}
+
+.file-name {
+  font-size: 0.82rem;
+  color: #0b6b61;
+  font-weight: 600;
+}
+
+.submit-button {
+  min-height: 46px;
+  border: 0;
+  border-radius: 8px;
+  background: #0b6b61;
+  color: #ffffff;
+  cursor: pointer;
+  font: inherit;
+  font-weight: 900;
+  font-size: 1rem;
+}
+
+.submit-button:disabled {
+  cursor: wait;
+  opacity: 0.7;
+}
+
+.message {
+  margin: 0;
+  color: #8a4b08;
+  font-weight: 800;
+}
