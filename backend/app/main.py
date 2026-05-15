@@ -253,8 +253,13 @@ def list_job_images(job_id: str) -> list[ImageInfo]:
         return []
 
     images: list[ImageInfo] = []
+    seen_names: set[str] = set()
     for ext in ("*.png", "*.svg", "*.jpg", "*.jpeg"):
         for path in sorted(output_dir.rglob(ext)):
+            stem = path.stem
+            if stem in seen_names:
+                continue
+            seen_names.add(stem)
             relative = path.relative_to(_run_dir(job_id)).as_posix()
             images.append(ImageInfo(
                 name=path.name,
