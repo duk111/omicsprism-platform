@@ -13,10 +13,11 @@ interface ProgressData {
   progress: number;
   step: string;
   status: string;
+  error: string | null;
 }
 
 export default function ProgressTracker({ jobId, onBack }: Props) {
-  const [data, setData] = useState<ProgressData>({ progress: 0, step: "", status: "queued" });
+  const [data, setData] = useState<ProgressData>({ progress: 0, step: "", status: "queued", error: null });
   const pollRef = useRef<number | null>(null);
 
   const poll = useCallback(async () => {
@@ -28,7 +29,7 @@ export default function ProgressTracker({ jobId, onBack }: Props) {
       if (progRes.ok && jobRes.ok) {
         const prog = await progRes.json();
         const job = await jobRes.json();
-        setData({ progress: prog.progress, step: prog.step, status: job.status });
+        setData({ progress: prog.progress, step: prog.step, status: job.status, error: job.error ?? null });
         if (job.status === "succeeded" || job.status === "failed") {
           return;
         }
@@ -67,7 +68,10 @@ export default function ProgressTracker({ jobId, onBack }: Props) {
       <p className="progress-pct">{data.progress}%</p>
 
       {isFailed && (
-        <p className="progress-error">分析失败，请返回重试。</p>
+        <div className="progress-error">
+          <p className="progress-error-title">分析失败</p>
+          {data.error && <pre className="progress-error-detail">{data.error}</pre>}
+        </div>
       )}
 
       {!isFailed && (

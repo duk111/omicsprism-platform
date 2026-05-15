@@ -1,5 +1,5 @@
 .selector-container {
-  max-width: 720px;
+  max-width: 600px;
   margin: 0 auto;
   text-align: center;
 }
@@ -7,19 +7,21 @@
 .selector-heading {
   margin: 0 0 8px;
   font-size: 1.8rem;
-  color: #172033;
+  color: var(--color-text);
 }
 
 .selector-sub {
-  margin: 0 0 32px;
-  color: #61758a;
+  margin: 0 0 36px;
+  color: var(--color-text-secondary);
   font-size: 0.95rem;
 }
 
 .selector-cards {
   display: grid;
-  grid-template-columns: repeat(2, 1fr);
+  grid-template-columns: 1fr;
   gap: 20px;
+  max-width: 420px;
+  margin: 0 auto;
 }
 
 .selector-card {
@@ -27,19 +29,20 @@
   flex-direction: column;
   align-items: center;
   gap: 12px;
-  padding: 36px 24px;
-  border: 2px solid #dce5ee;
-  border-radius: 12px;
-  background: #ffffff;
+  padding: 40px 28px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-card);
+  background: var(--color-surface);
   cursor: pointer;
   transition: border-color 0.2s, box-shadow 0.2s, transform 0.15s;
   font: inherit;
   text-align: center;
+  box-shadow: var(--shadow-card);
 }
 
 .selector-card:hover {
-  border-color: #0b6b61;
-  box-shadow: 0 8px 28px rgba(11, 107, 97, 0.12);
+  border-color: var(--color-accent-light);
+  box-shadow: var(--shadow-hover);
   transform: translateY(-2px);
 }
 
@@ -48,24 +51,18 @@
 }
 
 .selector-card-icon {
-  font-size: 2.8rem;
+  font-size: 3rem;
   line-height: 1;
 }
 
 .selector-card-title {
-  font-size: 1.25rem;
-  font-weight: 900;
-  color: #172033;
+  font-size: 1.3rem;
+  font-weight: 700;
+  color: var(--color-text);
 }
 
 .selector-card-desc {
-  font-size: 0.9rem;
-  color: #61758a;
-  line-height: 1.5;
-}
-
-@media (max-width: 560px) {
-  .selector-cards {
-    grid-template-columns: 1fr;
-  }
+  font-size: 0.92rem;
+  color: var(--color-text-secondary);
+  line-height: 1.6;
 }

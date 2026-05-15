@@ -4,9 +4,9 @@
   top: 0;
   bottom: 0;
   width: 320px;
-  background: #ffffff;
-  border-left: 1px solid #dce5ee;
-  box-shadow: -4px 0 20px rgba(37, 53, 75, 0.08);
+  background: var(--color-surface);
+  border-left: 1px solid var(--color-border);
+  box-shadow: -4px 0 20px rgba(61, 57, 41, 0.06);
   transform: translateX(calc(100% - 44px));
   transition: transform 0.25s ease;
   z-index: 100;
@@ -25,15 +25,15 @@
   left: 0;
   top: 50%;
   transform: translate(-100%, -50%);
-  border: 1px solid #dce5ee;
+  border: 1px solid var(--color-border);
   border-right: 0;
-  border-radius: 8px 0 0 8px;
-  background: #ffffff;
-  color: #31445a;
+  border-radius: var(--radius-btn) 0 0 var(--radius-btn);
+  background: var(--color-surface);
+  color: var(--color-text-secondary);
   padding: 14px 8px;
   cursor: pointer;
   font: inherit;
-  font-weight: 800;
+  font-weight: 700;
   font-size: 0.85rem;
   white-space: nowrap;
 }
@@ -48,7 +48,7 @@
 }
 
 .job-empty {
-  color: #61758a;
+  color: var(--color-text-secondary);
   text-align: center;
   padding: 24px 0;
 }
@@ -59,18 +59,19 @@
   gap: 10px;
   align-items: start;
   width: 100%;
-  border: 1px solid #dce5ee;
-  border-radius: 7px;
-  background: #ffffff;
-  color: #172033;
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  background: var(--color-surface);
+  color: var(--color-text);
   cursor: pointer;
   padding: 10px;
   text-align: left;
+  font: inherit;
 }
 
 .job-item.selected {
-  border-color: #0b6b61;
-  box-shadow: 0 0 0 2px rgba(11, 107, 97, 0.12);
+  border-color: var(--color-accent);
+  box-shadow: 0 0 0 2px rgba(45, 90, 39, 0.1);
 }
 
 .job-item strong {
@@ -81,22 +82,22 @@
 .job-item strong small {
   display: block;
   font-weight: 500;
-  color: #61758a;
+  color: var(--color-text-secondary);
   font-size: 0.78rem;
 }
 
 .job-item .job-meta {
   display: block;
   margin-top: 4px;
-  color: #61758a;
+  color: var(--color-text-secondary);
   font-size: 0.78rem;
 }
 
 .job-item em {
-  color: #53677c;
+  color: var(--color-text-secondary);
   font-size: 0.78rem;
   font-style: normal;
-  font-weight: 800;
+  font-weight: 700;
 }
 
 .status-dot {
@@ -107,6 +108,6 @@
 }
 
 .status-queued { background: #d09315; }
-.status-running { background: #1f6feb; }
-.status-succeeded { background: #17803b; }
-.status-failed { background: #b42318; }
+.status-running { background: var(--color-accent-light); }
+.status-succeeded { background: var(--color-accent); }
+.status-failed { background: var(--color-danger); }

@@ -6,55 +6,62 @@
 .back-button {
   border: 0;
   background: none;
-  color: #0b6b61;
+  color: var(--color-accent);
   cursor: pointer;
   font: inherit;
-  font-weight: 800;
+  font-weight: 700;
   padding: 0;
   margin-bottom: 16px;
 }
 
 .back-button:hover {
-  text-decoration: underline;
+  color: var(--color-accent-hover);
 }
 
 .form-heading {
   margin: 0 0 24px;
   font-size: 1.5rem;
-  color: #172033;
+  color: var(--color-text);
 }
 
 .analysis-form {
   display: grid;
   gap: 18px;
-  background: #ffffff;
-  border: 1px solid #dce5ee;
-  border-radius: 10px;
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-card);
   padding: 28px;
-  box-shadow: 0 8px 24px rgba(37, 53, 75, 0.06);
+  box-shadow: var(--shadow-card);
 }
 
 .field {
   display: grid;
   gap: 6px;
-  color: #31445a;
-  font-weight: 800;
+  color: var(--color-text);
+  font-weight: 700;
+  font-size: 0.9rem;
 }
 
 input[type="text"],
 input[type="file"] {
   width: 100%;
   box-sizing: border-box;
-  border: 1px solid #cbd7e4;
-  border-radius: 6px;
-  background: #ffffff;
-  color: #172033;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-input);
+  background: var(--color-surface);
+  color: var(--color-text);
   font: inherit;
 }
 
 input[type="text"] {
-  min-height: 42px;
+  min-height: 44px;
   padding: 0 12px;
+}
+
+input[type="text"]:focus {
+  outline: none;
+  border-color: var(--color-accent-light);
+  box-shadow: 0 0 0 3px rgba(45, 90, 39, 0.1);
 }
 
 input[type="file"] {
@@ -63,20 +70,25 @@ input[type="file"] {
 
 .file-name {
   font-size: 0.82rem;
-  color: #0b6b61;
+  color: var(--color-accent);
   font-weight: 600;
 }
 
 .submit-button {
   min-height: 46px;
   border: 0;
-  border-radius: 8px;
-  background: #0b6b61;
+  border-radius: var(--radius-btn);
+  background: var(--color-accent);
   color: #ffffff;
   cursor: pointer;
   font: inherit;
-  font-weight: 900;
+  font-weight: 700;
   font-size: 1rem;
+  transition: background 0.2s;
+}
+
+.submit-button:hover {
+  background: var(--color-accent-hover);
 }
 
 .submit-button:disabled {
@@ -86,6 +98,6 @@ input[type="file"] {
 
 .message {
   margin: 0;
-  color: #8a4b08;
-  font-weight: 800;
+  color: var(--color-warning);
+  font-weight: 700;
 }

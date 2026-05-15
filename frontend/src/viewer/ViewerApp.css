@@ -1,6 +1,6 @@
 .viewer-shell {
   min-height: 100vh;
-  background: #f4f7fa;
+  background: var(--color-bg);
   padding: 28px 24px;
 }
 
@@ -11,12 +11,12 @@
 .viewer-header h1 {
   margin: 0;
   font-size: 1.8rem;
-  color: #172033;
+  color: var(--color-text);
 }
 
 .viewer-job-id {
   margin: 6px 0 0;
-  color: #61758a;
+  color: var(--color-text-secondary);
   font-size: 0.85rem;
 }
 
@@ -25,12 +25,12 @@
 .viewer-empty {
   text-align: center;
   padding: 80px 20px;
-  color: #61758a;
+  color: var(--color-text-secondary);
   font-size: 1.1rem;
 }
 
 .viewer-error {
-  color: #b42318;
+  color: var(--color-danger);
 }
 
 .gallery-grid {
@@ -42,20 +42,20 @@
 .gallery-item {
   display: flex;
   flex-direction: column;
-  border: 1px solid #dce5ee;
-  border-radius: 10px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-card);
   overflow: hidden;
-  background: #ffffff;
+  background: var(--color-surface);
   cursor: pointer;
   transition: box-shadow 0.2s, transform 0.15s;
-  box-shadow: 0 4px 12px rgba(37, 53, 75, 0.05);
+  box-shadow: var(--shadow-card);
   padding: 0;
   font: inherit;
   text-align: left;
 }
 
 .gallery-item:hover {
-  box-shadow: 0 8px 28px rgba(11, 107, 97, 0.12);
+  box-shadow: var(--shadow-hover);
   transform: translateY(-2px);
 }
 
@@ -63,15 +63,15 @@
   width: 100%;
   height: 200px;
   object-fit: contain;
-  background: #f9fafb;
-  border-bottom: 1px solid #dce5ee;
+  background: var(--color-bg);
+  border-bottom: 1px solid var(--color-border);
 }
 
 .gallery-caption {
   display: block;
   padding: 10px 14px;
   font-size: 0.85rem;
-  color: #31445a;
+  color: var(--color-text);
   font-weight: 600;
   overflow-wrap: anywhere;
 }
