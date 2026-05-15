@@ -35,6 +35,27 @@ export interface JobListResponse {
   jobs: JobResponse[];
 }
 
+export interface UploadedFileInfo {
+  field: string;
+  filename: string;
+  content_type: string | null;
+  size_bytes: number;
+  path: string;
+}
+
+export interface JobFilesResponse {
+  job_id: string;
+  inputs: UploadedFileInfo[];
+  result_files: ResultFileInfo[];
+  report_links: ReportLinks;
+}
+
+export interface JobLogResponse {
+  job_id: string;
+  log_name: string | null;
+  content: string;
+}
+
 export interface ImageInfo {
   name: string;
   path: string;

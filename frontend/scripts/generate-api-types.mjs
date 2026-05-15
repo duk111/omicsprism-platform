@@ -1,4 +1,7 @@
 // Fetch OpenAPI schema from running backend and regenerate api-types.ts
+import { writeFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+
 const API_URL = process.env.API_URL || "http://localhost:8000";
 
 async function main() {
@@ -8,7 +11,7 @@ async function main() {
 
   const schemas = schema.components?.schemas ?? {};
   const lines = [
-    "// Auto-generated from FastAPI /openapi.json — DO NOT EDIT",
+    "// Auto-generated from FastAPI /openapi.json — run `npm run generate-api-types` to refresh",
     `// Source: ${API_URL}/openapi.json`,
     `// Generated: ${new Date().toISOString()}`,
     "",
@@ -24,7 +27,7 @@ async function main() {
       const required = new Set(def.required ?? []);
       for (const [prop, propDef] of Object.entries(def.properties)) {
         const optional = required.has(prop) ? "" : "?";
-        const tsType = openApiTypeToTs(propDef);
+        const tsType = openApiTypeToTs(propDef, schemas);
         lines.push(`  ${prop}${optional}: ${tsType};`);
       }
       lines.push("}");
@@ -32,19 +35,26 @@ async function main() {
     }
   }
 
-  const fs = await import("fs");
-  fs.writeFileSync(
-    new URL("../src/api-types.ts", import.meta.url).pathname,
+  writeFileSync(
+    fileURLToPath(new URL("../src/api-types.ts", import.meta.url)),
     lines.join("\n"),
     "utf-8"
   );
   console.log("Generated frontend/src/api-types.ts");
 }
 
-function openApiTypeToTs(schema) {
+function openApiTypeToTs(schema, schemas) {
+  if (schema.$ref) {
+    const refName = schema.$ref.split("/").pop();
+    return refName || "unknown";
+  }
   if (schema.enum) return schema.enum.map((v) => `"${v}"`).join(" | ");
   if (schema.anyOf) {
-    return schema.anyOf.map(openApiTypeToTs).join(" | ") + (schema.nullable ? " | null" : "");
+    const types = schema.anyOf.map((s) => openApiTypeToTs(s, schemas));
+    return [...new Set(types)].join(" | ");
+  }
+  if (schema.allOf) {
+    return schema.allOf.map((s) => openApiTypeToTs(s, schemas)).join(" & ");
   }
   const typeMap = {
     string: "string",
@@ -52,11 +62,13 @@ function openApiTypeToTs(schema) {
     number: "number",
     boolean: "boolean",
   };
+  let result = typeMap[schema.type] ?? "unknown";
+  if (schema.nullable) result += " | null";
   if (schema.type === "array") {
-    const itemType = openApiTypeToTs(schema.items ?? { type: "string" });
-    return `${itemType}[]`;
+    const itemType = openApiTypeToTs(schema.items ?? { type: "string" }, schemas);
+    result = `${itemType}[]`;
   }
-  return typeMap[schema.type] ?? "unknown";
+  return result;
 }
 
 main().catch((err) => {
