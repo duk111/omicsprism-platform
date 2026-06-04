@@ -22,7 +22,7 @@ COPY frontend/ /app/
 RUN npm run build
 
 # 阶段2：用 Nginx 提供静态文件
-FROM nginx:1.27-alpine
+FROM nginx:stable-alpine
 
 # 复制构建产物
 COPY --from=build /app/dist /usr/share/nginx/html
