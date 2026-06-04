@@ -1,0 +1,8 @@
+{
+  "name": "omicsprism-platform",
+  "private": true,
+  "scripts": {
+    "dev:frontend": "npm --prefix frontend run dev",
+    "dev:backend": "python -m uvicorn backend.app.main:app --reload --port 8000"
+  }
+}

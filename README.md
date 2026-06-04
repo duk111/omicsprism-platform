@@ -1,0 +1,303 @@
+# OmicsPrism Platform
+
+OmicsPrism Platform is a FastAPI + React workbench for omics analyses.
+It supports PostgreSQL, Redis, a worker process, and an object storage layer.
+
+## Repository layout
+
+```text
+omicsprism-platform/
+  backend/     FastAPI API, worker, storage, quota, audit, scripts
+  frontend/    React + TypeScript + Vite UI
+  docs/        deployment notes
+  docker-compose.yml
+  .env.example
+```
+
+## Prerequisites
+
+- Python 3.10+
+- Node.js 18+ or 20+
+- Docker and Docker Compose, if you want the containerized stack
+- The sibling OmicsPrism analysis repository at `../OmicsPrism`
+
+## Local development
+
+### 1. Create the environment
+
+```powershell
+copy .env.example .env
+python -m venv .venv
+.\.venv\Scripts\activate
+python -m pip install -r requirements.txt
+npm install --prefix frontend
+```
+
+If you use the local fallback file storage and in-process worker, set these in
+`.env`:
+
+```powershell
+OMICS_PRISM_STORAGE_BACKEND=json
+OMICS_PRISM_EXECUTOR=local
+OMICS_PRISM_FILE_STORAGE_BACKEND=local
+```
+
+### 2. Start the backend
+
+```powershell
+python -m uvicorn backend.app.main:app --reload --port 8000
+```
+
+### 3. Start the frontend
+
+```powershell
+npm run dev --prefix frontend
+```
+
+Frontend URL:
+
+```text
+http://localhost:5173
+```
+
+Vite proxies `/api` to `http://127.0.0.1:8000` in development.
+
+### 4. Start the worker
+
+If you are using Redis-backed execution:
+
+```powershell
+python -m backend.worker
+```
+
+### 5. Health check
+
+```powershell
+curl http://localhost:8000/health
+```
+
+## Docker Compose stack
+
+The included `docker-compose.yml` starts:
+
+- `postgres`
+- `redis`
+- `minio`
+- `api`
+- `worker`
+- `frontend`
+
+### Start the full stack
+
+```powershell
+copy .env.example .env
+docker compose up --build
+```
+
+URLs:
+
+- Frontend: `http://localhost:8080`
+- API: `http://localhost:8000`
+- MinIO console: `http://localhost:9001`
+
+### Stop the stack
+
+```powershell
+docker compose down
+```
+
+To remove volumes as well:
+
+```powershell
+docker compose down -v
+```
+
+## Database migration
+
+The API can use local JSON storage or PostgreSQL.
+For production or the compose stack, run PostgreSQL.
+
+### Migrate local JSON data into PostgreSQL
+
+1. Start PostgreSQL.
+2. Set environment variables:
+
+```powershell
+$env:OMICS_PRISM_STORAGE_BACKEND = "postgres"
+$env:OMICS_PRISM_DATABASE_URL = "postgresql://postgres:postgres@localhost:5432/omicsprism"
+```
+
+3. Run the migration script:
+
+```powershell
+python -m backend.scripts.migrate_json_to_postgres
+```
+
+The migration script copies users, projects, jobs, and audit data into the
+PostgreSQL schema.
+
+## Object storage initialization
+
+### Local MinIO setup
+
+When using the compose stack, MinIO is started automatically and the bucket is
+created by `minio-init`.
+
+If you want to prepare MinIO manually:
+
+```powershell
+mc alias set local http://localhost:9000 minioadmin minioadmin
+mc mb -p local/omicsprism
+```
+
+Keep the bucket private. API downloads should go through authenticated backend routes. Do not enable anonymous bucket access for production data unless you have a very specific public-data use case.
+
+### Production S3/MinIO variables
+
+Set these for object storage:
+
+```powershell
+OMICS_PRISM_FILE_STORAGE_BACKEND=s3
+OMICS_PRISM_S3_ENDPOINT_URL=http://localhost:9000
+OMICS_PRISM_S3_REGION=us-east-1
+OMICS_PRISM_S3_ACCESS_KEY_ID=minioadmin
+OMICS_PRISM_S3_SECRET_ACCESS_KEY=minioadmin
+OMICS_PRISM_FILE_STORAGE_BUCKET=omicsprism
+OMICS_PRISM_FILE_STORAGE_PREFIX=jobs
+# Optional. Leave unset to keep downloads authenticated through the API.
+OMICS_PRISM_FILE_STORAGE_PUBLIC_BASE_URL=
+```
+
+## Production deployment
+
+Use PostgreSQL, Redis, the worker, and object storage together.
+
+### Recommended services
+
+- API: `python -m uvicorn backend.app.main:app --host 0.0.0.0 --port 8000`
+- Worker: `python -m backend.worker`
+- Frontend: build and serve the static bundle, or use the compose nginx image
+- PostgreSQL: persistent database
+- Redis: queue backend
+- S3/MinIO: result and input artifact storage
+
+### Minimal production checklist
+
+1. Copy `.env.example` to `.env`.
+2. Set `OMICS_PRISM_STORAGE_BACKEND=postgres`.
+3. Set `OMICS_PRISM_EXECUTOR=redis`.
+4. Set `OMICS_PRISM_FILE_STORAGE_BACKEND=s3`.
+5. Initialize the database schema.
+6. Initialize the object storage bucket.
+7. Start API, worker, and frontend.
+8. Run housekeeping from cron or a scheduler:
+
+```powershell
+python -m backend.scripts.storage_housekeeping
+```
+
+## Environment variables
+
+The full list is in `.env.example`. Important groups:
+
+- Database: `OMICS_PRISM_STORAGE_BACKEND`, `OMICS_PRISM_DATABASE_URL`
+- Queue: `OMICS_PRISM_EXECUTOR`, `OMICS_PRISM_REDIS_URL`, `OMICS_PRISM_REDIS_QUEUE`
+- Object storage: `OMICS_PRISM_FILE_STORAGE_BACKEND`, `OMICS_PRISM_S3_ENDPOINT_URL`, `OMICS_PRISM_FILE_STORAGE_BUCKET`, `OMICS_PRISM_FILE_STORAGE_PREFIX`
+- Quotas: `OMICS_PRISM_MAX_CONCURRENT_JOBS_PER_USER`, `OMICS_PRISM_MAX_CONCURRENT_JOBS_PER_PROJECT`, `OMICS_PRISM_FILE_STORAGE_QUOTA_BYTES`
+- Auth: `OMICS_PRISM_DEV_EMAIL`, `OMICS_PRISM_DEV_PASSWORD`
+
+## Common troubleshooting
+
+### Database connection fails
+
+Check that PostgreSQL is reachable and the URL is correct:
+
+```powershell
+python -c "import os; print(os.getenv('OMICS_PRISM_DATABASE_URL'))"
+```
+
+Typical fixes:
+
+- verify host, port, user, password, and database name
+- confirm the `postgres` container is healthy in `docker compose ps`
+- ensure `OMICS_PRISM_STORAGE_BACKEND=postgres` only when PostgreSQL is ready
+
+### Redis connection fails
+
+Check the Redis URL and queue backend:
+
+```powershell
+python -c "import os; print(os.getenv('OMICS_PRISM_REDIS_URL'))"
+```
+
+Typical fixes:
+
+- confirm `OMICS_PRISM_EXECUTOR=redis`
+- confirm Redis is running and healthy
+- restart the worker after changing Redis settings
+
+### Worker does not consume jobs
+
+Check:
+
+```powershell
+docker compose logs -f worker
+```
+
+or, if running locally:
+
+```powershell
+python -m backend.worker
+```
+
+Typical causes:
+
+- worker is not started
+- Redis URL is wrong
+- API and worker are pointing to different Redis queues
+- jobs are blocked by quota checks
+
+### File download fails
+
+Typical causes:
+
+- object storage bucket not created
+- `OMICS_PRISM_FILE_STORAGE_PUBLIC_BASE_URL` is wrong
+- MinIO/S3 credentials are wrong
+- artifact metadata exists but the object key was deleted
+
+Check the object store and the job file metadata. If the job is local-only,
+verify that `OMICS_PRISM_FILE_STORAGE_BACKEND=local` and the `storage/` or
+`runs/` directory exists.
+
+### Job fails
+
+Check the job progress page and the worker logs first:
+
+```powershell
+docker compose logs -f worker
+```
+
+or:
+
+```powershell
+curl http://localhost:8000/api/jobs/<job_id>/logs
+```
+
+The frontend shows a `request_id` on error panels. Use that id when checking
+API logs and audit events.
+
+## Useful scripts
+
+```powershell
+python -m backend.scripts.migrate_json_to_postgres
+python -m backend.scripts.storage_housekeeping
+python -m uvicorn backend.app.main:app --reload --port 8000
+python -m backend.worker
+```
+
+## Notes
+
+- Deterministic result summaries are available at `/api/jobs/{job_id}/summary`.
+- Cancellation, rerun, and quota APIs are available in the workbench.
+- Audit events and structured logs are emitted by API and worker.

@@ -1,0 +1,32 @@
+# ===== OmicsPrism Platform 后端 Dockerfile =====
+# 需要在 omicsprism-platform 的父目录下构建：
+#   docker build -f omicsprism-platform/Dockerfile.backend -t omicsprism-api .
+
+FROM python:3.11-slim
+
+WORKDIR /app
+
+# 安装系统依赖（OmicsPrism 的 python-igraph 需要 C 编译器和 igraph 库）
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    libigraph-dev \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
+# 先复制并安装 OmicsPrism 分析库（被平台依赖）
+COPY omicsprism/ /app/omicsprism/
+RUN pip install --no-cache-dir /app/omicsprism
+
+# 复制并安装平台后端依赖
+COPY omicsprism-platform/backend/requirements.txt /app/platform-requirements.txt
+RUN pip install --no-cache-dir -r /app/platform-requirements.txt
+
+# 复制平台后端代码
+COPY omicsprism-platform/backend/ /app/backend/
+
+# 创建数据目录
+RUN mkdir -p /app/data/runs /app/data/storage
+
+EXPOSE 8000
+
+CMD ["python", "-m", "uvicorn", "backend.app.main:app", "--host", "0.0.0.0", "--port", "8000"]

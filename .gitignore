@@ -1,0 +1,36 @@
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+node_modules/
+dist/
+frontend/dist/
+frontend/dist-check-*/
+frontend/.vite/
+frontend/*.tsbuildinfo
+frontend/vite.config.d.ts
+frontend/vite.config.js
+frontend/vite-dev.log
+frontend/vite-dev.err.log
+runs/
+auth_data/
+storage/
+*-server.log
+*.log
+
+# IDE / 工具配置
+.idea/
+.claude/
+skills-lock.json
+
+# 环境变量
+.env
+.env.*
+!.env.example
+
+# 系统文件
+.DS_Store
+Thumbs.db
