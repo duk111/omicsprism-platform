@@ -12,8 +12,8 @@ ENV VITE_API_BASE_PATH=$VITE_API_BASE_PATH
 # 复制依赖文件
 COPY frontend/package.json frontend/package-lock.json* /app/
 
-# 安装依赖
-RUN npm ci --only=production 2>/dev/null || npm install
+# 构建阶段需要 TypeScript 和 @types/*，最终 nginx 镜像不会包含 node_modules
+RUN npm ci 2>/dev/null || npm install
 
 # 复制前端源码
 COPY frontend/ /app/
