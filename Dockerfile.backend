@@ -2,12 +2,22 @@
 # 需要在 omicsprism-platform 的父目录下构建：
 #   docker build -f omicsprism-platform/Dockerfile.backend -t omicsprism-api .
 
-FROM python:3.11-slim
+FROM python:3.11-slim-bookworm
 
 WORKDIR /app
 
+ARG APT_MIRROR=https://mirrors.tuna.tsinghua.edu.cn/debian
+ARG PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple
+ENV PIP_INDEX_URL=$PIP_INDEX_URL
+ENV PIP_DISABLE_PIP_VERSION_CHECK=1
+
 # 安装系统依赖（OmicsPrism 的 python-igraph 需要 C 编译器和 igraph 库）
-RUN apt-get update && apt-get install -y --no-install-recommends \
+RUN sed -i \
+        -e "s|http://deb.debian.org/debian-security|${APT_MIRROR}-security|g" \
+        -e "s|http://deb.debian.org/debian|${APT_MIRROR}|g" \
+        /etc/apt/sources.list.d/debian.sources \
+    && apt-get update -o Acquire::Retries=5 \
+    && apt-get install -y --no-install-recommends \
     build-essential \
     libigraph-dev \
     curl \
