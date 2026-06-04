@@ -4,6 +4,11 @@ FROM node:20-alpine AS build
 
 WORKDIR /app
 
+ARG VITE_PUBLIC_BASE_PATH=/
+ARG VITE_API_BASE_PATH=/api
+ENV VITE_PUBLIC_BASE_PATH=$VITE_PUBLIC_BASE_PATH
+ENV VITE_API_BASE_PATH=$VITE_API_BASE_PATH
+
 # 复制依赖文件
 COPY frontend/package.json frontend/package-lock.json* /app/
 

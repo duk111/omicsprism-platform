@@ -28,6 +28,8 @@ class AppSettings:
     file_storage_job_ttl_days: int = 30
     file_storage_failed_job_ttl_days: int = 14
     file_storage_temp_ttl_hours: int = 24
+    job_history_ttl_hours: int = 24
+    housekeeping_interval_seconds: int = 3600
     file_storage_dedupe_enabled: bool = True
     file_storage_quota_bytes: int | None = None
     max_concurrent_jobs_per_user: int | None = 2
@@ -62,6 +64,8 @@ def load_settings() -> AppSettings:
         file_storage_job_ttl_days=int(os.getenv("OMICS_PRISM_FILE_STORAGE_JOB_TTL_DAYS", "30")),
         file_storage_failed_job_ttl_days=int(os.getenv("OMICS_PRISM_FILE_STORAGE_FAILED_JOB_TTL_DAYS", "14")),
         file_storage_temp_ttl_hours=int(os.getenv("OMICS_PRISM_FILE_STORAGE_TEMP_TTL_HOURS", "24")),
+        job_history_ttl_hours=int(os.getenv("OMICS_PRISM_JOB_HISTORY_TTL_HOURS", "24")),
+        housekeeping_interval_seconds=int(os.getenv("OMICS_PRISM_HOUSEKEEPING_INTERVAL_SECONDS", "3600")),
         file_storage_dedupe_enabled=os.getenv("OMICS_PRISM_FILE_STORAGE_DEDUPE", "true").lower() not in {"0", "false", "no"},
         file_storage_quota_bytes=_parse_optional_int(os.getenv("OMICS_PRISM_FILE_STORAGE_QUOTA_BYTES")),
         max_concurrent_jobs_per_user=_parse_optional_int(os.getenv("OMICS_PRISM_MAX_CONCURRENT_JOBS_PER_USER"), default=2),

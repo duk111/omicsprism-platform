@@ -1,4 +1,5 @@
 import type { JobProgressResponse } from "../../api-types";
+import { apiFetch } from "../../api";
 
 export type ProgressConnectionMode = "sse" | "polling";
 export type ProgressConnectionState = "connecting" | "open" | "recovering" | "fallback" | "closed";
@@ -10,7 +11,7 @@ export function isTerminalProgress(progress: JobProgressResponse | null) {
 }
 
 export async function fetchJobProgress(jobId: string, signal?: AbortSignal): Promise<JobProgressResponse> {
-  const response = await fetch(`/api/jobs/${jobId}/progress`, { signal });
+  const response = await apiFetch(`/api/jobs/${jobId}/progress`, { signal });
   const data = await response.json().catch(() => null);
   if (!response.ok) throw new Error(data?.detail ?? "Failed to load job progress");
   return data as JobProgressResponse;

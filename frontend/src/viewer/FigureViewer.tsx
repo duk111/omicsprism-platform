@@ -1,5 +1,6 @@
 import { useState, useCallback, useRef, useEffect } from "react";
 import type { ImageInfo } from "../api-types";
+import { apiUrl, assetUrl } from "../api";
 import { ControlPanel } from "./ControlPanel";
 import "./FigureViewer.css";
 
@@ -79,8 +80,8 @@ export default function FigureViewer({ image, onClose }: Props) {
     (format: DownloadFormat) => {
       const url =
         format === "png"
-          ? image.full_url
-          : image.full_url.replace(/\.\w+$/, `.${format}`);
+          ? assetUrl(image.full_url)
+          : assetUrl(image.full_url).replace(/\.\w+$/, `.${format}`);
       const link = document.createElement("a");
       link.href = url;
       link.download = `${image.name.replace(/\.\w+$/, "")}.${format}`;
@@ -91,7 +92,7 @@ export default function FigureViewer({ image, onClose }: Props) {
   );
 
   const dataTableUrl = image.path
-    ? `/api/jobs/${extractJobId(image)}/download/${guessTablePath(image)}`
+    ? apiUrl(`/api/jobs/${extractJobId(image)}/download/${guessTablePath(image)}`)
     : null;
 
   const handleKey = useCallback(
@@ -142,7 +143,7 @@ export default function FigureViewer({ image, onClose }: Props) {
               </a>
             )}
             {image.interactive_url && (
-              <a className="fv-tool-btn fv-data-link" href={image.interactive_url} title="Open interactive figure" target="_blank" rel="noopener noreferrer">
+              <a className="fv-tool-btn fv-data-link" href={assetUrl(image.interactive_url)} title="Open interactive figure" target="_blank" rel="noopener noreferrer">
                 <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M3 2.5h10A1.5 1.5 0 0 1 14.5 4v8a1.5 1.5 0 0 1-1.5 1.5H3A1.5 1.5 0 0 1 1.5 12V4A1.5 1.5 0 0 1 3 2.5Z" stroke="currentColor" strokeWidth="1.3"/><path d="M4.5 10.5 7 8 4.5 5.5M8 10.5h3.5" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round"/></svg>
                 Interactive
               </a>
@@ -185,11 +186,11 @@ export default function FigureViewer({ image, onClose }: Props) {
             {imageError ? (
               <div className="fv-empty">
                 <p>Failed to load image.</p>
-                <a href={image.full_url} download className="fv-download-link">Download instead</a>
+                <a href={assetUrl(image.full_url)} download className="fv-download-link">Download instead</a>
               </div>
             ) : (
               <img
-                src={image.full_url}
+                src={assetUrl(image.full_url)}
                 alt={image.name}
                 className="fv-image"
                 style={{ transform: `scale(${zoom}) translate(${pan.x / zoom}px, ${pan.y / zoom}px)` }}

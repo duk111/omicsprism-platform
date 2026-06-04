@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import type { AnalysisType, ImageInfo, JobFilesResponse, JobResponse, JobStatus } from "./api-types";
-import { apiFetchJson, ApiRequestError } from "./api";
+import { apiFetch, apiFetchJson, ApiRequestError, assetUrl } from "./api";
 import { formatSeconds } from "./app/jobs/progress";
 import { ANALYSIS_LABELS, STATUS_LABELS, formatDateTime } from "./app/jobs/jobUtils";
 import { useJobProgressSubscription } from "./app/jobs/useJobProgressSubscription";
@@ -506,7 +506,7 @@ function JobList({ onProgress }: { onProgress: (jobId: string) => void }) {
 
   async function deleteJob(jobId: string) {
     try {
-      await fetch(`/api/jobs/${jobId}`, { method: "DELETE", credentials: "include" });
+      await apiFetch(`/api/jobs/${jobId}`, { method: "DELETE" });
       setJobs(prev => prev.filter(j => j.id !== jobId));
     } catch { /* ignore */ }
   }
@@ -635,7 +635,7 @@ function ProgressPage({ jobId, onResults, onBack }: { jobId: string; onResults: 
     : "Connecting";
 
   async function cancelJob() {
-    await fetch(`/api/jobs/${jobId}/cancel`, { method: "POST", credentials: "include" });
+    await apiFetch(`/api/jobs/${jobId}/cancel`, { method: "POST" });
   }
 
   return (
@@ -739,7 +739,7 @@ function ResultsPage({ jobId, onBack, onProgress }: { jobId: string; onBack: () 
     void load();
   }, [jobId]);
 
-  const archiveUrl = files?.result_files.find(f => f.path.endsWith("OmicsPrism_results.zip"))?.download_url ?? null;
+  const archiveUrl = assetUrl(files?.result_files.find(f => f.path.endsWith("OmicsPrism_results.zip"))?.download_url);
   const tableFiles = (files?.result_files ?? []).filter(f =>
     f.name.endsWith(".csv") || f.name.endsWith(".zip")
   );
@@ -777,8 +777,8 @@ function ResultsPage({ jobId, onBack, onProgress }: { jobId: string; onBack: () 
         </div>
 
         <div className="row-actions">
-          {files?.report_links.summary && <a className="primary" href={files.report_links.summary}>Summary report</a>}
-          {files?.report_links.interactive && <a className="secondary" href={files.report_links.interactive}>Interactive report</a>}
+          {files?.report_links.summary && <a className="primary" href={assetUrl(files.report_links.summary)}>Summary report</a>}
+          {files?.report_links.interactive && <a className="secondary" href={assetUrl(files.report_links.interactive)}>Interactive report</a>}
         </div>
 
         {images.length > 0 && (
@@ -788,7 +788,7 @@ function ResultsPage({ jobId, onBack, onProgress }: { jobId: string; onBack: () 
               {images.map(img => (
                 <button key={img.path} className="result-figure-card" type="button" onClick={() => setSelectedImage(img)}>
                   <div className="result-figure-thumb">
-                    <img src={img.thumbnail_url} alt={img.name} loading="lazy" />
+                    <img src={assetUrl(img.thumbnail_url)} alt={img.name} loading="lazy" />
                   </div>
                   <div className="result-figure-body">
                     <span className="figure-type-tag">{figureTypeLabel(img.name)}</span>
@@ -804,7 +804,7 @@ function ResultsPage({ jobId, onBack, onProgress }: { jobId: string; onBack: () 
           <h2>Result tables</h2>
           <div className="file-list">
             {tableFiles.map(f => (
-              <a className="file-row" key={f.path} href={f.download_url}>
+              <a className="file-row" key={f.path} href={assetUrl(f.download_url)}>
                 <span>{f.name}</span><em>{Math.ceil(f.size_bytes / 1024)} KB</em>
               </a>
             ))}

@@ -624,8 +624,7 @@ class FileStorageService:
         artifacts = self._artifacts_for_job(job.id, job)
         for artifact in artifacts:
             self.backend.delete(artifact.storage_key)
-        if self.backend_name == "local":
-            shutil.rmtree(self._run_dir(job.id), ignore_errors=True)
+        shutil.rmtree(self._run_dir(job.id), ignore_errors=True)
 
     def has_artifact(self, job_id: str, relative_path: str) -> bool:
         artifact = self._artifact_for_path(job_id, relative_path)

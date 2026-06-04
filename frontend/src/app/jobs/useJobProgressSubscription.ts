@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { apiUrl } from "../../api";
 import type { JobProgressResponse } from "../../api-types";
 import {
   fetchJobProgress,
@@ -101,7 +102,7 @@ export function useJobProgressSubscription(jobId: string): UseJobProgressSubscri
       setConnectionState(previousAttempts > 0 ? "recovering" : "connecting");
 
       try {
-        eventSource = new EventSource(`/api/jobs/${jobId}/progress/events`, { withCredentials: true });
+        eventSource = new EventSource(apiUrl(`/api/jobs/${jobId}/progress/events`), { withCredentials: true });
       } catch {
         startPolling();
         return;

@@ -85,6 +85,7 @@ services:
       # 运行目录
       OMICS_PRISM_RUNS_DIR: /app/data/runs
       OMICS_PRISM_FILE_STORAGE_ROOT: /app/data/storage
+      OMICS_PRISM_JOB_HISTORY_TTL_HOURS: ${JOB_HISTORY_TTL_HOURS:-24}
       # 认证（开发模式，后续需要改为真正的认证）
       OMICS_PRISM_DEV_EMAIL: ${DEV_EMAIL:-admin@omicsprism.local}
       OMICS_PRISM_DEV_PASSWORD: ${DEV_PASSWORD:-changeme}
@@ -123,20 +124,49 @@ services:
       OMICS_PRISM_FILE_STORAGE_PREFIX: jobs
       OMICS_PRISM_RUNS_DIR: /app/data/runs
       OMICS_PRISM_FILE_STORAGE_ROOT: /app/data/storage
+      OMICS_PRISM_JOB_HISTORY_TTL_HOURS: ${JOB_HISTORY_TTL_HOURS:-24}
       OMICS_PRISM_LOG_LEVEL: ${LOG_LEVEL:-INFO}
     volumes:
       - app_data:/app/data
     command: python -m backend.worker
 
+  housekeeping:
+    build:
+      context: ..
+      dockerfile: omicsprism-platform/Dockerfile.backend
+    restart: unless-stopped
+    depends_on:
+      minio:
+        condition: service_healthy
+    environment:
+      OMICS_PRISM_FILE_STORAGE_BACKEND: s3
+      OMICS_PRISM_S3_ENDPOINT_URL: http://minio:9000
+      OMICS_PRISM_S3_REGION: us-east-1
+      OMICS_PRISM_S3_ACCESS_KEY_ID: ${MINIO_USER:-minioadmin}
+      OMICS_PRISM_S3_SECRET_ACCESS_KEY: ${MINIO_PASSWORD:-minioadmin_prod_2024}
+      OMICS_PRISM_FILE_STORAGE_BUCKET: omicsprism
+      OMICS_PRISM_FILE_STORAGE_PREFIX: jobs
+      OMICS_PRISM_RUNS_DIR: /app/data/runs
+      OMICS_PRISM_FILE_STORAGE_ROOT: /app/data/storage
+      OMICS_PRISM_JOB_HISTORY_TTL_HOURS: ${JOB_HISTORY_TTL_HOURS:-24}
+      OMICS_PRISM_HOUSEKEEPING_INTERVAL_SECONDS: ${HOUSEKEEPING_INTERVAL_SECONDS:-3600}
+      OMICS_PRISM_LOG_LEVEL: ${LOG_LEVEL:-INFO}
+    volumes:
+      - app_data:/app/data
+    command: python -m backend.housekeeping
+
   frontend:
     build:
       context: .
       dockerfile: Dockerfile.frontend
+      args:
+        VITE_PUBLIC_BASE_PATH: ${PUBLIC_BASE_PATH:-/api/wb/}
+        VITE_API_BASE_PATH: ${API_BASE_PATH:-/api/wb/api}
     restart: unless-stopped
     depends_on:
       - api
     ports:
-      - "${FRONTEND_PORT:-8080}:80"
+      - "${FRONTEND_PORT:-18085}:80"
 
 volumes:
   postgres_data:

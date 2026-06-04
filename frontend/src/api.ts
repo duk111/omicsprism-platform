@@ -12,8 +12,28 @@ export class ApiRequestError extends Error {
   }
 }
 
+const API_BASE_PATH = normalizeBasePath(import.meta.env.VITE_API_BASE_PATH || "/api");
+
+export function apiUrl(path: string): string {
+  const cleanPath = path.startsWith("/") ? path : `/${path}`;
+  if (!API_BASE_PATH) return cleanPath;
+  if (cleanPath === API_BASE_PATH || cleanPath.startsWith(`${API_BASE_PATH}/`)) {
+    return cleanPath;
+  }
+  if (cleanPath === "/api") return API_BASE_PATH;
+  if (cleanPath.startsWith("/api/")) return `${API_BASE_PATH}${cleanPath.slice(4)}`;
+  return `${API_BASE_PATH}${cleanPath}`;
+}
+
+export function assetUrl(path: string | null | undefined): string {
+  if (!path) return "";
+  if (/^(https?:)?\/\//.test(path) || path.startsWith("data:")) return path;
+  return apiUrl(path);
+}
+
 export async function apiFetch(input: RequestInfo | URL, init: RequestInit = {}) {
-  const response = await fetch(input, {
+  const normalizedInput = typeof input === "string" ? apiUrl(input) : input;
+  const response = await fetch(normalizedInput, {
     ...init,
     credentials: "include",
   });
@@ -29,4 +49,10 @@ export async function apiFetchJson(input: RequestInfo | URL, init: RequestInit =
     throw new ApiRequestError(message, response.status, detail, response.headers.get("x-request-id"));
   }
   return response.json();
+}
+
+function normalizeBasePath(value: string): string {
+  const trimmed = value.trim();
+  if (!trimmed || trimmed === "/") return "";
+  return `/${trimmed.replace(/^\/+|\/+$/g, "")}`;
 }
