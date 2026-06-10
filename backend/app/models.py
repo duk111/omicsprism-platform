@@ -407,6 +407,25 @@ class JobControlResponse(BaseModel):
     message: str
 
 
+class FigureDataResponse(BaseModel):
+    model_config = {"extra": "allow"}
+
+    figure_id: str
+    title: str
+    chart_type: str
+    interactive_page_id: str | None = None
+    static_files: dict[str, str | None] = Field(default_factory=dict)
+    plotly_spec: dict[str, Any] = Field(default_factory=dict)
+    default_state: dict[str, Any] = Field(default_factory=dict)
+    available_states: dict[str, Any] = Field(default_factory=dict)
+    style: dict[str, Any] = Field(default_factory=dict)
+    tree_data: dict[str, Any] | None = None
+    upset_data: dict[str, Any] | None = None
+    ridge_data: dict[str, Any] | None = None
+    bar_data: list[Any] | None = None
+    circos_data: dict[str, Any] | None = None
+
+
 class QuotaScopeUsage(BaseModel):
     active_jobs: int
     active_limit: int | None = None

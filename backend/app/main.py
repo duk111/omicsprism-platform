@@ -29,6 +29,7 @@ from .errors import (
 )
 from .models import (
     AnalysisType,
+    FigureDataResponse,
     ImageInfo,
     JobFilesResponse,
     JobListResponse,
@@ -428,6 +429,37 @@ def list_job_images(job_id: str, request: Request, response: Response) -> list[I
     session_id = get_session_id(request, response)
     require_job_access(job_id, session_id)
     return FILES.list_images(job_id)
+
+
+@app.get("/api/jobs/{job_id}/figure-data/{figure_id}", response_model=FigureDataResponse)
+def get_figure_data(job_id: str, figure_id: str, request: Request, response: Response) -> FigureDataResponse:
+    session_id = get_session_id(request, response)
+    require_job_access(job_id, session_id)
+    relative_path = f"outputs/figure_data/{figure_id}.json"
+    if not FILES.has_artifact(job_id, relative_path):
+        fallback_path = _legacy_figure_data_path(job_id, figure_id)
+        if fallback_path is None:
+            raise HTTPException(status_code=404, detail=f"Figure data not found: {figure_id}")
+        relative_path = fallback_path
+    data = FILES.read_json_artifact(job_id, relative_path)
+    return FigureDataResponse(**data)
+
+
+def _legacy_figure_data_path(job_id: str, figure_id: str) -> str | None:
+    fallback_names: dict[str, tuple[str, ...]] = {
+        "pca": ("pca-scatter", "pca_scatter", "pca-pairs", "pca_pairs"),
+        "bubble-heatmap": ("bubble_heatmap",),
+        "module-heatmap": ("module_heatmap",),
+        "line-panels": ("line_panels",),
+        "scatter-panels": ("scatter_panels",),
+        "violin-box": ("violin_box",),
+        "bar-charts": ("bar_charts",),
+    }
+    for name in fallback_names.get(figure_id, ()):
+        relative_path = f"outputs/figure_data/{name}.json"
+        if FILES.has_artifact(job_id, relative_path):
+            return relative_path
+    return None
 
 
 @app.get("/api/jobs/{job_id}/download/{relative_path:path}")
@@ -1149,4 +1181,3 @@ def _to_job_response(job: JobRecord) -> JobResponse:
         params=job.params,
         **timing,
     )
-

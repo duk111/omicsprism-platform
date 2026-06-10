@@ -1,0 +1,250 @@
+/* Interactive page shell */
+.ip-shell {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  background: #fafaf8;
+  font-family: Arial, sans-serif;
+}
+
+.ip-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 10px 18px;
+  border-bottom: 1px solid #d1d5db;
+  background: #ffffff;
+  flex-shrink: 0;
+  z-index: 10;
+}
+
+.ip-back {
+  font-size: 0.85rem;
+  color: #2563eb;
+  text-decoration: none;
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+.ip-back:hover {
+  text-decoration: underline;
+}
+
+.ip-title {
+  flex: 1;
+  margin: 0;
+  font-size: 1rem;
+  font-weight: 600;
+  color: #111827;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.ip-toolbar-actions {
+  display: flex;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.ip-dl-btn {
+  padding: 4px 12px;
+  border: 1px solid #d1d5db;
+  border-radius: 5px;
+  background: #ffffff;
+  font-size: 0.78rem;
+  font-weight: 500;
+  color: #374151;
+  cursor: pointer;
+  font-family: inherit;
+}
+
+.ip-dl-btn:hover {
+  background: #f0f4f8;
+  border-color: #94a3b8;
+}
+
+.ip-body {
+  flex: 1;
+  display: flex;
+  min-height: 0;
+  overflow: hidden;
+}
+
+/* Chart area */
+.ip-chart {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.ip-chart-area {
+  flex: 1;
+  min-height: 0;
+}
+
+.ip-chart-area .js-plotly-plot,
+.ip-chart-area .plot-container {
+  width: 100% !important;
+  height: 100% !important;
+}
+
+/* Controls sidebar */
+.ip-controls {
+  width: 240px;
+  border-left: 1px solid #d1d5db;
+  padding: 14px;
+  overflow-y: auto;
+  background: #fafaf8;
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.ip-control-group {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.ip-control-label {
+  font-size: 0.7rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  color: #6b7280;
+}
+
+.ip-control-select,
+.ip-control-input {
+  padding: 5px 8px;
+  border: 1px solid #d1d5db;
+  border-radius: 5px;
+  font-size: 0.8rem;
+  color: #111827;
+  background: #ffffff;
+  font-family: inherit;
+}
+
+.ip-control-select:focus,
+.ip-control-input:focus {
+  outline: none;
+  border-color: #2563eb;
+  box-shadow: 0 0 0 2px rgba(37, 99, 235, 0.15);
+}
+
+.ip-control-toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.8rem;
+  color: #374151;
+  cursor: pointer;
+}
+
+.ip-control-toggle input {
+  accent-color: #2563eb;
+}
+
+.ip-control-range {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.ip-control-range input[type="range"] {
+  flex: 1;
+  accent-color: #2563eb;
+}
+
+.ip-control-range span {
+  font-size: 0.75rem;
+  color: #6b7280;
+  min-width: 32px;
+  text-align: right;
+}
+
+/* Loading / Error */
+.ip-loading,
+.ip-error {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  color: #6b7280;
+  font-size: 0.9rem;
+}
+
+.ip-error-page {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  height: 100vh;
+  gap: 12px;
+  font-family: Arial, sans-serif;
+  color: #374151;
+}
+
+.ip-error-page h1 {
+  margin: 0;
+  font-size: 1.5rem;
+}
+
+.ip-error-page a {
+  color: #2563eb;
+}
+
+/* Info bar at bottom */
+.ip-infobar {
+  padding: 6px 14px;
+  border-top: 1px solid #e5e7eb;
+  font-size: 0.72rem;
+  color: #6b7280;
+  background: #ffffff;
+  flex-shrink: 0;
+  display: flex;
+  gap: 16px;
+}
+
+.ip-tooltip {
+  position: absolute;
+  z-index: 20;
+  max-width: 320px;
+  padding: 7px 9px;
+  border-radius: 5px;
+  background: rgba(17, 24, 39, 0.92);
+  color: #ffffff;
+  font-size: 0.72rem;
+  line-height: 1.35;
+  pointer-events: none;
+  box-shadow: 0 8px 22px rgba(15, 23, 42, 0.22);
+}
+
+.ip-tooltip-title {
+  margin-bottom: 3px;
+  font-weight: 700;
+}
+
+@media (max-width: 800px) {
+  .ip-body {
+    flex-direction: column;
+  }
+
+  .ip-controls {
+    width: 100%;
+    border-left: 0;
+    border-top: 1px solid #d1d5db;
+    flex-direction: row;
+    flex-wrap: wrap;
+    max-height: 160px;
+  }
+
+  .ip-control-group {
+    min-width: 110px;
+  }
+}

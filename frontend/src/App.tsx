@@ -506,8 +506,8 @@ function JobList({ onProgress }: { onProgress: (jobId: string) => void }) {
 
   async function deleteJob(jobId: string) {
     try {
-      await apiFetch(`/api/jobs/${jobId}`, { method: "DELETE" });
-      setJobs(prev => prev.filter(j => j.id !== jobId));
+      const res = await apiFetch(`/api/jobs/${jobId}`, { method: "DELETE" });
+      if (res.ok) setJobs(prev => prev.filter(j => j.id !== jobId));
     } catch { /* ignore */ }
   }
 

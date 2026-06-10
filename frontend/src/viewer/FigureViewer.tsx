@@ -11,13 +11,81 @@ interface Props {
 
 type DownloadFormat = "png" | "svg" | "pdf";
 
+interface InteractiveTarget {
+  pageId: string;
+  params?: Record<string, string>;
+}
+
+/** Map static figure filenames to interactive page targets. */
+function figureToInteractiveTarget(filename: string): InteractiveTarget | null {
+  const n = filename.replace(/\.\w+$/, "").toLowerCase();
+  // F01
+  if (n.includes("f01") || n.includes("dendrogram") || n.includes("clustering")) return { pageId: "dendrogram" };
+  // F02-F09 all open the unified PCA explorer with figure-specific initial state.
+  if (n.includes("f02") || n.includes("f04")) {
+    return { pageId: "pca", params: { source: "transcriptome", color_by: "group1", x_pc: "1", y_pc: "2" } };
+  }
+  if (n.includes("f03") || n.includes("f05")) {
+    return { pageId: "pca", params: { source: "transcriptome", color_by: "group2", x_pc: "1", y_pc: "2" } };
+  }
+  if (n.includes("f06") || n.includes("f08")) {
+    return { pageId: "pca", params: { source: "metabolome", color_by: "group1", x_pc: "1", y_pc: "2" } };
+  }
+  if (n.includes("f07") || n.includes("f09")) {
+    return { pageId: "pca", params: { source: "metabolome", color_by: "group2", x_pc: "1", y_pc: "2" } };
+  }
+  // F10
+  if (n.includes("f10") || n.includes("upset") || n.includes("evidence")) return { pageId: "upset" };
+  // F11, F24
+  if (n.includes("f11") || (n.includes("bubble") && !n.includes("module"))) return { pageId: "bubble-heatmap", params: { level: "gene" } };
+  if (n.includes("f24") || (n.includes("bubble") && n.includes("module"))) return { pageId: "bubble-heatmap", params: { level: "module" } };
+  // F12 / F23 correlation heatmaps share the corr-heatmap page with view param
+  if (n.includes("f12") || (n.includes("correlation") && n.includes("heatmap"))) return { pageId: "corr-heatmap", params: { view: "gene-metabolite" } };
+  if (n.includes("f23") || (n.includes("module") && n.includes("metabolite") && n.includes("association") && n.includes("heatmap"))) return { pageId: "corr-heatmap", params: { view: "module-metabolite" } };
+  // F13, F25
+  if (n.includes("f13") || (n.includes("pairs") && n.includes("gene"))) return { pageId: "scatter-panels" };
+  if (n.includes("f25") || (n.includes("regression") && n.includes("module"))) return { pageId: "scatter-panels" };
+  // F14, F21, F22
+  if (n.includes("f14") || (n.includes("violin") && n.includes("metabolite"))) return { pageId: "violin-box" };
+  if (n.includes("f21") || (n.includes("violin") && n.includes("eigengene"))) return { pageId: "violin-box" };
+  if (n.includes("f22") || n.includes("kme")) return { pageId: "violin-box" };
+  // F15, F16
+  if (n.includes("f15") || (n.includes("eigengene") && n.includes("heatmap") && !n.includes("group2"))) return { pageId: "module-heatmap" };
+  if (n.includes("f16") || (n.includes("eigengene") && n.includes("heatmap") && n.includes("group2"))) return { pageId: "module-heatmap" };
+  // F17, F18, F26
+  if (n.includes("f17") || (n.includes("zscore") && n.includes("line") && !n.includes("gene"))) return { pageId: "line-panels" };
+  if (n.includes("f18") || (n.includes("gene") && n.includes("zscore") && n.includes("line"))) return { pageId: "line-panels" };
+  if (n.includes("f26") || (n.includes("trend") && n.includes("panel"))) return { pageId: "line-panels" };
+  // F19, F20
+  if (n.includes("f19") || n.includes("f20") || n.includes("ridge")) return { pageId: "ridge" };
+  // F27, F28
+  if (n.includes("f27") || n.includes("direction")) return { pageId: "bar-charts" };
+  if (n.includes("f28") || (n.includes("edgeweight") && n.includes("distribution"))) return { pageId: "bar-charts" };
+  // F29, F30
+  if (n.includes("f29") || n.includes("f30") || n.includes("circos") || n.includes("cnet")) return { pageId: "circos" };
+  // Fallback: detect by chart characteristics
+  if (n.includes("volcano")) return { pageId: "volcano" };
+  if (n.includes("pca") || n.includes("oplsda")) return { pageId: "pca", params: { source: "transcriptome", color_by: "group1", x_pc: "1", y_pc: "2" } };
+  if (n.includes("heatmap")) return null;
+  if (n.includes("scatter") || n.includes("regression")) return { pageId: "scatter-panels" };
+  if (n.includes("violin") || n.includes("boxplot")) return { pageId: "violin-box" };
+  if (n.includes("ridge")) return { pageId: "ridge" };
+  if (n.includes("bar") || n.includes("count")) return { pageId: "bar-charts" };
+  return null;
+}
+
+function buildInteractiveUrl(jobId: string, target: InteractiveTarget | null): string | null {
+  if (!jobId || !target) return null;
+  const params = new URLSearchParams(target.params || {});
+  const suffix = params.toString() ? `?${params.toString()}` : "";
+  return `/interactive/${jobId}/${target.pageId}${suffix}`;
+}
+
 export default function FigureViewer({ image, onClose }: Props) {
   const [zoom, setZoom] = useState(1);
   const [pan, setPan] = useState({ x: 0, y: 0 });
   const [isDragging, setIsDragging] = useState(false);
   const [dragStart, setDragStart] = useState({ x: 0, y: 0 });
-  const [showDownloadMenu, setShowDownloadMenu] = useState(false);
-  const [activeFormat, setActiveFormat] = useState<DownloadFormat>("png");
   const [imageError, setImageError] = useState(false);
 
   const canvasRef = useRef<HTMLDivElement>(null);
@@ -30,8 +98,9 @@ export default function FigureViewer({ image, onClose }: Props) {
   const clampZoom = useCallback((z: number) => Math.min(maxZoom, Math.max(minZoom, z)), []);
 
   const handleWheel = useCallback(
-    (e: React.WheelEvent) => {
+    (e: WheelEvent) => {
       e.preventDefault();
+      e.stopPropagation();
       const delta = e.deltaY > 0 ? -zoomStep : zoomStep;
       setZoom((prev) => clampZoom(prev + delta));
     },
@@ -78,22 +147,19 @@ export default function FigureViewer({ image, onClose }: Props) {
 
   const downloadImage = useCallback(
     (format: DownloadFormat) => {
-      const url =
-        format === "png"
-          ? assetUrl(image.full_url)
-          : assetUrl(image.full_url).replace(/\.\w+$/, `.${format}`);
+      const base = assetUrl(image.full_url).replace(/\.\w+$/, "");
+      const url = `${base}.${format}`;
       const link = document.createElement("a");
       link.href = url;
       link.download = `${image.name.replace(/\.\w+$/, "")}.${format}`;
       link.click();
-      setShowDownloadMenu(false);
     },
     [image]
   );
 
-  const dataTableUrl = image.path
-    ? apiUrl(`/api/jobs/${extractJobId(image)}/download/${guessTablePath(image)}`)
-    : null;
+  const jobId = extractJobId(image);
+  const interactiveTarget = figureToInteractiveTarget(image.name);
+  const interactiveUrl = buildInteractiveUrl(jobId, interactiveTarget);
 
   const handleKey = useCallback(
     (e: KeyboardEvent) => {
@@ -109,11 +175,18 @@ export default function FigureViewer({ image, onClose }: Props) {
   useEffect(() => {
     document.addEventListener("keydown", handleKey);
     document.body.style.overflow = "hidden";
+    const canvas = canvasRef.current;
+    if (canvas) {
+      canvas.addEventListener("wheel", handleWheel, { passive: false });
+    }
     return () => {
       document.removeEventListener("keydown", handleKey);
       document.body.style.overflow = "";
+      if (canvas) {
+        canvas.removeEventListener("wheel", handleWheel);
+      }
     };
-  }, [handleKey]);
+  }, [handleKey, handleWheel]);
 
   return (
     <div className="fv-overlay" onClick={onClose}>
@@ -134,37 +207,11 @@ export default function FigureViewer({ image, onClose }: Props) {
             <button className="fv-tool-btn" title="Reset (0)" onClick={resetView}>
               <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M2 2v5h5M14 14v-5H9" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/><path d="M13.5 6.5A5.5 5.5 0 0 0 3.4 4.9L2 7M2.5 9.5a5.5 5.5 0 0 0 10.1 1.6L14 9" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/></svg>
             </button>
-          </div>
-          <div className="fv-toolbar-right">
-            {dataTableUrl && (
-              <a className="fv-tool-btn fv-data-link" href={dataTableUrl} title="Download source data (CSV)" download>
-                <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><rect x="1" y="1" width="6" height="5" rx="1" stroke="currentColor" strokeWidth="1.2"/><rect x="9" y="1" width="6" height="5" rx="1" stroke="currentColor" strokeWidth="1.2"/><rect x="1" y="9" width="6" height="6" rx="1" stroke="currentColor" strokeWidth="1.2"/><rect x="9" y="10" width="6" height="5" rx="1" stroke="currentColor" strokeWidth="1.2"/></svg>
-                Data
-              </a>
-            )}
-            {image.interactive_url && (
-              <a className="fv-tool-btn fv-data-link" href={assetUrl(image.interactive_url)} title="Open interactive figure" target="_blank" rel="noopener noreferrer">
-                <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M3 2.5h10A1.5 1.5 0 0 1 14.5 4v8a1.5 1.5 0 0 1-1.5 1.5H3A1.5 1.5 0 0 1 1.5 12V4A1.5 1.5 0 0 1 3 2.5Z" stroke="currentColor" strokeWidth="1.3"/><path d="M4.5 10.5 7 8 4.5 5.5M8 10.5h3.5" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round"/></svg>
-                Interactive
-              </a>
-            )}
-            <div className="fv-download-wrap">
-              <button className="fv-tool-btn" title="Download" onClick={() => setShowDownloadMenu(!showDownloadMenu)}>
-                <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M8 1v10M4 7l4 4 4-4M2 13v1a1 1 0 001 1h10a1 1 0 001-1v-1" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/></svg>
-              </button>
-              {showDownloadMenu && (
-                <div className="fv-download-menu">
-                  {(["png", "svg", "pdf"] as DownloadFormat[]).map((fmt) => (
-                    <button key={fmt} className="fv-download-item" onClick={() => downloadImage(fmt)}>
-                      {fmt.toUpperCase()}
-                    </button>
-                  ))}
-                </div>
-              )}
-            </div>
             <button className="fv-tool-btn" title="Fullscreen (F)" onClick={toggleFullscreen}>
               <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M2 5V2h3M11 2h3v3M14 11v3h-3M5 14H2v-3" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/></svg>
             </button>
+          </div>
+          <div className="fv-toolbar-right">
             <button className="fv-close-btn" title="Close (Esc)" onClick={onClose}>
               <svg width="18" height="18" viewBox="0 0 18 18" fill="none"><path d="M4 4l10 10M14 4L4 14" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"/></svg>
             </button>
@@ -176,7 +223,6 @@ export default function FigureViewer({ image, onClose }: Props) {
           <div
             className={`fv-canvas${isDragging ? " fv-dragging" : ""}`}
             ref={canvasRef}
-            onWheel={handleWheel}
             onMouseDown={handleMouseDown}
             onMouseMove={handleMouseMove}
             onMouseUp={handleMouseUp}
@@ -200,7 +246,45 @@ export default function FigureViewer({ image, onClose }: Props) {
             )}
           </div>
 
-          <ControlPanel image={image} />
+          {/* Right-side action panel */}
+          <div className="fv-action-panel">
+            <div className="fv-action-section">
+              <h3 className="fv-action-title">Download</h3>
+              <button className="fv-action-btn fv-dl-png" onClick={() => downloadImage("png")} title="Download PNG image">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+                <span>PNG<span className="fv-action-sub">Raster image</span></span>
+              </button>
+              <button className="fv-action-btn fv-dl-svg" onClick={() => downloadImage("svg")} title="Download SVG image">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+                <span>SVG<span className="fv-action-sub">Vector image</span></span>
+              </button>
+              <button className="fv-action-btn fv-dl-pdf" onClick={() => downloadImage("pdf")} title="Download PDF image">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+                <span>PDF<span className="fv-action-sub">Print-ready</span></span>
+              </button>
+            </div>
+
+            <div className="fv-action-section">
+              <h3 className="fv-action-title">Explore</h3>
+              {interactiveUrl ? (
+                <a
+                  className="fv-action-btn fv-interactive-btn"
+                  href={interactiveUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  title="Open interactive chart in new window"
+                >
+                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="2" y="3" width="20" height="14" rx="2" ry="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
+                  <span>Interactive<span className="fv-action-sub">Explore &amp; analyze</span></span>
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" className="fv-external-icon"><line x1="7" y1="17" x2="17" y2="7"/><polyline points="7 7 17 7 17 17"/></svg>
+                </a>
+              ) : (
+                <p className="fv-action-disabled">Interactive view not available for this figure type.</p>
+              )}
+            </div>
+
+            <ControlPanel image={image} />
+          </div>
         </div>
       </div>
     </div>
@@ -210,15 +294,4 @@ export default function FigureViewer({ image, onClose }: Props) {
 function extractJobId(image: ImageInfo): string {
   const match = image.full_url?.match(/\/api\/jobs\/([^/]+)\//);
   return match ? match[1] : "";
-}
-
-function guessTablePath(image: ImageInfo): string {
-  const stem = image.name.replace(/\.\w+$/, "").toLowerCase();
-  if (stem.includes("volcano") || stem.includes("deg")) return "outputs/deg_results.csv";
-  if (stem.includes("module")) return "outputs/T09_Module_Metabolite_Association.csv";
-  if (stem.includes("network") || stem.includes("circos")) return "outputs/T03_High_Confidence_Network.csv";
-  if (stem.includes("association") || stem.includes("regression")) return "outputs/T01_Metabolite_Gene_Scoring_Table.csv";
-  if (stem.includes("dem")) return "outputs/differential_metabolite_counts.csv";
-  if (stem.includes("union")) return "outputs/union_significant_metabolites.csv";
-  return "outputs/OmicsPrism_results.zip";
 }

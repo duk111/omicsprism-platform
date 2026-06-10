@@ -283,6 +283,7 @@ def _run_differential_job(
             n_cpus=8,
         )
     report(85, "Generating differential results")
+    _generate_deg_figure_data(output_dir, job.params)
     _zip_directory(output_dir, output_dir / "OmicsPrism_results.zip")
     report(100, "Analysis complete")
 
@@ -325,6 +326,7 @@ def _run_dem_job(
             n_orthogonal_components=int(job.params.get("n_orthogonal_components") or 1),
         )
     report(85, "Generating DEM results")
+    _generate_dem_figure_data(output_dir, job.params)
     _zip_directory(output_dir, output_dir / "OmicsPrism_results.zip")
     report(100, "Analysis complete")
 
@@ -424,6 +426,203 @@ def _progress_heartbeat(
         stop.set()
         thread.join(timeout=5.0)
 
+def _write_figure_data(out_dir: Path, page_id: str, payload: dict) -> None:
+    """Write a figure_data JSON for the given interactive page ID."""
+    import json
+    figure_data_dir = out_dir / "figure_data"
+    figure_data_dir.mkdir(parents=True, exist_ok=True)
+    (figure_data_dir / f"{page_id}.json").write_text(
+        json.dumps(payload, ensure_ascii=False, default=str), encoding="utf-8"
+    )
 
 
+def _generate_deg_figure_data(out_dir: Path, params: dict) -> None:
+    """Generate figure_data JSON files for DEG (differential gene expression) analysis."""
+    import json
+    import pandas as pd
+    import numpy as np
 
+    padj_cutoff = float(params.get("padj_cutoff") or 0.05)
+    log2fc_cutoff = float(params.get("log2fc_cutoff") or 1.0)
+
+    # Collect all contrast CSV files
+    volcano_traces_by_contrast: dict[str, list] = {}
+    for csv_path in sorted(out_dir.glob("*.all.csv")):
+        contrast = csv_path.stem.replace(".all", "")
+        try:
+            df = pd.read_csv(csv_path)
+        except Exception:
+            continue
+
+        required = {"log2FoldChange", "padj"}
+        if not required.issubset(df.columns):
+            continue
+
+        gene_col = next((c for c in ("gene_id", "gene", "Gene") if c in df.columns), None)
+        df["_gene"] = df[gene_col].astype(str) if gene_col else df.index.astype(str)
+
+        min_pos = float(df.loc[df["padj"] > 0, "padj"].min()) if (df["padj"] > 0).any() else 1e-300
+        df["_neg_log10"] = -np.log10(df["padj"].clip(lower=min_pos).fillna(1.0))
+        df["_sig"] = (df["padj"].notna() & (df["padj"] < padj_cutoff))
+        df["_status"] = "Non-significant"
+        df.loc[df["_sig"] & (df["log2FoldChange"] >= log2fc_cutoff), "_status"] = "Up"
+        df.loc[df["_sig"] & (df["log2FoldChange"] <= -log2fc_cutoff), "_status"] = "Down"
+
+        color_map = {"Up": "#C53030", "Down": "#2B6CB0", "Non-significant": "#B8B8B8"}
+        traces = []
+        for status in ("Non-significant", "Down", "Up"):
+            sub = df[df["_status"] == status]
+            if sub.empty:
+                continue
+            traces.append({
+                "type": "scatter", "mode": "markers", "name": status,
+                "x": sub["log2FoldChange"].tolist(), "y": sub["_neg_log10"].tolist(),
+                "text": sub["_gene"].tolist(), "hoverinfo": "text+x+y",
+                "marker": {"size": 4, "color": color_map[status], "opacity": 0.7},
+            })
+        volcano_traces_by_contrast[contrast] = traces
+
+    if not volcano_traces_by_contrast:
+        return
+
+    contrasts = list(volcano_traces_by_contrast.keys())
+    first = contrasts[0]
+
+    # Find static PNG for the first contrast's volcano
+    png_path = None
+    for p in (out_dir / "plots" / "volcano").glob(f"{first}.volcano.png"):
+        png_path = f"plots/volcano/{p.name}"
+        break
+
+    volcano_payload = {
+        "figure_id": "deg_volcano",
+        "title": "Volcano Plot — Differential Gene Expression",
+        "chart_type": "volcano",
+        "interactive_page_id": "volcano",
+        "static_files": {"png": png_path, "svg": None, "pdf": None},
+        "plotly_spec": {
+            "data": volcano_traces_by_contrast[first],
+            "layout": {
+                "xaxis": {"title": "log2 Fold Change"},
+                "yaxis": {"title": "-log10(adjusted p-value)"},
+                "showlegend": True,
+                "shapes": [
+                    {"type": "line", "x0": log2fc_cutoff, "x1": log2fc_cutoff,
+                     "y0": 0, "y1": 1, "yref": "paper",
+                     "line": {"color": "#aaa", "dash": "dash", "width": 1}},
+                    {"type": "line", "x0": -log2fc_cutoff, "x1": -log2fc_cutoff,
+                     "y0": 0, "y1": 1, "yref": "paper",
+                     "line": {"color": "#aaa", "dash": "dash", "width": 1}},
+                    {"type": "line", "x0": 0, "x1": 1, "xref": "paper",
+                     "y0": -np.log10(padj_cutoff), "y1": -np.log10(padj_cutoff),
+                     "line": {"color": "#aaa", "dash": "dash", "width": 1}},
+                ],
+            },
+            "config": {"displayModeBar": True, "displaylogo": False, "responsive": True},
+            "all_traces": volcano_traces_by_contrast,
+        },
+        "default_state": {
+            "contrast": first,
+            "log2fc_threshold": log2fc_cutoff,
+            "padj_threshold": padj_cutoff,
+        },
+        "available_states": {"contrast": contrasts},
+        "style": {},
+    }
+    _write_figure_data(out_dir, "volcano", volcano_payload)
+
+
+def _generate_dem_figure_data(out_dir: Path, params: dict) -> None:
+    """Generate figure_data JSON files for DEM (differential expression of metabolites) analysis."""
+    import json
+    import pandas as pd
+    import numpy as np
+
+    padj_cutoff = float(params.get("padj_cutoff") or 0.05)
+    log2fc_cutoff = float(params.get("log2fc_cutoff") or 1.0)
+
+    # DEM outputs *.all.csv similarly to DEG
+    volcano_traces_by_contrast: dict[str, list] = {}
+    for csv_path in sorted(out_dir.glob("*.all.csv")):
+        contrast = csv_path.stem.replace(".all", "")
+        try:
+            df = pd.read_csv(csv_path)
+        except Exception:
+            continue
+
+        fc_col = next((c for c in ("log2FoldChange", "log2FC", "Log2FC") if c in df.columns), None)
+        padj_col = next((c for c in ("padj", "adj.P.Val", "FDR") if c in df.columns), None)
+        if fc_col is None or padj_col is None:
+            continue
+
+        feat_col = next((c for c in ("metabolite_id", "metabolite", "Metabolite", "feature") if c in df.columns), None)
+        df["_feat"] = df[feat_col].astype(str) if feat_col else df.index.astype(str)
+
+        min_pos = float(df.loc[df[padj_col] > 0, padj_col].min()) if (df[padj_col] > 0).any() else 1e-300
+        df["_neg_log10"] = -np.log10(df[padj_col].clip(lower=min_pos).fillna(1.0))
+        df["_sig"] = df[padj_col].notna() & (df[padj_col] < padj_cutoff)
+        df["_status"] = "Non-significant"
+        df.loc[df["_sig"] & (df[fc_col] >= log2fc_cutoff), "_status"] = "Up"
+        df.loc[df["_sig"] & (df[fc_col] <= -log2fc_cutoff), "_status"] = "Down"
+
+        color_map = {"Up": "#C53030", "Down": "#2B6CB0", "Non-significant": "#B8B8B8"}
+        traces = []
+        for status in ("Non-significant", "Down", "Up"):
+            sub = df[df["_status"] == status]
+            if sub.empty:
+                continue
+            traces.append({
+                "type": "scatter", "mode": "markers", "name": status,
+                "x": sub[fc_col].tolist(), "y": sub["_neg_log10"].tolist(),
+                "text": sub["_feat"].tolist(), "hoverinfo": "text+x+y",
+                "marker": {"size": 4, "color": color_map[status], "opacity": 0.7},
+            })
+        volcano_traces_by_contrast[contrast] = traces
+
+    if not volcano_traces_by_contrast:
+        return
+
+    contrasts = list(volcano_traces_by_contrast.keys())
+    first = contrasts[0]
+
+    png_path = None
+    for p in (out_dir / "plots" / "volcano").glob(f"{first}.volcano.png"):
+        png_path = f"plots/volcano/{p.name}"
+        break
+
+    volcano_payload = {
+        "figure_id": "dem_volcano",
+        "title": "Volcano Plot — Differential Metabolite Expression",
+        "chart_type": "volcano",
+        "interactive_page_id": "volcano",
+        "static_files": {"png": png_path, "svg": None, "pdf": None},
+        "plotly_spec": {
+            "data": volcano_traces_by_contrast[first],
+            "layout": {
+                "xaxis": {"title": "log2 Fold Change"},
+                "yaxis": {"title": "-log10(adjusted p-value)"},
+                "showlegend": True,
+                "shapes": [
+                    {"type": "line", "x0": log2fc_cutoff, "x1": log2fc_cutoff,
+                     "y0": 0, "y1": 1, "yref": "paper",
+                     "line": {"color": "#aaa", "dash": "dash", "width": 1}},
+                    {"type": "line", "x0": -log2fc_cutoff, "x1": -log2fc_cutoff,
+                     "y0": 0, "y1": 1, "yref": "paper",
+                     "line": {"color": "#aaa", "dash": "dash", "width": 1}},
+                    {"type": "line", "x0": 0, "x1": 1, "xref": "paper",
+                     "y0": -np.log10(padj_cutoff), "y1": -np.log10(padj_cutoff),
+                     "line": {"color": "#aaa", "dash": "dash", "width": 1}},
+                ],
+            },
+            "config": {"displayModeBar": True, "displaylogo": False, "responsive": True},
+            "all_traces": volcano_traces_by_contrast,
+        },
+        "default_state": {
+            "contrast": first,
+            "log2fc_threshold": log2fc_cutoff,
+            "padj_threshold": padj_cutoff,
+        },
+        "available_states": {"contrast": contrasts},
+        "style": {},
+    }
+    _write_figure_data(out_dir, "volcano", volcano_payload)
