@@ -90,6 +90,18 @@
   height: 100% !important;
 }
 
+.ip-heatmap-area .nsewdrag,
+.ip-heatmap-area .drag,
+.ip-heatmap-area .draglayer {
+  cursor: grab !important;
+}
+
+.ip-heatmap-area.is-panning .nsewdrag,
+.ip-heatmap-area.is-panning .drag,
+.ip-heatmap-area.is-panning .draglayer {
+  cursor: grabbing !important;
+}
+
 /* Controls sidebar */
 .ip-controls {
   width: 240px;
@@ -164,6 +176,36 @@
   color: #6b7280;
   min-width: 32px;
   text-align: right;
+}
+
+.ip-scatter-controls {
+  width: 300px;
+}
+
+.ip-violin-controls {
+  width: 280px;
+}
+
+.ip-panel-control {
+  border-top: 1px solid #e5e7eb;
+  padding-top: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.ip-panel-control h3 {
+  margin: 0 0 2px;
+  font-size: 0.82rem;
+  color: #111827;
+}
+
+.ip-empty-chart {
+  height: 100%;
+  display: grid;
+  place-items: center;
+  color: #6b7280;
+  font-size: 0.86rem;
 }
 
 /* Loading / Error */

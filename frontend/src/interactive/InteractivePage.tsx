@@ -17,7 +17,6 @@ export interface FigureData {
   tree_data?: Record<string, unknown>;
   upset_data?: Record<string, unknown>;
   ridge_data?: Record<string, unknown>;
-  bar_data?: unknown[];
   circos_data?: Record<string, unknown>;
 }
 

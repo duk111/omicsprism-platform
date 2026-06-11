@@ -527,10 +527,10 @@ function BubbleChart({ data, controls }: { data: FigureData; controls: ControlsA
                 return (
                   <g
                     key={`xlabel-${i}`}
-                    transform={`translate(${pad.left + i * cellW}, ${xTickLabelY}) rotate(-45)`}
+                    transform={`translate(${pad.left + i * cellW}, ${xTickLabelY}) rotate(45)`}
                   >
                     <text
-                      textAnchor="end"
+                      textAnchor="start"
                       fontSize={tickFontSize}
                       fill="#111827"
                     >

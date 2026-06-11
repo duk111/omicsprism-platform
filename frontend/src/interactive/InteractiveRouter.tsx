@@ -4,7 +4,6 @@ import { InteractiveHeatmap } from "./charts/InteractiveHeatmap";
 import { InteractiveBubble } from "./charts/InteractiveBubble";
 import { InteractiveScatterPanels } from "./charts/InteractiveScatterPanels";
 import { InteractiveViolinBox } from "./charts/InteractiveViolinBox";
-import { InteractiveBar } from "./charts/InteractiveBar";
 import { InteractiveRidge } from "./charts/InteractiveRidge";
 import { InteractiveLinePanels } from "./charts/InteractiveLinePanels";
 import { InteractiveUpSet } from "./charts/InteractiveUpSet";
@@ -25,11 +24,9 @@ const PAGE_MAP: Record<PageId, PageComponent> = {
   "bubble-heatmap": InteractiveBubble,
   "scatter-panels": InteractiveScatterPanels,
   "violin-box": InteractiveViolinBox,
-  "module-heatmap": InteractiveHeatmap,
   "corr-heatmap": InteractiveHeatmap,
   "line-panels": InteractiveLinePanels,
   "ridge": InteractiveRidge,
-  "bar-charts": InteractiveBar,
   "circos": InteractiveCircos,
   "volcano": InteractiveVolcano,
 };

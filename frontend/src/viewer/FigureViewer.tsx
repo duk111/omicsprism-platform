@@ -43,34 +43,36 @@ function figureToInteractiveTarget(filename: string): InteractiveTarget | null {
   if (n.includes("f12") || (n.includes("correlation") && n.includes("heatmap"))) return { pageId: "corr-heatmap", params: { view: "gene-metabolite" } };
   if (n.includes("f23") || (n.includes("module") && n.includes("metabolite") && n.includes("association") && n.includes("heatmap"))) return { pageId: "corr-heatmap", params: { view: "module-metabolite" } };
   // F13, F25
-  if (n.includes("f13") || (n.includes("pairs") && n.includes("gene"))) return { pageId: "scatter-panels" };
-  if (n.includes("f25") || (n.includes("regression") && n.includes("module"))) return { pageId: "scatter-panels" };
+  if (n.includes("f13") || (n.includes("pairs") && n.includes("gene"))) return { pageId: "scatter-panels", params: { panel_type: "gene-metabolite" } };
+  if (n.includes("f25") || (n.includes("regression") && n.includes("module"))) return { pageId: "scatter-panels", params: { panel_type: "module-metabolite" } };
   // F14, F21, F22
-  if (n.includes("f14") || (n.includes("violin") && n.includes("metabolite"))) return { pageId: "violin-box" };
-  if (n.includes("f21") || (n.includes("violin") && n.includes("eigengene"))) return { pageId: "violin-box" };
-  if (n.includes("f22") || n.includes("kme")) return { pageId: "violin-box" };
+  if (n.includes("f14") || (n.includes("violin") && n.includes("metabolite"))) return { pageId: "violin-box", params: { view: "metabolite" } };
+  if (n.includes("f21") || (n.includes("violin") && n.includes("eigengene"))) return { pageId: "violin-box", params: { view: "module" } };
+  if (n.includes("f22") || n.includes("kme")) return null;
   // F15, F16
-  if (n.includes("f15") || (n.includes("eigengene") && n.includes("heatmap") && !n.includes("group2"))) return { pageId: "module-heatmap" };
-  if (n.includes("f16") || (n.includes("eigengene") && n.includes("heatmap") && n.includes("group2"))) return { pageId: "module-heatmap" };
+  if (n.includes("f15") || (n.includes("eigengene") && n.includes("heatmap") && !n.includes("group2"))) return null;
+  if (n.includes("f16") || (n.includes("eigengene") && n.includes("heatmap") && n.includes("group2"))) return null;
   // F17, F18, F26
-  if (n.includes("f17") || (n.includes("zscore") && n.includes("line") && !n.includes("gene"))) return { pageId: "line-panels" };
-  if (n.includes("f18") || (n.includes("gene") && n.includes("zscore") && n.includes("line"))) return { pageId: "line-panels" };
+  if (n.includes("f17") || (n.includes("zscore") && n.includes("line") && !n.includes("gene"))) return null;
+  if (n.includes("f18") || (n.includes("gene") && n.includes("zscore") && n.includes("line"))) return null;
   if (n.includes("f26") || (n.includes("trend") && n.includes("panel"))) return { pageId: "line-panels" };
   // F19, F20
-  if (n.includes("f19") || n.includes("f20") || n.includes("ridge")) return { pageId: "ridge" };
+  if (n.includes("f19")) return null;
+  if (n.includes("f20") || n.includes("ridge")) return { pageId: "ridge" };
   // F27, F28
-  if (n.includes("f27") || n.includes("direction")) return { pageId: "bar-charts" };
-  if (n.includes("f28") || (n.includes("edgeweight") && n.includes("distribution"))) return { pageId: "bar-charts" };
+  if (n.includes("f27") || n.includes("direction")) return null;
+  if (n.includes("f28") || (n.includes("edgeweight") && n.includes("distribution"))) return null;
   // F29, F30
-  if (n.includes("f29") || n.includes("f30") || n.includes("circos") || n.includes("cnet")) return { pageId: "circos" };
+  if (n.includes("f29") || (n.includes("circos") && !n.includes("cnet"))) return { pageId: "circos", params: { layout: "circos" } };
+  if (n.includes("f30") || n.includes("cnet")) return { pageId: "circos", params: { layout: "cnet" } };
   // Fallback: detect by chart characteristics
   if (n.includes("volcano")) return { pageId: "volcano" };
   if (n.includes("pca") || n.includes("oplsda")) return { pageId: "pca", params: { source: "transcriptome", color_by: "group1", x_pc: "1", y_pc: "2" } };
   if (n.includes("heatmap")) return null;
-  if (n.includes("scatter") || n.includes("regression")) return { pageId: "scatter-panels" };
-  if (n.includes("violin") || n.includes("boxplot")) return { pageId: "violin-box" };
+  if (n.includes("scatter") || n.includes("regression")) return { pageId: "scatter-panels", params: { panel_type: "gene-metabolite" } };
+  if (n.includes("violin") || n.includes("boxplot")) return { pageId: "violin-box", params: { view: "metabolite" } };
   if (n.includes("ridge")) return { pageId: "ridge" };
-  if (n.includes("bar") || n.includes("count")) return { pageId: "bar-charts" };
+  if (n.includes("bar") || n.includes("count")) return null;
   return null;
 }
 
