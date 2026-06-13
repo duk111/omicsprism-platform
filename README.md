@@ -217,28 +217,32 @@ docker compose -p omicsprism ps
 curl -i http://127.0.0.1:18086/health
 ```
 
+If the reverse proxy connects from another host instead of the same server, set
+`API_BIND_HOST=0.0.0.0` in `.env` before recreating the containers. Keep
+`API_BIND_HOST=127.0.0.1` when nginx runs on the same server.
+
 Build the frontend static files:
 
 ```bash
 cd /www/omicsprism-deploy/omicsprism-platform
 npm install --prefix frontend
-VITE_PUBLIC_BASE_PATH=/api/wb/ VITE_API_BASE_PATH=/api/wb/api npm run build --prefix frontend
+VITE_PUBLIC_BASE_PATH=/omicsprism/ VITE_API_BASE_PATH=/omicsprism/api npm run build --prefix frontend
 ```
 
 Copy `frontend/dist` to the site directory managed by the host nginx panel.
 For example:
 
 ```bash
-rm -rf /www/wwwroot/omicsprism-wb/*
-cp -a frontend/dist/. /www/wwwroot/omicsprism-wb/
+rm -rf /www/nginx/nginx_html/html/omicsprism/*
+cp -a frontend/dist/. /www/nginx/nginx_html/html/omicsprism/
 ```
 
-The host nginx site should serve that directory under `/api/wb/` and proxy API
+The host nginx site should serve that directory under `/omicsprism/` and proxy API
 requests to the backend container port:
 
 ```nginx
-location ^~ /api/wb/api/ {
-    rewrite ^/api/wb/api/(.*)$ /api/$1 break;
+location ^~ /omicsprism/api/ {
+    rewrite ^/omicsprism/api/(.*)$ /api/$1 break;
     proxy_pass http://127.0.0.1:18086;
     proxy_set_header Host $host;
     proxy_set_header X-Real-IP $remote_addr;
@@ -250,14 +254,14 @@ location ^~ /api/wb/api/ {
     proxy_buffering off;
 }
 
-location = /api/wb/health {
-    rewrite ^/api/wb/health$ /health break;
+location = /omicsprism/health {
+    rewrite ^/omicsprism/health$ /health break;
     proxy_pass http://127.0.0.1:18086;
 }
 
-location ^~ /api/wb/ {
-    alias /www/wwwroot/omicsprism-wb/;
-    try_files $uri $uri/ /api/wb/index.html;
+location ^~ /omicsprism/ {
+    alias /www/nginx/nginx_html/html/omicsprism/;
+    try_files $uri $uri/ /omicsprism/index.html;
 }
 ```
 
