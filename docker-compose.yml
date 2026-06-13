@@ -61,6 +61,8 @@ services:
       context: ..
       dockerfile: omicsprism-platform/Dockerfile.backend
     restart: unless-stopped
+    ports:
+      - "127.0.0.1:${API_PORT:-18086}:8000"
     depends_on:
       postgres:
         condition: service_healthy
@@ -154,19 +156,6 @@ services:
     volumes:
       - app_data:/app/data
     command: python -m backend.housekeeping
-
-  frontend:
-    build:
-      context: .
-      dockerfile: Dockerfile.frontend
-      args:
-        VITE_PUBLIC_BASE_PATH: ${PUBLIC_BASE_PATH:-/api/wb/}
-        VITE_API_BASE_PATH: ${API_BASE_PATH:-/api/wb/api}
-    restart: unless-stopped
-    depends_on:
-      - api
-    ports:
-      - "${FRONTEND_PORT:-18085}:80"
 
 volumes:
   postgres_data:

@@ -76,7 +76,7 @@ python -m backend.worker
 curl http://localhost:8000/health
 ```
 
-## Docker Compose stack
+## Docker Compose backend stack
 
 The included `docker-compose.yml` starts:
 
@@ -85,9 +85,12 @@ The included `docker-compose.yml` starts:
 - `minio`
 - `api`
 - `worker`
-- `frontend`
+- `housekeeping`
 
-### Start the full stack
+The frontend is built as static files and served by the host nginx or server
+panel site directory. It is not started as a compose service by default.
+
+### Start the backend stack
 
 ```powershell
 copy .env.example .env
@@ -96,9 +99,8 @@ docker compose up --build
 
 URLs:
 
-- Frontend: `http://localhost:8080`
-- API: `http://localhost:8000`
-- MinIO console: `http://localhost:9001`
+- API: `http://127.0.0.1:18086`
+- Health check: `http://127.0.0.1:18086/health`
 
 ### Stop the stack
 
@@ -176,7 +178,7 @@ Use PostgreSQL, Redis, the worker, and object storage together.
 
 - API: `python -m uvicorn backend.app.main:app --host 0.0.0.0 --port 8000`
 - Worker: `python -m backend.worker`
-- Frontend: build and serve the static bundle, or use the compose nginx image
+- Frontend: build and serve `frontend/dist` from the host nginx site directory
 - PostgreSQL: persistent database
 - Redis: queue backend
 - S3/MinIO: result and input artifact storage
@@ -189,11 +191,74 @@ Use PostgreSQL, Redis, the worker, and object storage together.
 4. Set `OMICS_PRISM_FILE_STORAGE_BACKEND=s3`.
 5. Initialize the database schema.
 6. Initialize the object storage bucket.
-7. Start API, worker, and frontend.
+7. Start API, worker, and housekeeping.
 8. Run housekeeping from cron or a scheduler:
 
 ```powershell
 python -m backend.scripts.storage_housekeeping
+```
+
+### Static frontend plus Docker backend
+
+On the server, keep the source repositories next to each other:
+
+```bash
+/www/omicsprism-deploy/omicsprism
+/www/omicsprism-deploy/omicsprism-platform
+```
+
+Start or update the backend containers:
+
+```bash
+cd /www/omicsprism-deploy/omicsprism-platform
+cp .env.example .env  # first deployment only
+docker compose -p omicsprism up -d --build
+docker compose -p omicsprism ps
+curl -i http://127.0.0.1:18086/health
+```
+
+Build the frontend static files:
+
+```bash
+cd /www/omicsprism-deploy/omicsprism-platform
+npm install --prefix frontend
+VITE_PUBLIC_BASE_PATH=/api/wb/ VITE_API_BASE_PATH=/api/wb/api npm run build --prefix frontend
+```
+
+Copy `frontend/dist` to the site directory managed by the host nginx panel.
+For example:
+
+```bash
+rm -rf /www/wwwroot/omicsprism-wb/*
+cp -a frontend/dist/. /www/wwwroot/omicsprism-wb/
+```
+
+The host nginx site should serve that directory under `/api/wb/` and proxy API
+requests to the backend container port:
+
+```nginx
+location ^~ /api/wb/api/ {
+    rewrite ^/api/wb/api/(.*)$ /api/$1 break;
+    proxy_pass http://127.0.0.1:18086;
+    proxy_set_header Host $host;
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto $scheme;
+    client_max_body_size 500M;
+    proxy_read_timeout 3600s;
+    proxy_send_timeout 3600s;
+    proxy_buffering off;
+}
+
+location = /api/wb/health {
+    rewrite ^/api/wb/health$ /health break;
+    proxy_pass http://127.0.0.1:18086;
+}
+
+location ^~ /api/wb/ {
+    alias /www/wwwroot/omicsprism-wb/;
+    try_files $uri $uri/ /api/wb/index.html;
+}
 ```
 
 ## Environment variables
