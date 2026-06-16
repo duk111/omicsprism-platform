@@ -10,6 +10,7 @@ import { InteractiveUpSet } from "./charts/InteractiveUpSet";
 import { InteractiveDendrogram } from "./charts/InteractiveDendrogram";
 import { InteractiveCircos } from "./charts/InteractiveCircos";
 import { InteractiveVolcano } from "./charts/InteractiveVolcano";
+import { publicRelativePath, publicUrl } from "../api";
 import "./InteractivePage.css";
 
 type PageId = string;
@@ -33,7 +34,7 @@ const PAGE_MAP: Record<PageId, PageComponent> = {
 
 export function InteractiveRouter() {
   const { jobId, pageId } = useMemo(() => {
-    const parts = window.location.pathname.replace(/^\/+/, "").split("/");
+    const parts = publicRelativePath().replace(/^\/+/, "").split("/");
     // Expected pattern: /interactive/{jobId}/{pageId}
     return {
       jobId: parts[1] || "",
@@ -48,7 +49,7 @@ export function InteractiveRouter() {
       <div className="ip-error-page">
         <h1>Page not found</h1>
         <p>Interactive page &quot;{pageId}&quot; is not available.</p>
-        <p><a href="/">Return to OmicsPrism</a></p>
+        <p><a href={publicUrl("/")}>Return to OmicsPrism</a></p>
       </div>
     );
   }

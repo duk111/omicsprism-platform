@@ -13,6 +13,26 @@ export class ApiRequestError extends Error {
 }
 
 const API_BASE_PATH = normalizeBasePath(import.meta.env.VITE_API_BASE_PATH || "/api");
+const PUBLIC_BASE_PATH = normalizeBasePath(import.meta.env.BASE_URL || import.meta.env.VITE_PUBLIC_BASE_PATH || "/");
+
+export function publicUrl(path: string): string {
+  const cleanPath = path.startsWith("/") ? path : `/${path}`;
+  if (!PUBLIC_BASE_PATH) return cleanPath;
+  if (cleanPath === PUBLIC_BASE_PATH || cleanPath.startsWith(`${PUBLIC_BASE_PATH}/`)) {
+    return cleanPath;
+  }
+  return `${PUBLIC_BASE_PATH}${cleanPath}`;
+}
+
+export function publicRelativePath(): string {
+  const path = window.location.pathname;
+  if (!PUBLIC_BASE_PATH) return path;
+  if (path === PUBLIC_BASE_PATH) return "/";
+  if (path.startsWith(`${PUBLIC_BASE_PATH}/`)) {
+    return path.slice(PUBLIC_BASE_PATH.length) || "/";
+  }
+  return path;
+}
 
 export function apiUrl(path: string): string {
   const cleanPath = path.startsWith("/") ? path : `/${path}`;

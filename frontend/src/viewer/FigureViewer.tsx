@@ -1,6 +1,6 @@
 import { useState, useCallback, useRef, useEffect } from "react";
 import type { ImageInfo } from "../api-types";
-import { apiUrl, assetUrl } from "../api";
+import { apiUrl, assetUrl, publicUrl } from "../api";
 import { ControlPanel } from "./ControlPanel";
 import "./FigureViewer.css";
 
@@ -80,7 +80,7 @@ function buildInteractiveUrl(jobId: string, target: InteractiveTarget | null): s
   if (!jobId || !target) return null;
   const params = new URLSearchParams(target.params || {});
   const suffix = params.toString() ? `?${params.toString()}` : "";
-  return `/interactive/${jobId}/${target.pageId}${suffix}`;
+  return `${publicUrl(`/interactive/${jobId}/${target.pageId}`)}${suffix}`;
 }
 
 export default function FigureViewer({ image, onClose }: Props) {
