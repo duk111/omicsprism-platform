@@ -86,7 +86,14 @@ class RedisJobQueue:
                 import redis
             except ImportError as exc:  # pragma: no cover - dependency guard
                 raise RuntimeError("Install redis>=5.0.0 to use Redis job queue") from exc
-            self._client = redis.Redis.from_url(self.redis_url, decode_responses=True)
+            self._client = redis.Redis.from_url(
+                self.redis_url,
+                decode_responses=True,
+                socket_connect_timeout=10,
+                socket_timeout=30,
+                health_check_interval=30,
+                retry_on_timeout=True,
+            )
         return self._client
 
     def enqueue(self, job_id: str) -> None:
@@ -94,7 +101,14 @@ class RedisJobQueue:
         self.client.rpush(self.queue_name, job_id)
 
     def dequeue(self, timeout_seconds: int = 5) -> str | None:
-        item = self.client.blpop(self.queue_name, timeout=timeout_seconds)
+        try:
+            item = self.client.blpop(self.queue_name, timeout=timeout_seconds)
+        except Exception as exc:
+            if exc.__class__.__name__ == "TimeoutError" and exc.__class__.__module__.startswith("redis"):
+                LOG.warning("redis queue read timed out", extra={"event": "job.dequeue_timeout"})
+                self._client = None
+                return None
+            raise
         if not item:
             return None
         _queue, job_id = item
