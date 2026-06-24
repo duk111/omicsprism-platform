@@ -103,6 +103,98 @@ class LocalJsonJobRepository:
         temp_path.replace(path)
 
 
+class PostgresJobRepository:
+    def __init__(self, database_url: str) -> None:
+        self.database_url = database_url
+        self._ensure_schema()
+
+    def get(self, job_id: str) -> JobRecord:
+        with self._connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute("select payload from jobs where id = %s", (job_id,))
+                row = cur.fetchone()
+        if row is None:
+            raise HTTPException(status_code=404, detail="Job not found")
+        return JobRecord.model_validate(row[0])
+
+    def save(self, job: JobRecord) -> None:
+        try:
+            from psycopg.types.json import Jsonb
+        except ImportError as exc:  # pragma: no cover - dependency guard
+            raise RuntimeError("Install psycopg[binary]>=3.1.18 to use PostgreSQL storage") from exc
+        payload = job.model_dump(mode="json")
+        with self._connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    insert into jobs (
+                        id, project_id, owner_type, owner_id, status, analysis_type,
+                        created_at, updated_at, deleted_at, payload
+                    )
+                    values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    on conflict (id) do update set
+                        project_id = excluded.project_id,
+                        owner_type = excluded.owner_type,
+                        owner_id = excluded.owner_id,
+                        status = excluded.status,
+                        analysis_type = excluded.analysis_type,
+                        updated_at = excluded.updated_at,
+                        deleted_at = excluded.deleted_at,
+                        payload = excluded.payload
+                    """,
+                    (
+                        job.id,
+                        job.project_id,
+                        str(job.owner_type.value),
+                        job.owner_id,
+                        str(job.status.value),
+                        str(job.analysis_type.value),
+                        job.created_at,
+                        job.updated_at,
+                        job.deleted_at,
+                        Jsonb(payload),
+                    ),
+                )
+
+    def list(self, include_deleted: bool = False) -> list[JobRecord]:
+        where = "" if include_deleted else "where deleted_at is null"
+        with self._connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(f"select payload from jobs {where} order by created_at desc")
+                rows = cur.fetchall()
+        return [JobRecord.model_validate(row[0]) for row in rows]
+
+    def _connect(self):
+        try:
+            import psycopg
+        except ImportError as exc:  # pragma: no cover - dependency guard
+            raise RuntimeError("Install psycopg[binary]>=3.1.18 to use PostgreSQL storage") from exc
+        return psycopg.connect(self.database_url)
+
+    def _ensure_schema(self) -> None:
+        with self._connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    create table if not exists jobs (
+                        id text primary key,
+                        project_id text,
+                        owner_type text not null default 'user',
+                        owner_id text not null default '',
+                        status text not null,
+                        analysis_type text not null,
+                        created_at timestamptz not null,
+                        updated_at timestamptz not null,
+                        deleted_at timestamptz,
+                        payload jsonb not null
+                    )
+                    """
+                )
+                cur.execute("create index if not exists jobs_created_at_idx on jobs (created_at desc)")
+                cur.execute("create index if not exists jobs_owner_idx on jobs (owner_type, owner_id)")
+                cur.execute("create index if not exists jobs_deleted_at_idx on jobs (deleted_at)")
+
+
 class JobStorageService:
     def __init__(self, repository: JobRepository, audit: AuditService | None = None) -> None:
         self.repository = repository

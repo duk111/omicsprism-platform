@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from .job_execution import JobExecutor, LocalThreadJobExecutor, OmicsPrismJobRunner, RedisJobExecutor, RedisJobQueue
-from .job_store import JobStorageService, LocalJsonJobRepository
+from .job_store import JobStorageService, LocalJsonJobRepository, PostgresJobRepository
 from .storage_service import FileStorageService
 from .settings import AppSettings
 
@@ -27,7 +27,10 @@ def create_context(
 ) -> AppContext:
     files = FileStorageService(settings)
 
-    job_repository = LocalJsonJobRepository(settings.runs_dir)
+    if settings.storage_backend == "postgres":
+        job_repository = PostgresJobRepository(settings.database_url)
+    else:
+        job_repository = LocalJsonJobRepository(settings.runs_dir)
     job_store = JobStorageService(job_repository)
     files.attach_job_store(job_store)
 
