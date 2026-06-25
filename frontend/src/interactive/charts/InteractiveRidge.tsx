@@ -1,4 +1,6 @@
+import { useRef, useEffect } from "react";
 import Plot from "react-plotly.js";
+import PlotlyLib from "plotly.js-dist-min";
 import { InteractivePageShell, type FigureData, type ControlsAPI } from "../InteractivePage";
 
 interface Props { jobId: string; pageId: string; }
@@ -36,6 +38,23 @@ function RidgeChart({ data, controls }: { data: FigureData; controls: ControlsAP
   const state = controls.state;
   const visibleGroups = normalizeVisibleGroups(state.visible_groups, groupOrder);
   const visibleSet = new Set(visibleGroups);
+  const chartRef = useRef<HTMLDivElement>(null);
+  const filename = (data.title || data.figure_id || "ridge").replace(/\s+/g, "_");
+
+  const { setDownloadHandlers } = controls;
+  useEffect(() => {
+    setDownloadHandlers(
+      () => {
+        const el = chartRef.current?.querySelector(".js-plotly-plot") as HTMLElement | null;
+        if (el) PlotlyLib.downloadImage(el, { format: "png", filename });
+      },
+      () => {
+        const el = chartRef.current?.querySelector(".js-plotly-plot") as HTMLElement | null;
+        if (el) PlotlyLib.downloadImage(el, { format: "svg", filename });
+      },
+    );
+    return () => setDownloadHandlers(null, null);
+  }, [setDownloadHandlers, filename]);
 
   const traces: Plotly.Data[] = [];
   ridges.forEach((ridge, idx) => {
@@ -117,7 +136,7 @@ function RidgeChart({ data, controls }: { data: FigureData; controls: ControlsAP
   return (
     <>
       <div className="ip-chart">
-        <div className="ip-chart-area">
+        <div className="ip-chart-area" ref={chartRef}>
           {traces.length > 0 ? (
             <Plot
               data={traces}

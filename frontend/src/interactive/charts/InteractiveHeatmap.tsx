@@ -1,5 +1,6 @@
 import { useMemo, useRef, useState, useCallback, useEffect } from "react";
 import Plot from "react-plotly.js";
+import PlotlyLib from "plotly.js-dist-min";
 import { InteractivePageShell, type FigureData, type ControlsAPI } from "../InteractivePage";
 
 interface Props { jobId: string; pageId: string; }
@@ -242,6 +243,22 @@ function HeatmapChart({ data, controls }: { data: FigureData; controls: Controls
     el.addEventListener("wheel", preventScroll, { passive: false });
     return () => el.removeEventListener("wheel", preventScroll);
   }, []);
+
+  const heatmapFilename = (data.title || data.figure_id || "heatmap").replace(/\s+/g, "_");
+  const { setDownloadHandlers: setHmDownloadHandlers } = controls;
+  useEffect(() => {
+    setHmDownloadHandlers(
+      () => {
+        const el = containerRef.current?.querySelector(".js-plotly-plot") as HTMLElement | null;
+        if (el) PlotlyLib.downloadImage(el, { format: "png", filename: heatmapFilename });
+      },
+      () => {
+        const el = containerRef.current?.querySelector(".js-plotly-plot") as HTMLElement | null;
+        if (el) PlotlyLib.downloadImage(el, { format: "svg", filename: heatmapFilename });
+      },
+    );
+    return () => setHmDownloadHandlers(null, null);
+  }, [setHmDownloadHandlers, heatmapFilename]);
 
   if (viewUnavailable) {
     return (

@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback, useMemo, type ReactNode } from "react";
+import { useEffect, useState, useCallback, useMemo, useRef, type ReactNode } from "react";
 import { apiFetchJson, ApiRequestError } from "../api";
 
 export interface FigureData {
@@ -33,7 +33,7 @@ export interface ControlsAPI {
   available: Record<string, unknown[]>;
   downloadPNG: () => void;
   downloadSVG: () => void;
-  downloadPDF: () => void;
+  setDownloadHandlers: (png: (() => void) | null, svg: (() => void) | null) => void;
 }
 
 export function InteractivePageShell({ jobId, pageId, pageTitle, children }: Props) {
@@ -41,6 +41,8 @@ export function InteractivePageShell({ jobId, pageId, pageTitle, children }: Pro
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [controls, setControls] = useState<Record<string, unknown>>({});
+  const customPngRef = useRef<(() => void) | null>(null);
+  const customSvgRef = useRef<(() => void) | null>(null);
 
   useEffect(() => {
     let alive = true;
@@ -80,7 +82,13 @@ export function InteractivePageShell({ jobId, pageId, pageTitle, children }: Pro
     setControls(prev => ({ ...prev, [key]: value }));
   }, []);
 
+  const setDownloadHandlers = useCallback((png: (() => void) | null, svg: (() => void) | null) => {
+    customPngRef.current = png;
+    customSvgRef.current = svg;
+  }, []);
+
   const downloadPNG = useCallback(() => {
+    if (customPngRef.current) { customPngRef.current(); return; }
     if (!data?.static_files?.png) return;
     const link = document.createElement("a");
     link.href = `/api/jobs/${jobId}/download/${data.static_files.png}`;
@@ -89,18 +97,11 @@ export function InteractivePageShell({ jobId, pageId, pageTitle, children }: Pro
   }, [data, jobId, pageId]);
 
   const downloadSVG = useCallback(() => {
+    if (customSvgRef.current) { customSvgRef.current(); return; }
     if (!data?.static_files?.svg) return;
     const link = document.createElement("a");
     link.href = `/api/jobs/${jobId}/download/${data.static_files.svg}`;
     link.download = `${pageId}.svg`;
-    link.click();
-  }, [data, jobId, pageId]);
-
-  const downloadPDF = useCallback(() => {
-    if (!data?.static_files?.pdf) return;
-    const link = document.createElement("a");
-    link.href = `/api/jobs/${jobId}/download/${data.static_files.pdf}`;
-    link.download = `${pageId}.pdf`;
     link.click();
   }, [data, jobId, pageId]);
 
@@ -110,14 +111,13 @@ export function InteractivePageShell({ jobId, pageId, pageTitle, children }: Pro
     available: data?.available_states || {},
     downloadPNG,
     downloadSVG,
-    downloadPDF,
-  }), [controls, setControl, data, downloadPNG, downloadSVG, downloadPDF]);
+    setDownloadHandlers,
+  }), [controls, setControl, data, downloadPNG, downloadSVG, setDownloadHandlers]);
 
   if (loading) {
     return (
       <div className="ip-shell">
         <header className="ip-toolbar">
-          <a className="ip-back" href="javascript:window.close()">&larr; Back</a>
           <h1 className="ip-title">{pageTitle}</h1>
         </header>
         <div className="ip-loading">Loading figure data...</div>
@@ -129,7 +129,6 @@ export function InteractivePageShell({ jobId, pageId, pageTitle, children }: Pro
     return (
       <div className="ip-shell">
         <header className="ip-toolbar">
-          <a className="ip-back" href="javascript:window.close()">&larr; Back</a>
           <h1 className="ip-title">{pageTitle}</h1>
         </header>
         <div className="ip-error">
@@ -143,12 +142,10 @@ export function InteractivePageShell({ jobId, pageId, pageTitle, children }: Pro
   return (
     <div className="ip-shell">
       <header className="ip-toolbar">
-        <a className="ip-back" href="javascript:window.close()">&larr; Back</a>
         <h1 className="ip-title">{data.title || pageTitle}</h1>
         <div className="ip-toolbar-actions">
           <button className="ip-dl-btn" onClick={downloadPNG} title="Download PNG">PNG</button>
           <button className="ip-dl-btn" onClick={downloadSVG} title="Download SVG">SVG</button>
-          <button className="ip-dl-btn" onClick={downloadPDF} title="Download PDF">PDF</button>
         </div>
       </header>
       <div className="ip-body">

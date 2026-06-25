@@ -1,5 +1,6 @@
-import { useMemo } from "react";
+import { useMemo, useRef, useEffect } from "react";
 import Plot from "react-plotly.js";
+import PlotlyLib from "plotly.js-dist-min";
 import { InteractivePageShell, type FigureData, type ControlsAPI } from "../InteractivePage";
 
 interface Props { jobId: string; pageId: string; }
@@ -47,6 +48,23 @@ function PCAChart({ data, controls }: { data: FigureData; controls: ControlsAPI 
   const source = String(state.source || data.default_state?.source || Object.keys(datasets)[0] || "");
   const colorBy = String(state.color_by || data.default_state?.color_by || "group1");
   const dataset = datasets[source];
+  const chartRef = useRef<HTMLDivElement>(null);
+  const filename = (data.title || data.figure_id || "pca").replace(/\s+/g, "_");
+
+  const { setDownloadHandlers } = controls;
+  useEffect(() => {
+    setDownloadHandlers(
+      () => {
+        const el = chartRef.current?.querySelector(".js-plotly-plot") as HTMLElement | null;
+        if (el) PlotlyLib.downloadImage(el, { format: "png", filename });
+      },
+      () => {
+        const el = chartRef.current?.querySelector(".js-plotly-plot") as HTMLElement | null;
+        if (el) PlotlyLib.downloadImage(el, { format: "svg", filename });
+      },
+    );
+    return () => setDownloadHandlers(null, null);
+  }, [setDownloadHandlers, filename]);
 
   if (!dataset && Array.isArray(spec.data)) {
     return <LegacyPCAChart data={data} controls={controls} />;
@@ -73,7 +91,7 @@ function PCAChart({ data, controls }: { data: FigureData; controls: ControlsAPI 
   return (
     <>
       <div className="ip-chart">
-        <div className="ip-chart-area">
+        <div className="ip-chart-area" ref={chartRef}>
           <Plot
             data={traces}
             layout={{
@@ -161,6 +179,23 @@ function LegacyPCAChart({ data, controls }: { data: FigureData; controls: Contro
   const layout = (spec.layout || {}) as Partial<Plotly.Layout>;
   const available = data.available_states || {};
   const titleSource = source === "metabolome" ? "Metabolome" : "Transcriptome";
+  const chartRef = useRef<HTMLDivElement>(null);
+  const filename = (data.title || data.figure_id || "pca").replace(/\s+/g, "_");
+
+  const { setDownloadHandlers } = controls;
+  useEffect(() => {
+    setDownloadHandlers(
+      () => {
+        const el = chartRef.current?.querySelector(".js-plotly-plot") as HTMLElement | null;
+        if (el) PlotlyLib.downloadImage(el, { format: "png", filename });
+      },
+      () => {
+        const el = chartRef.current?.querySelector(".js-plotly-plot") as HTMLElement | null;
+        if (el) PlotlyLib.downloadImage(el, { format: "svg", filename });
+      },
+    );
+    return () => setDownloadHandlers(null, null);
+  }, [setDownloadHandlers, filename]);
   const traces = allTraces.map(trace => {
     const t = trace as Plotly.Data & { hovertemplate?: string };
     return {
@@ -172,7 +207,7 @@ function LegacyPCAChart({ data, controls }: { data: FigureData; controls: Contro
   return (
     <>
       <div className="ip-chart">
-        <div className="ip-chart-area">
+        <div className="ip-chart-area" ref={chartRef}>
           <Plot
             data={traces}
             layout={{

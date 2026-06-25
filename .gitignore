@@ -31,6 +31,9 @@ skills-lock.json
 .env.*
 !.env.example
 
+# 示例数据文件（仅本地开发用，不提交到仓库）
+frontend/public/examples/
+
 # 系统文件
 .DS_Store
 Thumbs.db

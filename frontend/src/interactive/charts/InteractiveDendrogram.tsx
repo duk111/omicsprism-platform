@@ -1,5 +1,6 @@
-import { useMemo, useRef, useState, useCallback } from "react";
+import { useMemo, useRef, useState, useCallback, useEffect } from "react";
 import { InteractivePageShell, type FigureData, type ControlsAPI } from "../InteractivePage";
+import { downloadSvg, downloadPng } from "../svgExport";
 
 interface Props { jobId: string; pageId: string; }
 
@@ -158,6 +159,17 @@ function DendrogramChart({ data, controls }: { data: FigureData; controls: Contr
     setHoveredBranch(null);
     setTooltip(prev => ({ ...prev, visible: false }));
   }, []);
+
+  // Register download handlers so toolbar PNG/SVG buttons export current view
+  const dendroFilename = (data.title || data.figure_id || "dendrogram").replace(/\s+/g, "_");
+  const { setDownloadHandlers } = controls;
+  useEffect(() => {
+    setDownloadHandlers(
+      () => { if (svgRef.current) downloadPng(svgRef.current, zoom, dendroFilename); },
+      () => { if (svgRef.current) downloadSvg(svgRef.current, zoom, dendroFilename); },
+    );
+    return () => setDownloadHandlers(null, null);
+  }, [setDownloadHandlers, dendroFilename, zoom]);
 
   // Determine which leaves belong to each branch for hover highlighting
   const branchLeafSet = useMemo(() => {

@@ -1,5 +1,6 @@
 import { useMemo, useRef, useState, useCallback, useEffect } from "react";
 import { InteractivePageShell, type FigureData, type ControlsAPI } from "../InteractivePage";
+import { downloadSvg, downloadPng } from "../svgExport";
 
 interface Props { jobId: string; pageId: string; }
 
@@ -386,6 +387,16 @@ function BubbleChart({ data, controls }: { data: FigureData; controls: ControlsA
     el.addEventListener("wheel", preventScroll, { passive: false });
     return () => el.removeEventListener("wheel", preventScroll);
   }, []);
+
+  const bubbleFilename = (data.title || data.figure_id || "bubble").replace(/\s+/g, "_");
+  const { setDownloadHandlers } = controls;
+  useEffect(() => {
+    setDownloadHandlers(
+      () => { if (svgRef.current) downloadPng(svgRef.current, zoom, bubbleFilename); },
+      () => { if (svgRef.current) downloadSvg(svgRef.current, zoom, bubbleFilename); },
+    );
+    return () => setDownloadHandlers(null, null);
+  }, [setDownloadHandlers, bubbleFilename, zoom]);
 
   return (
     <>

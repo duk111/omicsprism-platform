@@ -1,4 +1,6 @@
+import { useRef, useEffect } from "react";
 import Plot from "react-plotly.js";
+import PlotlyLib from "plotly.js-dist-min";
 import { InteractivePageShell, type FigureData, type ControlsAPI } from "../InteractivePage";
 
 interface Props { jobId: string; pageId: string; }
@@ -16,6 +18,23 @@ function VolcanoChart({ data, controls }: { data: FigureData; controls: Controls
   const allTraces = spec.all_traces as Record<string, Plotly.Data[]> | undefined;
   const available = data.available_states || {};
   const state = controls.state;
+  const chartRef = useRef<HTMLDivElement>(null);
+  const filename = (data.title || data.figure_id || "volcano").replace(/\s+/g, "_");
+
+  const { setDownloadHandlers } = controls;
+  useEffect(() => {
+    setDownloadHandlers(
+      () => {
+        const el = chartRef.current?.querySelector(".js-plotly-plot") as HTMLElement | null;
+        if (el) PlotlyLib.downloadImage(el, { format: "png", filename });
+      },
+      () => {
+        const el = chartRef.current?.querySelector(".js-plotly-plot") as HTMLElement | null;
+        if (el) PlotlyLib.downloadImage(el, { format: "svg", filename });
+      },
+    );
+    return () => setDownloadHandlers(null, null);
+  }, [setDownloadHandlers, filename]);
 
   const contrast = String(state.contrast || data.default_state?.contrast || "");
   const traces: Plotly.Data[] = allTraces?.[contrast] ?? (spec.data as Plotly.Data[] ?? []);
@@ -24,7 +43,7 @@ function VolcanoChart({ data, controls }: { data: FigureData; controls: Controls
   return (
     <>
       <div className="ip-chart">
-        <div className="ip-chart-area">
+        <div className="ip-chart-area" ref={chartRef}>
           <Plot
             data={traces}
             layout={{ ...(layout as Record<string, unknown>), autosize: true, hovermode: "closest" }}

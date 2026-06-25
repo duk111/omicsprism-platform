@@ -1,5 +1,6 @@
 import { useMemo, useRef, useState, useCallback, useEffect } from "react";
 import { InteractivePageShell, type FigureData, type ControlsAPI } from "../InteractivePage";
+import { downloadSvg, downloadPng } from "../svgExport";
 
 interface Props { jobId: string; pageId: string; }
 
@@ -28,6 +29,7 @@ export function InteractiveUpSet({ jobId, pageId }: Props) {
 
 function UpSetChart({ data, controls }: { data: FigureData; controls: ControlsAPI }) {
   const containerRef = useRef<HTMLDivElement>(null);
+  const svgRef = useRef<SVGSVGElement>(null);
   const [zoom, setZoom] = useState(1);
   const [tooltip, setTooltip] = useState<TooltipState>({ x: 0, y: 0, content: "", visible: false });
   const [isPanning, setIsPanning] = useState(false);
@@ -160,6 +162,16 @@ function UpSetChart({ data, controls }: { data: FigureData; controls: ControlsAP
     setTooltip(prev => ({ ...prev, visible: false }));
   }, []);
 
+  const upsetFilename = (data.title || data.figure_id || "upset").replace(/\s+/g, "_");
+  const { setDownloadHandlers } = controls;
+  useEffect(() => {
+    setDownloadHandlers(
+      () => { if (svgRef.current) downloadPng(svgRef.current, zoom, upsetFilename); },
+      () => { if (svgRef.current) downloadSvg(svgRef.current, zoom, upsetFilename); },
+    );
+    return () => setDownloadHandlers(null, null);
+  }, [setDownloadHandlers, upsetFilename, zoom]);
+
   return (
     <>
       <div className="ip-chart" style={{ minHeight: `${Math.min(640, totalH + 40)}px` }}>
@@ -181,6 +193,7 @@ function UpSetChart({ data, controls }: { data: FigureData; controls: ControlsAP
         >
           <div style={{ width: totalW * zoom, height: totalH * zoom, position: "relative" }}>
             <svg
+              ref={svgRef}
               width={totalW}
               height={totalH}
               viewBox={`0 0 ${totalW} ${totalH}`}

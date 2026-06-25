@@ -1,5 +1,6 @@
-import { useMemo } from "react";
+import { useMemo, useRef, useEffect } from "react";
 import Plot from "react-plotly.js";
+import PlotlyLib from "plotly.js-dist-min";
 import { InteractivePageShell, type FigureData, type ControlsAPI } from "../InteractivePage";
 
 interface Props { jobId: string; pageId: string; }
@@ -47,6 +48,24 @@ export function InteractiveLinePanels({ jobId, pageId }: Props) {
 function LinePanelsChart({ data, controls }: { data: FigureData; controls: ControlsAPI }) {
   const spec = data.plotly_spec || {};
   const state = controls.state;
+  const chartRef = useRef<HTMLDivElement>(null);
+  const filename = (data.title || data.figure_id || "line_panels").replace(/\s+/g, "_");
+
+  const { setDownloadHandlers } = controls;
+  useEffect(() => {
+    setDownloadHandlers(
+      () => {
+        const el = chartRef.current?.querySelector(".js-plotly-plot") as HTMLElement | null;
+        if (el) PlotlyLib.downloadImage(el, { format: "png", filename });
+      },
+      () => {
+        const el = chartRef.current?.querySelector(".js-plotly-plot") as HTMLElement | null;
+        if (el) PlotlyLib.downloadImage(el, { format: "svg", filename });
+      },
+    );
+    return () => setDownloadHandlers(null, null);
+  }, [setDownloadHandlers, filename]);
+
   const pairs = ((spec.pairs || []) as TrendPair[]).filter(pair => pair?.id);
   const pairById = useMemo(() => new Map(pairs.map(pair => [pair.id, pair])), [pairs]);
   const pairOptions = (((spec.pair_options || []) as PairOption[]).filter(option => option?.id).length > 0
@@ -100,7 +119,7 @@ function LinePanelsChart({ data, controls }: { data: FigureData; controls: Contr
   return (
     <>
       <div className="ip-chart" style={{ minHeight: `${chartHeight}px` }}>
-        <div className="ip-chart-area">
+        <div className="ip-chart-area" ref={chartRef}>
           {plotData.length > 0 ? (
             <Plot
               data={plotData}

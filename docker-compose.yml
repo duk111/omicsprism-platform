@@ -5,6 +5,8 @@ services:
   postgres:
     image: postgres:16-alpine
     restart: unless-stopped
+    ports:
+      - "${DATA_BIND_HOST:-127.0.0.1}:${POSTGRES_PUBLIC_PORT:-15432}:5432"
     environment:
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-omicsprism_prod_2024}

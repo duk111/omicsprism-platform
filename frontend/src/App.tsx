@@ -4,6 +4,7 @@ import { apiFetch, apiFetchJson, ApiRequestError, assetUrl } from "./api";
 import { formatSeconds } from "./app/jobs/progress";
 import { ANALYSIS_LABELS, STATUS_LABELS, formatDateTime } from "./app/jobs/jobUtils";
 import { useJobProgressSubscription } from "./app/jobs/useJobProgressSubscription";
+import { loadExample } from "./app/examples";
 import FigureViewer from "./viewer/FigureViewer";
 import "./App.css";
 
@@ -12,6 +13,8 @@ type View = { name: "form" } | { name: "progress"; jobId: string } | { name: "re
 export default function App() {
   const [view, setView] = useState<View>({ name: "form" });
   const [jobListKey, setJobListKey] = useState(0);
+  const [analysisTab, setAnalysisTab] = useState<"new" | "jobs">("new");
+  const [viewHistory, setViewHistory] = useState<View[]>([]);
 
   useEffect(() => {
     if (view.name === "form") document.title = "OmicsPrism";
@@ -19,30 +22,37 @@ export default function App() {
     else document.title = "Results · OmicsPrism";
   }, [view]);
 
-  function goForm() { setView({ name: "form" }); }
-  function goProgress(jobId: string) { setView({ name: "progress", jobId }); }
-  function goResults(jobId: string) { setView({ name: "results", jobId }); }
+  function goForm() { setView({ name: "form" }); setViewHistory([]); }
+  function goProgress(jobId: string) { setViewHistory(prev => [...prev, view]); setView({ name: "progress", jobId }); }
+  function goResults(jobId: string) { setViewHistory(prev => [...prev, view]); setView({ name: "results", jobId }); }
+  function goBack() {
+    if (viewHistory.length === 0) { setView({ name: "form" }); return; }
+    setView(viewHistory[viewHistory.length - 1]);
+    setViewHistory(prev => prev.slice(0, -1));
+  }
 
   return (
     <div className="platform-shell">
       <header className="topbar">
         <button className="brand" type="button" onClick={goForm}>OmicsPrism</button>
         <nav className="topnav">
-          <button type="button" className={view.name === "form" ? "active-nav" : ""} onClick={goForm}>New Analysis</button>
-          <button type="button" className={view.name === "form" ? "" : "active-nav"} onClick={() => { setView({ name: "form" }); setJobListKey(k => k + 1); }}>My Jobs</button>
+          <button type="button" className={view.name === "form" && analysisTab === "new" ? "active-nav" : ""} onClick={() => { goForm(); setAnalysisTab("new"); }}>New Analysis</button>
+          <button type="button" className={view.name === "form" && analysisTab === "jobs" ? "active-nav" : ""} onClick={() => { goForm(); setAnalysisTab("jobs"); setJobListKey(k => k + 1); }}>My Jobs</button>
         </nav>
       </header>
       {view.name === "form" && (
         <AnalysisPage
+          tab={analysisTab}
+          onTabChange={setAnalysisTab}
           onProgress={goProgress}
           jobListKey={jobListKey}
         />
       )}
       {view.name === "progress" && (
-        <ProgressPage jobId={view.jobId} onResults={() => goResults(view.jobId)} onBack={goForm} />
+        <ProgressPage jobId={view.jobId} onResults={() => goResults(view.jobId)} onBack={goBack} />
       )}
       {view.name === "results" && (
-        <ResultsPage jobId={view.jobId} onBack={goForm} onProgress={() => goProgress(view.jobId)} />
+        <ResultsPage jobId={view.jobId} onBack={goBack} onProgress={() => goProgress(view.jobId)} />
       )}
     </div>
   );
@@ -93,15 +103,14 @@ function DropZone({ label, required, file, onFile }: {
   );
 }
 
-function AnalysisPage({ onProgress, jobListKey }: { onProgress: (jobId: string) => void; jobListKey: number }) {
-  const [tab, setTab] = useState<"new" | "jobs">("new");
+function AnalysisPage({ tab, onTabChange, onProgress, jobListKey }: { tab: "new" | "jobs"; onTabChange: (t: "new" | "jobs") => void; onProgress: (jobId: string) => void; jobListKey: number }) {
   const [selectedType, setSelectedType] = useState<AnalysisType | null>(null);
 
   return (
     <main className="page narrow">
       <div className="tab-bar">
-        <button className={tab === "new" ? "primary" : "secondary"} type="button" onClick={() => setTab("new")}>New Analysis</button>
-        <button className={tab === "new" ? "secondary" : "primary"} type="button" onClick={() => setTab("jobs")}>My Jobs</button>
+        <button className={tab === "new" ? "primary" : "secondary"} type="button" onClick={() => onTabChange("new")}>New Analysis</button>
+        <button className={tab === "new" ? "secondary" : "primary"} type="button" onClick={() => onTabChange("jobs")}>My Jobs</button>
       </div>
       {tab === "new" && !selectedType && (
         <WelcomeCards onSelect={setSelectedType} />
@@ -190,6 +199,7 @@ function AnalysisForm({ initialType, onProgress, onBack }: {
     error: null,
     preflightResult: null,
   });
+  const [loadingExample, setLoadingExample] = useState(false);
 
   function setFile(name: string, file: File | null) {
     setState(s => ({ ...s, files: { ...s.files, [name]: file }, error: null, preflightResult: null }));
@@ -470,9 +480,25 @@ function AnalysisForm({ initialType, onProgress, onBack }: {
         {state.error && <p className="failure-text">{state.error}</p>}
         {state.preflightResult && <pre className="log-box">{state.preflightResult}</pre>}
 
-        <button className="primary" type="submit" disabled={state.submitting}>
-          {state.submitting ? "Submitting..." : "Start analysis"}
-        </button>
+        <div className="row-actions">
+          <button className="primary" type="submit" disabled={state.submitting || loadingExample}>
+            {state.submitting ? "Submitting..." : "Start analysis"}
+          </button>
+          <button
+            className="secondary"
+            type="button"
+            disabled={loadingExample || state.submitting}
+            onClick={async () => {
+              try {
+                await loadExample(state.analysisType, setFile, setParam, setLoadingExample);
+              } catch (err) {
+                setState(s => ({ ...s, error: err instanceof Error ? err.message : "Failed to load example data." }));
+              }
+            }}
+          >
+            {loadingExample ? "Loading example..." : "Upload example"}
+          </button>
+        </div>
       </form>
     </section>
   );

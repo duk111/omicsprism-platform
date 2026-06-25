@@ -1,5 +1,6 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { InteractivePageShell, type FigureData, type ControlsAPI } from "../InteractivePage";
+import { downloadSvg, downloadPng } from "../svgExport";
 
 interface Props { jobId: string; pageId: string; }
 
@@ -114,6 +115,23 @@ function CircosChart({ data, controls }: { data: FigureData; controls: ControlsA
   const layoutMode = availableLayouts.includes(requestedLayout) ? requestedLayout : availableLayouts[0] || "circos";
   const [tooltip, setTooltip] = useState<TooltipState | null>(null);
   const [selectedNodeId, setSelectedNodeId] = useState("");
+  const chartAreaRef = useRef<HTMLDivElement>(null);
+
+  const circosFilename = (data.title || data.figure_id || "circos").replace(/\s+/g, "_");
+  const { setDownloadHandlers } = controls;
+  useEffect(() => {
+    setDownloadHandlers(
+      () => {
+        const svg = chartAreaRef.current?.querySelector("svg") as SVGSVGElement | null;
+        if (svg) downloadPng(svg, 1, circosFilename);  // zoom=1: viewBox already encodes zoom/pan
+      },
+      () => {
+        const svg = chartAreaRef.current?.querySelector("svg") as SVGSVGElement | null;
+        if (svg) downloadSvg(svg, 1, circosFilename);
+      },
+    );
+    return () => setDownloadHandlers(null, null);
+  }, [setDownloadHandlers, circosFilename]);
 
   const stats = useMemo(() => {
     const layout = layouts[layoutMode];
@@ -126,7 +144,7 @@ function CircosChart({ data, controls }: { data: FigureData; controls: ControlsA
   return (
     <>
       <div className="ip-chart">
-        <div className="ip-chart-area" style={{ position: "relative", display: "grid", placeItems: "center", background: "#fff" }}>
+        <div className="ip-chart-area" ref={chartAreaRef} style={{ position: "relative", display: "grid", placeItems: "center", background: "#fff" }}>
           {layoutMode === "cnet" && layouts.cnet ? (
             <CnetSvg
               layout={layouts.cnet}
