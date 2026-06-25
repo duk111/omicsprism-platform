@@ -6,6 +6,8 @@
  * without preparing their own data first.
  */
 
+import { publicUrl } from "../api";
+
 interface ExampleConfig {
   files: Record<string, string>;
   params: Record<string, string | number | boolean>;
@@ -75,8 +77,9 @@ export async function loadExample(
     // Fetch all example files in parallel
     const entries = await Promise.all(
       Object.entries(config.files).map(async ([fieldName, url]) => {
-        const res = await fetch(url);
-        if (!res.ok) throw new Error(`Failed to load example file: ${url} (${res.status})`);
+        const resolvedUrl = publicUrl(url);
+        const res = await fetch(resolvedUrl);
+        if (!res.ok) throw new Error(`Failed to load example file: ${resolvedUrl} (${res.status})`);
         const blob = await res.blob();
         const filename = url.split("/").pop() || `${fieldName}.csv`;
         const file = new File([blob], filename, { type: "text/csv" });
