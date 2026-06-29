@@ -227,6 +227,8 @@ async def preflight_job(
     max_missing_fraction: Annotated[float | None, Form()] = None,
     impute_method: Annotated[str | None, Form()] = None,
     log_transform: Annotated[bool | None, Form()] = None,
+    trans_log2: Annotated[bool | None, Form()] = None,
+    metab_log2: Annotated[bool | None, Form()] = None,
     n_orthogonal_components: Annotated[int | None, Form()] = None,
 ) -> PreflightResponse:
     atype = _parse_analysis_type(analysis_type)
@@ -243,6 +245,7 @@ async def preflight_job(
         vip_cutoff=vip_cutoff, pseudocount=pseudocount,
         max_missing_fraction=max_missing_fraction,
         impute_method=impute_method, log_transform=log_transform,
+        trans_log2=trans_log2, metab_log2=metab_log2,
         n_orthogonal_components=n_orthogonal_components,
     )
     file_map = {name: f for name, f in {
@@ -280,6 +283,8 @@ async def create_job(
     max_missing_fraction: Annotated[float | None, Form()] = None,
     impute_method: Annotated[str | None, Form()] = None,
     log_transform: Annotated[bool | None, Form()] = None,
+    trans_log2: Annotated[bool | None, Form()] = None,
+    metab_log2: Annotated[bool | None, Form()] = None,
     n_orthogonal_components: Annotated[int | None, Form()] = None,
     request: Request = None,
 ) -> JobResponse:
@@ -298,6 +303,7 @@ async def create_job(
         vip_cutoff=vip_cutoff, pseudocount=pseudocount,
         max_missing_fraction=max_missing_fraction,
         impute_method=impute_method, log_transform=log_transform,
+        trans_log2=trans_log2, metab_log2=metab_log2,
         n_orthogonal_components=n_orthogonal_components,
     )
     files = {
@@ -568,6 +574,8 @@ def _build_job_params(
     max_missing_fraction: float | None,
     impute_method: str | None,
     log_transform: bool | None,
+    trans_log2: bool | None,
+    metab_log2: bool | None,
     n_orthogonal_components: int | None,
 ) -> JobParams:
     if atype == AnalysisType.DIFFERENTIAL:
@@ -639,6 +647,8 @@ def _build_job_params(
         "method": normalized_method,
         "fdr_cutoff": fdr_cutoff if fdr_cutoff is not None else 0.05,
         "enable_modules": True if enable_modules is None else bool(enable_modules),
+        "trans_log2": bool(trans_log2) if trans_log2 is not None else True,
+        "metab_log2": bool(metab_log2) if metab_log2 is not None else True,
     }
 
 

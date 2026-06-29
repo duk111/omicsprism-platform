@@ -32,6 +32,20 @@ class JobCancelled(RuntimeError):
     pass
 
 
+def _coerce_bool(value: object, default: bool) -> bool:
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"1", "true", "yes", "y", "on"}:
+            return True
+        if normalized in {"0", "false", "no", "n", "off", ""}:
+            return False
+    return bool(value)
+
+
 class JobExecutor(Protocol):
     """Submission boundary for background work.
 
@@ -334,8 +348,8 @@ def _run_dem_job(
             pseudocount=float(job.params.get("pseudocount") or 1e-9),
             max_missing_fraction=float(job.params.get("max_missing_fraction") or 0.5),
             impute_method=str(job.params.get("impute_method") or "half-min"),
-            normalize=bool(job.params.get("normalize", True)),
-            log_transform=bool(job.params.get("log_transform", True)),
+            normalize=_coerce_bool(job.params.get("normalize"), True),
+            log_transform=_coerce_bool(job.params.get("log_transform"), True),
             min_replicates=int(job.params.get("min_replicates") or 2),
             n_orthogonal_components=int(job.params.get("n_orthogonal_components") or 1),
         )
@@ -359,12 +373,19 @@ def _run_correlation_job(
         group_table_path=str(group_path),
         report_formats=("html",),
         generate_reports=True,
+        trans_log2=_coerce_bool(job.params.get("trans_log2"), True),
+        metab_log2=_coerce_bool(job.params.get("metab_log2"), True),
     )
 
     logger = get_logger(log_file=output_dir / "omicsprism.log", level=cfg.log_level)
     logger.info("Launching OmicsPrism platform job: %s", job.id)
     logger.info("Input directory: %s", input_dir.resolve())
     logger.info("Correlation method requested by UI: %s", job.params.get("method") or "spearman")
+    logger.info(
+        "Correlation preprocessing log2 flags: transcriptome=%s metabolome=%s",
+        cfg.trans_log2,
+        cfg.metab_log2,
+    )
 
     report(20, "Loading input data")
     with _progress_heartbeat(store, job.id, start_progress=20, ceiling_progress=39, step="Loading input data"):
@@ -380,6 +401,7 @@ def _run_correlation_job(
             missing_feature_threshold=cfg.missing_feature_threshold,
             knn_neighbors=cfg.knn_neighbors,
             trans_log2=cfg.trans_log2,
+            metab_log2=cfg.metab_log2,
         )
     report(60, "Running correlation analysis")
     with _progress_heartbeat(store, job.id, start_progress=60, ceiling_progress=84, step="Running correlation analysis"):

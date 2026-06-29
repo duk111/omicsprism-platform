@@ -9,8 +9,8 @@ export const STATUS_LABELS: Record<JobStatus, string> = {
 };
 
 export const ANALYSIS_LABELS: Record<AnalysisType, string> = {
-  differential: "Differential",
-  correlation: "Correlation",
+  differential: "DEG",
+  correlation: "GMA",
   dem: "DEM",
 };
 

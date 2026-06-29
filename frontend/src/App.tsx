@@ -9,11 +9,22 @@ import FigureViewer from "./viewer/FigureViewer";
 import "./App.css";
 
 type View = { name: "form" } | { name: "progress"; jobId: string } | { name: "results"; jobId: string };
+type AnalysisTab = "home" | "new" | "jobs";
+
+const FULL_ANALYSIS_LABELS: Record<AnalysisType, string> = {
+  differential: "Differentially Expressed Genes",
+  correlation: "Gene-Metabolite Association",
+  dem: "Differentially Expressed Metabolites",
+};
+
+const DEFAULT_GMA_TRANS_LOG2 = true;
+const DEFAULT_GMA_METAB_LOG2 = true;
 
 export default function App() {
   const [view, setView] = useState<View>({ name: "form" });
   const [jobListKey, setJobListKey] = useState(0);
-  const [analysisTab, setAnalysisTab] = useState<"new" | "jobs">("new");
+  const [analysisTab, setAnalysisTab] = useState<AnalysisTab>("home");
+  const [selectedAnalysisType, setSelectedAnalysisType] = useState<AnalysisType | null>(null);
   const [viewHistory, setViewHistory] = useState<View[]>([]);
 
   useEffect(() => {
@@ -23,6 +34,9 @@ export default function App() {
   }, [view]);
 
   function goForm() { setView({ name: "form" }); setViewHistory([]); }
+  function goHome() { goForm(); setAnalysisTab("home"); }
+  function goNew() { goForm(); setAnalysisTab("new"); }
+  function goJobs() { goForm(); setAnalysisTab("jobs"); setJobListKey(k => k + 1); }
   function goProgress(jobId: string) { setViewHistory(prev => [...prev, view]); setView({ name: "progress", jobId }); }
   function goResults(jobId: string) { setViewHistory(prev => [...prev, view]); setView({ name: "results", jobId }); }
   function goBack() {
@@ -34,22 +48,32 @@ export default function App() {
   return (
     <div className="platform-shell">
       <header className="topbar">
-        <button className="brand" type="button" onClick={goForm}>OmicsPrism</button>
+        <button className="brand" type="button" onClick={goHome}>OmicsPrism</button>
         <nav className="topnav">
-          <button type="button" className={view.name === "form" && analysisTab === "new" ? "active-nav" : ""} onClick={() => { goForm(); setAnalysisTab("new"); }}>New Analysis</button>
-          <button type="button" className={view.name === "form" && analysisTab === "jobs" ? "active-nav" : ""} onClick={() => { goForm(); setAnalysisTab("jobs"); setJobListKey(k => k + 1); }}>My Jobs</button>
+          <button type="button" className={view.name === "form" && analysisTab === "home" ? "active-nav" : ""} onClick={goHome}>Home</button>
+          <button type="button" className={(view.name === "form" && analysisTab === "new") || view.name === "progress" ? "active-nav" : ""} onClick={goNew}>New Analysis</button>
+          <button type="button" className={view.name === "form" && analysisTab === "jobs" ? "active-nav" : ""} onClick={goJobs}>My Jobs</button>
         </nav>
       </header>
       {view.name === "form" && (
         <AnalysisPage
           tab={analysisTab}
           onTabChange={setAnalysisTab}
+          selectedType={selectedAnalysisType}
+          onSelectType={(analysisType) => {
+            setSelectedAnalysisType(analysisType);
+            setAnalysisTab("new");
+          }}
+          onClearSelection={() => {
+            setSelectedAnalysisType(null);
+            setAnalysisTab("home");
+          }}
           onProgress={goProgress}
           jobListKey={jobListKey}
         />
       )}
       {view.name === "progress" && (
-        <ProgressPage jobId={view.jobId} onResults={() => goResults(view.jobId)} onBack={goBack} />
+        <ProgressPage jobId={view.jobId} onResults={() => goResults(view.jobId)} onBack={goBack} onHome={goHome} onNew={goNew} onJobs={goJobs} />
       )}
       {view.name === "results" && (
         <ResultsPage jobId={view.jobId} onBack={goBack} onProgress={() => goProgress(view.jobId)} />
@@ -103,24 +127,50 @@ function DropZone({ label, required, file, onFile }: {
   );
 }
 
-function AnalysisPage({ tab, onTabChange, onProgress, jobListKey }: { tab: "new" | "jobs"; onTabChange: (t: "new" | "jobs") => void; onProgress: (jobId: string) => void; jobListKey: number }) {
-  const [selectedType, setSelectedType] = useState<AnalysisType | null>(null);
+function AnalysisTabs({ tab, onTabChange }: { tab: AnalysisTab; onTabChange: (t: AnalysisTab) => void }) {
+  return (
+    <div className="tab-bar">
+      <button className={tab === "home" ? "primary" : "secondary"} type="button" onClick={() => onTabChange("home")}>Home</button>
+      <button className={tab === "new" ? "primary" : "secondary"} type="button" onClick={() => onTabChange("new")}>New Analysis</button>
+      <button className={tab === "jobs" ? "primary" : "secondary"} type="button" onClick={() => onTabChange("jobs")}>My Jobs</button>
+    </div>
+  );
+}
 
+function AnalysisPage({
+  tab,
+  onTabChange,
+  selectedType,
+  onSelectType,
+  onClearSelection,
+  onProgress,
+  jobListKey,
+}: {
+  tab: AnalysisTab;
+  onTabChange: (t: AnalysisTab) => void;
+  selectedType: AnalysisType | null;
+  onSelectType: (analysisType: AnalysisType) => void;
+  onClearSelection: () => void;
+  onProgress: (jobId: string) => void;
+  jobListKey: number;
+}) {
   return (
     <main className="page narrow">
-      <div className="tab-bar">
-        <button className={tab === "new" ? "primary" : "secondary"} type="button" onClick={() => onTabChange("new")}>New Analysis</button>
-        <button className={tab === "new" ? "secondary" : "primary"} type="button" onClick={() => onTabChange("jobs")}>My Jobs</button>
-      </div>
-      {tab === "new" && !selectedType && (
-        <WelcomeCards onSelect={setSelectedType} />
+      <AnalysisTabs tab={tab} onTabChange={onTabChange} />
+      {tab === "home" && (
+        <WelcomeCards onSelect={onSelectType} />
       )}
       {tab === "new" && selectedType && (
         <AnalysisForm
           initialType={selectedType}
           onProgress={onProgress}
-          onBack={() => setSelectedType(null)}
+          onBack={onClearSelection}
         />
+      )}
+      {tab === "new" && !selectedType && (
+        <section className="panel">
+          <p className="panel-note">Choose an analysis type from Home to start a new analysis.</p>
+        </section>
       )}
       {tab === "jobs" && <JobList key={jobListKey} onProgress={onProgress} />}
     </main>
@@ -138,19 +188,19 @@ function WelcomeCards({ onSelect }: { onSelect: (t: AnalysisType) => void }) {
       <div className="welcome-cards">
         <button className="welcome-card" type="button" onClick={() => onSelect("differential")}>
           <span className="welcome-card-icon">DEG</span>
-          <strong>Differential Expression</strong>
+          <strong>{FULL_ANALYSIS_LABELS.differential}</strong>
           <p>Compare gene expression between groups using DESeq2. Upload raw counts and sample metadata to identify differentially expressed genes with volcano plots and MA plots.</p>
           <span className="welcome-card-cta">Start &rarr;</span>
         </button>
         <button className="welcome-card" type="button" onClick={() => onSelect("correlation")}>
           <span className="welcome-card-icon">GMA</span>
-          <strong>Gene-Metabolite Association</strong>
+          <strong>{FULL_ANALYSIS_LABELS.correlation}</strong>
           <p>Discover relationships between transcriptome and metabolome. Three-way screening, ElasticNet + XGBoost modeling, RRA aggregation, WGCNA-style module detection, and interactive network visualizations.</p>
           <span className="welcome-card-cta">Start &rarr;</span>
         </button>
         <button className="welcome-card" type="button" onClick={() => onSelect("dem")}>
           <span className="welcome-card-icon">DEM</span>
-          <strong>Differential Metabolite Analysis</strong>
+          <strong>{FULL_ANALYSIS_LABELS.dem}</strong>
           <p>Identify differentially abundant metabolites between groups using OPLS-DA with VIP scoring. Upload metabolite abundance matrix and sample metadata for volcano plots, VIP bar plots, and multi-contrast comparison.</p>
           <span className="welcome-card-cta">Start &rarr;</span>
         </button>
@@ -213,6 +263,17 @@ function AnalysisForm({ initialType, onProgress, onBack }: {
     setState(s => ({ ...s, analysisType: t, files: {}, params: {}, error: null, preflightResult: null }));
   }
 
+  function validateContrastFields(compareField: string, sameFieldsValue: string): string | null {
+    const sameFields = sameFieldsValue
+      .split(",")
+      .map(field => field.trim())
+      .filter(Boolean);
+    if (sameFields.includes(compareField)) {
+      return "same_fields must not include compare_field. Use same_fields only for blocking variables such as line or batch.";
+    }
+    return null;
+  }
+
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     setState(s => ({ ...s, submitting: true, error: null }));
@@ -239,6 +300,11 @@ function AnalysisForm({ initialType, onProgress, onBack }: {
         setState(s => ({ ...s, submitting: false, error: "compare_field, tested_levels, and reference_level are required." }));
         return;
       }
+      const contrastFieldError = validateContrastFields(compareField, String(state.params.same_fields || ""));
+      if (contrastFieldError) {
+        setState(s => ({ ...s, submitting: false, error: contrastFieldError }));
+        return;
+      }
       formData.set("compare_field", compareField);
       formData.set("tested_levels", testedLevels);
       formData.set("reference_level", referenceLevel);
@@ -255,6 +321,11 @@ function AnalysisForm({ initialType, onProgress, onBack }: {
         setState(s => ({ ...s, submitting: false, error: "compare_field, tested_levels, and reference_level are required." }));
         return;
       }
+      const contrastFieldError = validateContrastFields(compareField, String(state.params.same_fields || ""));
+      if (contrastFieldError) {
+        setState(s => ({ ...s, submitting: false, error: contrastFieldError }));
+        return;
+      }
       formData.set("compare_field", compareField);
       formData.set("tested_levels", testedLevels);
       formData.set("reference_level", referenceLevel);
@@ -268,6 +339,9 @@ function AnalysisForm({ initialType, onProgress, onBack }: {
       formData.set("log_transform", String(state.params.log_transform ?? true));
       formData.set("min_replicates", String(state.params.min_replicates ?? 2));
       formData.set("n_orthogonal_components", String(state.params.n_orthogonal_components ?? 1));
+    } else if (state.analysisType === "correlation") {
+      formData.set("trans_log2", String(state.params.trans_log2 ?? DEFAULT_GMA_TRANS_LOG2));
+      formData.set("metab_log2", String(state.params.metab_log2 ?? DEFAULT_GMA_METAB_LOG2));
     } else {
     }
 
@@ -291,9 +365,7 @@ function AnalysisForm({ initialType, onProgress, onBack }: {
     <section className="panel">
       <div className="panel-head">
         <h1>{
-          state.analysisType === "differential" ? "Differential Expression" :
-          state.analysisType === "dem" ? "Differential Metabolite Analysis" :
-          "Gene-Metabolite Association"
+          FULL_ANALYSIS_LABELS[state.analysisType]
         }</h1>
         <button className="secondary" type="button" onClick={onBack}>Back</button>
       </div>
@@ -473,6 +545,30 @@ function AnalysisForm({ initialType, onProgress, onBack }: {
           </div>
         )}
 
+        {state.analysisType === "correlation" && (
+          <div className="field-group">
+            <h3>Correlation parameters</h3>
+            <div className="field-row">
+              <label className="field checkbox-field">
+                <input
+                  type="checkbox"
+                  checked={Boolean(state.params.trans_log2 ?? DEFAULT_GMA_TRANS_LOG2)}
+                  onChange={e => setParam("trans_log2", e.target.checked)}
+                />
+                <span>Log2 transform transcriptome</span>
+              </label>
+              <label className="field checkbox-field">
+                <input
+                  type="checkbox"
+                  checked={Boolean(state.params.metab_log2 ?? DEFAULT_GMA_METAB_LOG2)}
+                  onChange={e => setParam("metab_log2", e.target.checked)}
+                />
+                <span>Log2 transform metabolome</span>
+              </label>
+            </div>
+          </div>
+        )}
+
         {!isDEG && !isDEM && (
           <p className="panel-note">Analysis runs with default parameters (FDR 0.05, Spearman correlation, WGCNA module detection).</p>
         )}
@@ -618,7 +714,21 @@ function StageIndicator({ step, status }: { step: string; status: string }) {
   );
 }
 
-function ProgressPage({ jobId, onResults, onBack }: { jobId: string; onResults: () => void; onBack: () => void }) {
+function ProgressPage({
+  jobId,
+  onResults,
+  onBack,
+  onHome,
+  onNew,
+  onJobs,
+}: {
+  jobId: string;
+  onResults: () => void;
+  onBack: () => void;
+  onHome: () => void;
+  onNew: () => void;
+  onJobs: () => void;
+}) {
   const [job, setJob] = useState<JobResponse | null>(null);
   const [showCompletionPrompt, setShowCompletionPrompt] = useState(false);
   const [wasSucceeded, setWasSucceeded] = useState(false);
@@ -652,6 +762,7 @@ function ProgressPage({ jobId, onResults, onBack }: { jobId: string; onResults: 
   const step = progress?.progress_step ?? job?.progress_step ?? "Waiting";
   const remaining = progress?.estimated_remaining_seconds ?? job?.estimated_remaining_seconds ?? null;
   const elapsed = progress?.elapsed_seconds ?? job?.elapsed_seconds ?? null;
+  const progressTitle = job?.analysis_type ? FULL_ANALYSIS_LABELS[job.analysis_type] : "analysis";
   const renderedFailure = (progress?.status === "failed" || job?.status === "failed")
     ? (progress?.error ?? job?.error ?? "Analysis failed")
     : null;
@@ -666,11 +777,16 @@ function ProgressPage({ jobId, onResults, onBack }: { jobId: string; onResults: 
 
   return (
     <main className="page narrow">
+      <AnalysisTabs tab="new" onTabChange={(nextTab) => {
+        if (nextTab === "home") onHome();
+        else if (nextTab === "new") onNew();
+        else onJobs();
+      }} />
       <section className="panel">
         <div className="panel-head">
           <div>
             <p className="eyebrow">Job progress</p>
-            <h1>{job?.project_name ?? jobId}</h1>
+            <h1>{progressTitle}</h1>
           </div>
           <div>
             <span className={`status-pill ${status}`}>{STATUS_LABELS[status]}</span>
@@ -738,6 +854,59 @@ function figureTypeLabel(filename: string): string {
   return "Figure";
 }
 
+type ImageGroup = {
+  key: string;
+  title: string;
+  images: ImageInfo[];
+};
+
+function formatGroupSegment(segment: string): string {
+  const normalized = segment.toLowerCase();
+  const labels: Record<string, string> = {
+    volcano: "Volcano plots",
+    ma: "MA plots",
+    oplsda_scores: "OPLS-DA score plots",
+    vip: "VIP plots",
+    vip_log2fc_padj: "VIP-log2FC-padj plots",
+    padj_log2fc_vip: "Adjusted p-value-log2FC-VIP plots",
+    pca: "PCA plots",
+    heatmap: "Heatmaps",
+    network: "Network plots",
+    upset: "UpSet plots",
+  };
+  if (labels[normalized]) return labels[normalized];
+  return `${segment.replace(/[_-]+/g, " ").replace(/\b\w/g, char => char.toUpperCase())} plots`;
+}
+
+function imageGroupTitle(image: ImageInfo): string {
+  const parts = image.path.split("/");
+  const plotsIndex = parts.findIndex(part => part.toLowerCase() === "plots");
+  if (plotsIndex >= 0 && parts[plotsIndex + 1]) {
+    return formatGroupSegment(parts[plotsIndex + 1]);
+  }
+  return `${figureTypeLabel(image.path || image.name)} plots`;
+}
+
+function groupResultImages(images: ImageInfo[]): ImageGroup[] {
+  const groups = new Map<string, ImageGroup>();
+  const displayImages = images.filter(image => /\.(png|svg|jpe?g)$/i.test(image.path || image.name));
+
+  for (const image of displayImages) {
+    const title = imageGroupTitle(image);
+    const key = title.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
+    const group = groups.get(key) ?? { key, title, images: [] };
+    group.images.push(image);
+    groups.set(key, group);
+  }
+
+  return Array.from(groups.values())
+    .map(group => ({
+      ...group,
+      images: group.images.sort((a, b) => a.name.localeCompare(b.name)),
+    }))
+    .sort((a, b) => a.title.localeCompare(b.title));
+}
+
 function ResultsPage({ jobId, onBack, onProgress }: { jobId: string; onBack: () => void; onProgress: () => void }) {
   const [job, setJob] = useState<JobResponse | null>(null);
   const [files, setFiles] = useState<JobFilesResponse | null>(null);
@@ -759,7 +928,7 @@ function ResultsPage({ jobId, onBack, onProgress }: { jobId: string; onBack: () 
       }
       try {
         const imgData: ImageInfo[] = await apiFetchJson(`/api/jobs/${jobId}/images`);
-        setImages((imgData ?? []).filter(img => img.name.endsWith(".svg")));
+        setImages((imgData ?? []).filter(img => /\.svg$/i.test(img.path || img.name)));
       } catch { /* images optional */ }
     }
     void load();
@@ -769,6 +938,9 @@ function ResultsPage({ jobId, onBack, onProgress }: { jobId: string; onBack: () 
   const tableFiles = (files?.result_files ?? []).filter(f =>
     f.name.endsWith(".csv") || f.name.endsWith(".zip")
   );
+  const isCorrelation = job?.analysis_type === "correlation";
+  const imageGroups = useMemo(() => groupResultImages(images), [images]);
+  const resultsTitle = job?.analysis_type ? FULL_ANALYSIS_LABELS[job.analysis_type] : (job?.project_name ?? jobId);
 
   if (error) {
     return (
@@ -793,7 +965,7 @@ function ResultsPage({ jobId, onBack, onProgress }: { jobId: string; onBack: () 
         <div className="panel-head">
           <div>
             <p className="eyebrow">Results</p>
-            <h1>{job?.project_name ?? jobId}</h1>
+            <h1>{resultsTitle}</h1>
           </div>
           <div className="row-actions compact-actions">
             {archiveUrl && <a className="primary" href={archiveUrl}>Download ZIP</a>}
@@ -807,35 +979,94 @@ function ResultsPage({ jobId, onBack, onProgress }: { jobId: string; onBack: () 
           {files?.report_links.interactive && <a className="secondary" href={assetUrl(files.report_links.interactive)}>Interactive report</a>}
         </div>
 
-        {images.length > 0 && (
-          <section>
-            <h2>Visualizations</h2>
-            <div className="result-figure-grid">
-              {images.map(img => (
-                <button key={img.path} className="result-figure-card" type="button" onClick={() => setSelectedImage(img)}>
-                  <div className="result-figure-thumb">
-                    <img src={assetUrl(img.thumbnail_url)} alt={img.name} loading="lazy" />
-                  </div>
-                  <div className="result-figure-body">
-                    <span className="figure-type-tag">{figureTypeLabel(img.name)}</span>
-                    <strong>{img.name}</strong>
-                  </div>
-                </button>
-              ))}
-            </div>
-          </section>
-        )}
+        {isCorrelation ? (
+          <>
+            {images.length > 0 && (
+              <section>
+                <h2>Visualizations</h2>
+                <div className="result-figure-grid">
+                  {images.map(img => (
+                    <button key={img.path} className="result-figure-card" type="button" onClick={() => setSelectedImage(img)}>
+                      <div className="result-figure-thumb">
+                        <img src={assetUrl(img.thumbnail_url)} alt={img.name} loading="lazy" />
+                      </div>
+                      <div className="result-figure-body">
+                        <span className="figure-type-tag">{figureTypeLabel(img.name)}</span>
+                        <strong>{img.name}</strong>
+                      </div>
+                    </button>
+                  ))}
+                </div>
+              </section>
+            )}
 
-        <section>
-          <h2>Result tables</h2>
-          <div className="file-list">
-            {tableFiles.map(f => (
-              <a className="file-row" key={f.path} href={assetUrl(f.download_url)}>
-                <span>{f.name}</span><em>{Math.ceil(f.size_bytes / 1024)} KB</em>
-              </a>
-            ))}
-          </div>
-        </section>
+            <section>
+              <h2>Result tables</h2>
+              {tableFiles.length > 0 ? (
+                <div className="file-list">
+                  {tableFiles.map(f => (
+                    <a className="file-row" key={f.path} href={assetUrl(f.download_url)}>
+                      <span>{f.name}</span><em>{Math.ceil(f.size_bytes / 1024)} KB</em>
+                    </a>
+                  ))}
+                </div>
+              ) : (
+                <p className="panel-note">No result tables found.</p>
+              )}
+            </section>
+          </>
+        ) : (
+          <>
+            {imageGroups.length > 0 && (
+              <section className="result-accordion-list">
+                <h2>Visualizations</h2>
+                {imageGroups.map(group => (
+                  <details className="result-accordion" key={group.key}>
+                    <summary>
+                      <span>{group.title}</span>
+                      <em>{group.images.length} figure{group.images.length === 1 ? "" : "s"}</em>
+                    </summary>
+                    <div className="result-accordion-body">
+                      <div className="result-figure-grid">
+                        {group.images.map(img => (
+                          <button key={img.path} className="result-figure-card" type="button" onClick={() => setSelectedImage(img)}>
+                            <div className="result-figure-thumb">
+                              <img src={assetUrl(img.thumbnail_url)} alt={img.name} loading="lazy" />
+                            </div>
+                            <div className="result-figure-body">
+                              <span className="figure-type-tag">{figureTypeLabel(img.name)}</span>
+                              <strong>{img.name}</strong>
+                            </div>
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  </details>
+                ))}
+              </section>
+            )}
+
+            <details className="result-accordion">
+              <summary>
+                <span>Result tables</span>
+                <em>{tableFiles.length} file{tableFiles.length === 1 ? "" : "s"}</em>
+              </summary>
+              <div className="result-accordion-body">
+                {tableFiles.length > 0 ? (
+                  <div className="file-list">
+                    {tableFiles.map(f => (
+                      <a className="file-row" key={f.path} href={assetUrl(f.download_url)}>
+                        <span>{f.name}</span><em>{Math.ceil(f.size_bytes / 1024)} KB</em>
+                      </a>
+                    ))}
+                  </div>
+                ) : (
+                  <p className="panel-note">No result tables found.</p>
+                )}
+              </div>
+            </details>
+          </>
+        )}
 
         {selectedImage && <FigureViewer image={selectedImage} onClose={() => setSelectedImage(null)} />}
       </section>
