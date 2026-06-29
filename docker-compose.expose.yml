@@ -1,0 +1,12 @@
+services:
+  postgres:
+    ports:
+      - "${DATA_BIND_HOST:-0.0.0.0}:${POSTGRES_PUBLIC_PORT:-25432}:5432"
+
+  redis:
+    ports:
+      - "${DATA_BIND_HOST:-0.0.0.0}:${REDIS_PUBLIC_PORT:-16379}:6379"
+
+  minio:
+    ports:
+      - "${DATA_BIND_HOST:-0.0.0.0}:${MINIO_PUBLIC_PORT:-19000}:9000"
