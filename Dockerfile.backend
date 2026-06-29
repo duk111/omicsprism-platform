@@ -21,6 +21,7 @@ RUN sed -i \
     build-essential \
     libigraph-dev \
     curl \
+    chromium \
     && rm -rf /var/lib/apt/lists/*
 
 # 先复制并安装 OmicsPrism 分析库（被平台依赖）
