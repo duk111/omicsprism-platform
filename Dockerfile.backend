@@ -26,7 +26,7 @@ RUN sed -i \
 
 # 先复制并安装 OmicsPrism 分析库（被平台依赖）
 COPY omicsprism/ /app/omicsprism/
-RUN pip install --no-cache-dir /app/omicsprism
+RUN pip install --no-cache-dir "/app/omicsprism[deg]"
 
 # 复制并安装平台后端依赖
 COPY omicsprism-platform/backend/requirements.txt /app/platform-requirements.txt
