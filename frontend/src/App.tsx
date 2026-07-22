@@ -1,6 +1,7 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { BrowserRouter, Navigate, Route, Routes, useLocation, useNavigate, useParams } from "react-router-dom";
 import type { AnalysisType, ImageInfo, JobFilesResponse, JobResponse, JobStatus } from "./api-types";
-import { apiFetch, apiFetchJson, ApiRequestError, assetUrl } from "./api";
+import { apiFetch, apiFetchJson, ApiRequestError, assetUrl, publicUrl } from "./api";
 import { formatSeconds } from "./app/jobs/progress";
 import { ANALYSIS_LABELS, STATUS_LABELS, formatDateTime } from "./app/jobs/jobUtils";
 import { useJobProgressSubscription } from "./app/jobs/useJobProgressSubscription";
@@ -8,8 +9,7 @@ import { loadExample } from "./app/examples";
 import FigureViewer from "./viewer/FigureViewer";
 import "./App.css";
 
-type View = { name: "form" } | { name: "progress"; jobId: string } | { name: "results"; jobId: string };
-type AnalysisTab = "home" | "new" | "jobs";
+type AnalysisTab = "home" | "new" | "jobs" | "download" | "tutorial" | "contact";
 
 const FULL_ANALYSIS_LABELS: Record<AnalysisType, string> = {
   differential: "Differentially Expressed Genes",
@@ -19,67 +19,137 @@ const FULL_ANALYSIS_LABELS: Record<AnalysisType, string> = {
 
 const DEFAULT_GMA_TRANS_LOG2 = true;
 const DEFAULT_GMA_METAB_LOG2 = true;
+const OMICSPRISM_PACKAGE_URL = "https://github.com/duk111/DeepOmics";
+const OMICSPRISM_ISSUES_URL = `${OMICSPRISM_PACKAGE_URL}/issues`;
+
+const DOWNLOAD_GROUPS = [
+  {
+    title: "DEG example data",
+    shortName: "DEG",
+    description: "Differentially Expressed Genes example inputs for testing count-based gene expression analysis.",
+    links: [
+      { label: "Raw counts", href: "/examples/deg/raw_count.csv", filename: "deg_raw_count.csv" },
+      { label: "Metadata", href: "/examples/deg/metadata.csv", filename: "deg_metadata.csv" },
+    ],
+  },
+  {
+    title: "DEM example data",
+    shortName: "DEM",
+    description: "Differentially Expressed Metabolites example inputs for metabolite abundance comparison.",
+    links: [
+      { label: "Metabolome matrix", href: "/examples/dem/ym_metab.csv", filename: "dem_ym_metab.csv" },
+      { label: "Metadata", href: "/examples/dem/metadata.csv", filename: "dem_metadata.csv" },
+    ],
+  },
+  {
+    title: "GMA example data",
+    shortName: "GMA",
+    description: "Gene-Metabolite Association example inputs for transcriptome-metabolome integration.",
+    links: [
+      { label: "Transcriptome matrix", href: "/examples/gma/DEAT.csv", filename: "gma_DEAT.csv" },
+      { label: "Metabolome matrix", href: "/examples/gma/ym_metab.csv", filename: "gma_ym_metab.csv" },
+      { label: "Group table", href: "/examples/gma/group.csv", filename: "gma_group.csv" },
+    ],
+  },
+];
 
 export default function App() {
-  const [view, setView] = useState<View>({ name: "form" });
-  const [jobListKey, setJobListKey] = useState(0);
-  const [analysisTab, setAnalysisTab] = useState<AnalysisTab>("home");
-  const [selectedAnalysisType, setSelectedAnalysisType] = useState<AnalysisType | null>(null);
-  const [viewHistory, setViewHistory] = useState<View[]>([]);
+  const baseName = import.meta.env.BASE_URL.replace(/\/$/, "") || "/";
+  return (
+    <BrowserRouter basename={baseName}>
+      <AppRoutes />
+    </BrowserRouter>
+  );
+}
+
+
+function AppRoutes() {
+  const navigate = useNavigate();
+  const location = useLocation();
+  const isHelpPage = location.pathname === "/help/tutorial" || location.pathname === "/help/contact";
 
   useEffect(() => {
-    if (view.name === "form") document.title = "OmicsPrism";
-    else if (view.name === "progress") document.title = "Running · OmicsPrism";
-    else document.title = "Results · OmicsPrism";
-  }, [view]);
+    if (location.pathname.includes("/results")) document.title = "Results | OmicsPrism";
+    else if (/^\/jobs\/[^/]+$/.test(location.pathname)) document.title = "Running | OmicsPrism";
+    else document.title = "OmicsPrism";
+  }, [location.pathname]);
 
-  function goForm() { setView({ name: "form" }); setViewHistory([]); }
-  function goHome() { goForm(); setAnalysisTab("home"); }
-  function goNew() { goForm(); setAnalysisTab("new"); }
-  function goJobs() { goForm(); setAnalysisTab("jobs"); setJobListKey(k => k + 1); }
-  function goProgress(jobId: string) { setViewHistory(prev => [...prev, view]); setView({ name: "progress", jobId }); }
-  function goResults(jobId: string) { setViewHistory(prev => [...prev, view]); setView({ name: "results", jobId }); }
-  function goBack() {
-    if (viewHistory.length === 0) { setView({ name: "form" }); return; }
-    setView(viewHistory[viewHistory.length - 1]);
-    setViewHistory(prev => prev.slice(0, -1));
-  }
+  const openAnalysis = (analysisType: AnalysisType) => {
+    const route = analysisType === "differential" ? "/deg" : analysisType === "dem" ? "/dem" : "/gma";
+    navigate(route);
+  };
+  const openProgress = (jobId: string) => navigate(`/jobs/${encodeURIComponent(jobId)}`);
 
   return (
     <div className="platform-shell">
       <header className="topbar">
-        <button className="brand" type="button" onClick={goHome}>OmicsPrism</button>
+        <button className="brand" type="button" onClick={() => navigate("/")}>OmicsPrism</button>
         <nav className="topnav">
-          <button type="button" className={view.name === "form" && analysisTab === "home" ? "active-nav" : ""} onClick={goHome}>Home</button>
-          <button type="button" className={(view.name === "form" && analysisTab === "new") || view.name === "progress" ? "active-nav" : ""} onClick={goNew}>New Analysis</button>
-          <button type="button" className={view.name === "form" && analysisTab === "jobs" ? "active-nav" : ""} onClick={goJobs}>My Jobs</button>
+          <button type="button" className={location.pathname === "/home" ? "active-nav" : ""} onClick={() => navigate("/home")}>Home</button>
+          <button type="button" className={location.pathname === "/new" ? "active-nav" : ""} onClick={() => navigate("/new")}>New Analysis</button>
+          <button type="button" className={location.pathname === "/jobs" || location.pathname.startsWith("/jobs/") ? "active-nav" : ""} onClick={() => navigate("/jobs")}>My Jobs</button>
+          <button type="button" className={location.pathname === "/download" ? "active-nav" : ""} onClick={() => navigate("/download")}>Download</button>
+          <HelpMenu active={isHelpPage} onTutorial={() => navigate("/help/tutorial")} onContact={() => navigate("/help/contact")} />
         </nav>
       </header>
-      {view.name === "form" && (
-        <AnalysisPage
-          tab={analysisTab}
-          onTabChange={setAnalysisTab}
-          selectedType={selectedAnalysisType}
-          onSelectType={(analysisType) => {
-            setSelectedAnalysisType(analysisType);
-            setAnalysisTab("new");
-          }}
-          onClearSelection={() => {
-            setSelectedAnalysisType(null);
-            setAnalysisTab("home");
-          }}
-          onProgress={goProgress}
-          jobListKey={jobListKey}
-        />
-      )}
-      {view.name === "progress" && (
-        <ProgressPage jobId={view.jobId} onResults={() => goResults(view.jobId)} onBack={goBack} onHome={goHome} onNew={goNew} onJobs={goJobs} />
-      )}
-      {view.name === "results" && (
-        <ResultsPage jobId={view.jobId} onBack={goBack} onProgress={() => goProgress(view.jobId)} />
-      )}
+      <Routes>
+        <Route path="/" element={<LandingPage onStart={() => navigate("/home")} />} />
+        <Route path="/home" element={<AnalysisPage tab="home" onSelectType={openAnalysis} onProgress={openProgress} />} />
+        <Route path="/new" element={<AnalysisPage tab="new" onSelectType={openAnalysis} onProgress={openProgress} />} />
+        <Route path="/deg" element={<AnalysisFormRoute analysisType="differential" />} />
+        <Route path="/dem" element={<AnalysisFormRoute analysisType="dem" />} />
+        <Route path="/gma" element={<AnalysisFormRoute analysisType="correlation" />} />
+        <Route path="/jobs" element={<AnalysisPage tab="jobs" onSelectType={openAnalysis} onProgress={openProgress} />} />
+        <Route path="/jobs/:jobId" element={<JobProgressRoute />} />
+        <Route path="/jobs/:jobId/results" element={<JobResultsRoute />} />
+        <Route path="/download" element={<AnalysisPage tab="download" onSelectType={openAnalysis} onProgress={openProgress} />} />
+        <Route path="/help/tutorial" element={<AnalysisPage tab="tutorial" onSelectType={openAnalysis} onProgress={openProgress} />} />
+        <Route path="/help/contact" element={<AnalysisPage tab="contact" onSelectType={openAnalysis} onProgress={openProgress} />} />
+        <Route path="*" element={<Navigate to="/" replace />} />
+      </Routes>
     </div>
   );
+}
+
+function LandingPage({ onStart }: { onStart: () => void }) {
+  return (
+    <main className="landing-page">
+      <section className="landing-intro">
+        <p className="eyebrow">Multi-omics analysis platform</p>
+        <h1>OmicsPrism</h1>
+        <p>Run differential gene expression, differential metabolite, and gene-metabolite association analyses from one workspace.</p>
+        <button className="primary" type="button" onClick={onStart}>Start analysis</button>
+      </section>
+    </main>
+  );
+}
+
+function AnalysisFormRoute({ analysisType }: { analysisType: AnalysisType }) {
+  const navigate = useNavigate();
+  return (
+    <main className="page narrow">
+      <AnalysisTabs />
+      <AnalysisForm
+        initialType={analysisType}
+        onProgress={jobId => navigate(`/jobs/${encodeURIComponent(jobId)}`)}
+        onBack={() => navigate("/home")}
+      />
+    </main>
+  );
+}
+
+function JobProgressRoute() {
+  const navigate = useNavigate();
+  const { jobId } = useParams();
+  if (!jobId) return <Navigate to="/jobs" replace />;
+  return <ProgressPage jobId={jobId} onResults={() => navigate(`/jobs/${encodeURIComponent(jobId)}/results`, { replace: true })} onBack={() => navigate("/jobs")} />;
+}
+
+function JobResultsRoute() {
+  const navigate = useNavigate();
+  const { jobId } = useParams();
+  if (!jobId) return <Navigate to="/jobs" replace />;
+  return <ResultsPage jobId={jobId} onBack={() => navigate("/jobs")} onProgress={() => navigate(`/jobs/${encodeURIComponent(jobId)}`)} />;
 }
 
 /* ------------------------------------------------------------------ */
@@ -127,53 +197,180 @@ function DropZone({ label, required, file, onFile }: {
   );
 }
 
-function AnalysisTabs({ tab, onTabChange }: { tab: AnalysisTab; onTabChange: (t: AnalysisTab) => void }) {
+function AnalysisTabs({ tab }: { tab?: AnalysisTab }) {
+  const navigate = useNavigate();
   return (
     <div className="tab-bar">
-      <button className={tab === "home" ? "primary" : "secondary"} type="button" onClick={() => onTabChange("home")}>Home</button>
-      <button className={tab === "new" ? "primary" : "secondary"} type="button" onClick={() => onTabChange("new")}>New Analysis</button>
-      <button className={tab === "jobs" ? "primary" : "secondary"} type="button" onClick={() => onTabChange("jobs")}>My Jobs</button>
+      <button className={tab === "home" ? "primary" : "secondary"} type="button" onClick={() => navigate("/home")}>Home</button>
+      <button className={tab === "new" ? "primary" : "secondary"} type="button" onClick={() => navigate("/new")}>New Analysis</button>
+      <button className={tab === "jobs" ? "primary" : "secondary"} type="button" onClick={() => navigate("/jobs")}>My Jobs</button>
+      <button className={tab === "download" ? "primary" : "secondary"} type="button" onClick={() => navigate("/download")}>Download</button>
+    </div>
+  );
+}
+
+function HelpMenu({ active, onTutorial, onContact }: {
+  active: boolean;
+  onTutorial: () => void;
+  onContact: () => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const menuRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    function closeOnOutsideClick(event: MouseEvent) {
+      if (menuRef.current && !menuRef.current.contains(event.target as Node)) setOpen(false);
+    }
+    function closeOnEscape(event: KeyboardEvent) {
+      if (event.key === "Escape") setOpen(false);
+    }
+    document.addEventListener("mousedown", closeOnOutsideClick);
+    document.addEventListener("keydown", closeOnEscape);
+    return () => {
+      document.removeEventListener("mousedown", closeOnOutsideClick);
+      document.removeEventListener("keydown", closeOnEscape);
+    };
+  }, []);
+
+  function select(action: () => void) {
+    setOpen(false);
+    action();
+  }
+
+  return (
+    <div className="help-menu" ref={menuRef}>
+      <button
+        type="button"
+        className={`help-trigger${active ? " active-nav" : ""}`}
+        aria-haspopup="menu"
+        aria-expanded={open}
+        onClick={() => setOpen(current => !current)}
+      >
+        Help
+      </button>
+      {open && (
+        <div className="help-dropdown" role="menu">
+          <button type="button" role="menuitem" onClick={() => select(onTutorial)}>Tutorial</button>
+          <button type="button" role="menuitem" onClick={() => select(onContact)}>Contact</button>
+        </div>
+      )}
     </div>
   );
 }
 
 function AnalysisPage({
   tab,
-  onTabChange,
-  selectedType,
   onSelectType,
-  onClearSelection,
   onProgress,
-  jobListKey,
 }: {
   tab: AnalysisTab;
-  onTabChange: (t: AnalysisTab) => void;
-  selectedType: AnalysisType | null;
   onSelectType: (analysisType: AnalysisType) => void;
-  onClearSelection: () => void;
   onProgress: (jobId: string) => void;
-  jobListKey: number;
 }) {
   return (
-    <main className="page narrow">
-      <AnalysisTabs tab={tab} onTabChange={onTabChange} />
-      {tab === "home" && (
+    <main className={tab === "download" || tab === "tutorial" || tab === "contact" ? "page" : "page narrow"}>
+      <AnalysisTabs tab={tab} />
+      {(tab === "home" || tab === "new") && (
         <WelcomeCards onSelect={onSelectType} />
       )}
-      {tab === "new" && selectedType && (
-        <AnalysisForm
-          initialType={selectedType}
-          onProgress={onProgress}
-          onBack={onClearSelection}
-        />
-      )}
-      {tab === "new" && !selectedType && (
-        <section className="panel">
-          <p className="panel-note">Choose an analysis type from Home to start a new analysis.</p>
-        </section>
-      )}
-      {tab === "jobs" && <JobList key={jobListKey} onProgress={onProgress} />}
+      {tab === "jobs" && <JobList onProgress={onProgress} />}
+      {tab === "download" && <DownloadPage />}
+      {tab === "tutorial" && <TutorialPage />}
+      {tab === "contact" && <ContactPage />}
     </main>
+  );
+}
+
+function DownloadPage() {
+  return (
+    <section className="panel download-page">
+      <div className="panel-head">
+        <div>
+          <p className="eyebrow">Download</p>
+          <h1>Example data and local package</h1>
+        </div>
+      </div>
+      <p className="panel-note">
+        Download ready-to-run CSV inputs for each analysis module, or open the GitHub repository for the standalone OmicsPrism package.
+      </p>
+
+      <div className="download-groups">
+        {DOWNLOAD_GROUPS.map(group => (
+          <section className="download-group" key={group.title}>
+            <div className="download-group-head">
+              <span className="download-badge">{group.shortName}</span>
+              <div>
+                <h2>{group.title}</h2>
+                <p>{group.description}</p>
+              </div>
+            </div>
+            <div className="download-links">
+              {group.links.map(link => (
+                <a key={link.href} href={publicUrl(link.href)} download={link.filename}>
+                  <span>{link.label}</span>
+                  <em>CSV</em>
+                </a>
+              ))}
+            </div>
+          </section>
+        ))}
+      </div>
+
+      <aside className="package-notice">
+        <div>
+          <h2>OmicsPrism local package</h2>
+          <p>Standalone Python package for users who want to install OmicsPrism locally and run analyses from their own environment.</p>
+        </div>
+        <a href={OMICSPRISM_PACKAGE_URL} target="_blank" rel="noreferrer">Open GitHub repository</a>
+      </aside>
+    </section>
+  );
+}
+
+function TutorialPage() {
+  return (
+    <section className="panel help-page">
+      <div className="panel-head">
+        <div>
+          <p className="eyebrow">Help</p>
+          <h1>Platform tutorial</h1>
+        </div>
+      </div>
+      <p className="panel-note">Choose an analysis module, prepare the required CSV files, submit the job, then review and download the generated results.</p>
+      <div className="tutorial-list">
+        <section>
+          <span>01</span>
+          <div><h2>Choose an analysis</h2><p>Start from Home and select DEG, DEM, or GMA according to the biological question and available data.</p></div>
+        </section>
+        <section>
+          <span>02</span>
+          <div><h2>Prepare matched input files</h2><p>Use the Download page to obtain example files. Sample identifiers must match across the matrices and metadata used in one job.</p></div>
+        </section>
+        <section>
+          <span>03</span>
+          <div><h2>Configure and submit</h2><p>Upload the required CSV files, review the selected parameters, and create the analysis job from New Analysis.</p></div>
+        </section>
+        <section>
+          <span>04</span>
+          <div><h2>Review results</h2><p>Track execution from My Jobs. Completed jobs provide result tables and module-specific figures for download.</p></div>
+        </section>
+      </div>
+    </section>
+  );
+}
+
+function ContactPage() {
+  return (
+    <section className="panel help-page contact-page">
+      <div className="panel-head">
+        <div>
+          <p className="eyebrow">Help</p>
+          <h1>Contact and support</h1>
+        </div>
+      </div>
+      <p className="panel-note">For bug reports, installation questions, and feature requests, open an issue with the input format, analysis type, parameters, and relevant job log.</p>
+      <a className="contact-link" href={OMICSPRISM_ISSUES_URL} target="_blank" rel="noreferrer">Open GitHub Issues</a>
+    </section>
   );
 }
 
@@ -718,16 +915,10 @@ function ProgressPage({
   jobId,
   onResults,
   onBack,
-  onHome,
-  onNew,
-  onJobs,
 }: {
   jobId: string;
   onResults: () => void;
   onBack: () => void;
-  onHome: () => void;
-  onNew: () => void;
-  onJobs: () => void;
 }) {
   const [job, setJob] = useState<JobResponse | null>(null);
   const [showCompletionPrompt, setShowCompletionPrompt] = useState(false);
@@ -777,11 +968,7 @@ function ProgressPage({
 
   return (
     <main className="page narrow">
-      <AnalysisTabs tab="new" onTabChange={(nextTab) => {
-        if (nextTab === "home") onHome();
-        else if (nextTab === "new") onNew();
-        else onJobs();
-      }} />
+      <AnalysisTabs />
       <section className="panel">
         <div className="panel-head">
           <div>

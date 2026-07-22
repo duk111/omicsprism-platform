@@ -14,6 +14,12 @@ omicsprism-platform/
   .env.example
 ```
 
+For a Chinese handoff and integration reference, see
+[`docs/OMICS_PRISM_INTEGRATION_GUIDE_ZH.md`](docs/OMICS_PRISM_INTEGRATION_GUIDE_ZH.md).
+
+For a field-level description of DEG, DEM, and GMA result tables, see
+[`docs/OMICS_PRISM_RESULT_TABLES_ZH.md`](docs/OMICS_PRISM_RESULT_TABLES_ZH.md).
+
 ## Prerequisites
 
 - Python 3.10+
@@ -259,10 +265,32 @@ location = /omicsprism/health {
     proxy_pass http://127.0.0.1:18086;
 }
 
+location = /omicsprism {
+    return 301 /omicsprism/;
+}
+
 location ^~ /omicsprism/ {
     alias /www/nginx/nginx_html/html/omicsprism/;
     try_files $uri $uri/ /omicsprism/index.html;
 }
+```
+
+The frontend uses browser routes rather than in-memory page state. Keep the
+`try_files` fallback above so that direct visits and refreshes work for all
+application paths:
+
+```text
+/omicsprism/                     Landing page
+/omicsprism/home                 Analysis module home
+/omicsprism/new                  Analysis module home
+/omicsprism/deg                  DEG form
+/omicsprism/dem                  DEM form
+/omicsprism/gma                  GMA form
+/omicsprism/jobs/:jobId          Job progress
+/omicsprism/jobs/:jobId/results  Results
+/omicsprism/download             Example downloads
+/omicsprism/help/tutorial        Tutorial
+/omicsprism/help/contact         Contact
 ```
 
 ## Environment variables
