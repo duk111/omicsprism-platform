@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 
 import pytest
 
@@ -9,7 +9,7 @@ from backend.app.models import AnalysisType, JobRecord, JobStatus
 
 
 def _job(job_id: str, user_id: str) -> JobRecord:
-    now = datetime.now(UTC)
+    now = datetime.now(timezone.utc)
     return JobRecord(
         id=job_id,
         project_name="test",

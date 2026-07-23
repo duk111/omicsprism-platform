@@ -4,7 +4,7 @@ import traceback
 import zipfile
 import logging
 from concurrent.futures import ThreadPoolExecutor
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from contextlib import contextmanager
 from pathlib import Path
 import time
@@ -210,7 +210,7 @@ class OmicsPrismJobRunner:
                     job,
                     status=JobStatus.RUNNING,
                     error=None,
-                    started_at=datetime.now(UTC),
+                    started_at=datetime.now(timezone.utc),
                     completed_at=None,
                     progress=5,
                     progress_step="Preparing data",
@@ -240,7 +240,7 @@ class OmicsPrismJobRunner:
                     status=JobStatus.SUCCEEDED,
                     progress=100,
                     progress_step="Analysis complete",
-                    completed_at=datetime.now(UTC),
+                    completed_at=datetime.now(timezone.utc),
                     estimated_remaining_seconds=0,
                     error=None,
                 )
@@ -253,7 +253,7 @@ class OmicsPrismJobRunner:
                     status=JobStatus.CANCELLED,
                     progress=cancelled.progress,
                     progress_step="Cancelled by user",
-                    completed_at=datetime.now(UTC),
+                    completed_at=datetime.now(timezone.utc),
                     estimated_remaining_seconds=0,
                 )
                 LOG.info("job cancelled", extra={"event": "job.cancelled"})
@@ -266,7 +266,7 @@ class OmicsPrismJobRunner:
                 self.store.update(
                     failed,
                     status=JobStatus.QUEUED if can_retry else JobStatus.FAILED,
-                    completed_at=None if can_retry else datetime.now(UTC),
+                    completed_at=None if can_retry else datetime.now(timezone.utc),
                     estimated_remaining_seconds=self.remaining_seconds(failed, failed.progress) if can_retry else 0,
                     error=str(exc),
                 )

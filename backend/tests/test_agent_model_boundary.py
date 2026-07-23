@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 
 import pytest
 from pydantic import ValidationError
@@ -134,7 +134,7 @@ def test_model_off_does_not_block_manual_job_storage(tmp_path) -> None:
         remaining_seconds=lambda _job, _progress: None,
         include_executor=False,
     )
-    now = datetime.now(UTC)
+    now = datetime.now(timezone.utc)
     job = JobRecord(
         id="manual-job",
         project_name="manual workflow",

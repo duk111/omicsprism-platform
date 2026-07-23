@@ -6,7 +6,7 @@ import json
 import logging
 import os
 import time
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from statistics import median
 from typing import Annotated, Any
@@ -327,7 +327,7 @@ async def create_job(
         inputs.append(await FILES.save_upload(job_id, "metabolome", files["metabolome"], "metabolome.csv"))
         inputs.append(await FILES.save_upload(job_id, "group", files["group"], "group.csv"))
 
-    now = datetime.now(UTC)
+    now = datetime.now(timezone.utc)
     input_paths = {f.field: FILES.resolve_run_file(job_id, f.path) for f in inputs}
     timing = _estimate_job_timing(atype, params, input_paths)
 
@@ -514,7 +514,7 @@ def cancel_job(job_id: str, request: Request, response: Response) -> dict[str, s
         status=JobStatus.CANCELLED,
         progress=job.progress,
         progress_step="Cancellation requested" if previous_status == JobStatus.RUNNING else "Cancelled",
-        completed_at=datetime.now(UTC),
+        completed_at=datetime.now(timezone.utc),
         estimated_remaining_seconds=0,
     )
     return {"status": "ok", "message": message}
@@ -527,7 +527,7 @@ def delete_job(job_id: str, request: Request, response: Response) -> dict[str, s
     if job.status in {JobStatus.QUEUED, JobStatus.RUNNING}:
         was_running = job.status == JobStatus.RUNNING
         JOB_STORE.update(
-            job, status=JobStatus.CANCELLED, completed_at=datetime.now(UTC),
+            job, status=JobStatus.CANCELLED, completed_at=datetime.now(timezone.utc),
             estimated_remaining_seconds=0, error=None,
         )
         if was_running:
@@ -538,7 +538,7 @@ def delete_job(job_id: str, request: Request, response: Response) -> dict[str, s
                     break
         job = JOB_STORE.get_for_user(job_id, session_id)
     FILES.cleanup_job_storage(job)
-    deleted_at = datetime.now(UTC)
+    deleted_at = datetime.now(timezone.utc)
     job.deleted_at = deleted_at
     job.updated_at = deleted_at
     JOB_STORE.save(job)
@@ -684,7 +684,7 @@ def _ensure_figure_specs(job_id: str) -> dict[str, Any]:
     manifest = {
         "jobId": job_id,
         "version": "figure-spec/v1",
-        "generatedAt": datetime.now(UTC).isoformat(),
+        "generatedAt": datetime.now(timezone.utc).isoformat(),
         "figures": manifest_figures,
     }
     FILES.write_figure_manifest(job_id, manifest)
@@ -1120,7 +1120,7 @@ def _job_project_id(job: JobRecord) -> str:
 
 
 def _current_job_timing(job: JobRecord) -> dict[str, int | str | None]:
-    now = datetime.now(UTC)
+    now = datetime.now(timezone.utc)
     if job.started_at and job.completed_at:
         elapsed = max(0, int((job.completed_at - job.started_at).total_seconds()))
     elif job.started_at:

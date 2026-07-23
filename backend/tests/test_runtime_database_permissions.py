@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import os
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from uuid import uuid4
 
 import pytest
@@ -34,7 +34,7 @@ def test_runtime_role_can_use_jobs_but_cannot_change_schema() -> None:
 
     job_id = f"job-{uuid4()}"
     user_id = f"user-{uuid4()}"
-    now = datetime.now(UTC)
+    now = datetime.now(timezone.utc)
     job = JobRecord(
         id=job_id,
         project_name="runtime-role-test",
@@ -51,7 +51,7 @@ def test_runtime_role_can_use_jobs_but_cannot_change_schema() -> None:
         assert repository.get(job_id, user_id).id == job_id
         assert [item.id for item in repository.list_for_user(user_id)] == [job_id]
         job.status = JobStatus.RUNNING
-        job.updated_at = datetime.now(UTC)
+        job.updated_at = datetime.now(timezone.utc)
         repository.save(job)
         assert repository.get(job_id, user_id).status is JobStatus.RUNNING
         with pytest.raises(HTTPException) as missing:

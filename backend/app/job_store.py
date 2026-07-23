@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import threading
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Protocol
 
@@ -254,7 +254,7 @@ class JobStorageService:
     ) -> None:
         with self._job_lock(job.id):
             job.status = status
-            job.updated_at = datetime.now(UTC)
+            job.updated_at = datetime.now(timezone.utc)
             if progress is not None:
                 job.progress = progress
             if progress_step is not None:

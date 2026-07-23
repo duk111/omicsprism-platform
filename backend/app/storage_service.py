@@ -4,7 +4,7 @@ import hashlib
 import mimetypes
 import shutil
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import BinaryIO, Protocol
 
@@ -103,7 +103,7 @@ class LocalDiskBackend:
         return {
             "content_length": data.st_size,
             "content_type": mimetypes.guess_type(path.name)[0],
-            "last_modified": datetime.fromtimestamp(data.st_mtime, UTC),
+            "last_modified": datetime.fromtimestamp(data.st_mtime, timezone.utc),
         }
 
     def _resolve(self, key: str) -> Path:
@@ -294,7 +294,7 @@ class FileStorageService:
             content_type=content_type,
             metadata={
                 "checksum": checksum,
-                "created_at": datetime.now(UTC).isoformat(),
+                "created_at": datetime.now(timezone.utc).isoformat(),
                 "kind": FileArtifactKind.INPUT.value,
                 "field": field,
                 "filename": original_filename,
@@ -310,7 +310,7 @@ class FileStorageService:
             checksum=checksum,
             content_type=content_type,
             size_bytes=size,
-            created_at=datetime.now(UTC),
+            created_at=datetime.now(timezone.utc),
         )
 
     def materialize_inputs(self, job: JobRecord) -> dict[str, Path]:
@@ -330,7 +330,7 @@ class FileStorageService:
             content_type=source.content_type or _guess_content_type(target_path.name),
             metadata={
                 "checksum": source.checksum or _file_checksum(target_path),
-                "created_at": datetime.now(UTC).isoformat(),
+                "created_at": datetime.now(timezone.utc).isoformat(),
                 "kind": FileArtifactKind.INPUT.value,
                 "field": source.field,
                 "filename": source.filename,
@@ -347,7 +347,7 @@ class FileStorageService:
             checksum=source.checksum or _file_checksum(target_path),
             content_type=source.content_type or _guess_content_type(target_path.name),
             size_bytes=target_path.stat().st_size,
-            created_at=datetime.now(UTC),
+            created_at=datetime.now(timezone.utc),
         )
 
     def ensure_local_copy(self, job_id: str, artifact: FileArtifactInfo) -> Path:
@@ -388,7 +388,7 @@ class FileStorageService:
                     content_type=_guess_content_type(path.name),
                     metadata={
                         "checksum": checksum,
-                        "created_at": datetime.now(UTC).isoformat(),
+                        "created_at": datetime.now(timezone.utc).isoformat(),
                         "kind": kind.value,
                         "path": relative_path,
                         "filename": path.name,
@@ -404,7 +404,7 @@ class FileStorageService:
                     checksum=checksum,
                     content_type=_guess_content_type(path.name),
                     size_bytes=path.stat().st_size,
-                    created_at=datetime.fromtimestamp(path.stat().st_mtime, UTC),
+                    created_at=datetime.fromtimestamp(path.stat().st_mtime, timezone.utc),
                 )
             )
         return artifacts
@@ -645,7 +645,7 @@ class FileStorageService:
             content_type=_guess_content_type(path.name),
             metadata={
                 "checksum": checksum,
-                "created_at": datetime.now(UTC).isoformat(),
+                "created_at": datetime.now(timezone.utc).isoformat(),
                 "kind": kind.value,
                 "path": relative_path,
                 "filename": path.name,
@@ -679,7 +679,7 @@ class FileStorageService:
                             checksum=_file_checksum(path),
                             content_type=_guess_content_type(path.name),
                             size_bytes=path.stat().st_size,
-                            created_at=datetime.fromtimestamp(path.stat().st_mtime, UTC),
+                            created_at=datetime.fromtimestamp(path.stat().st_mtime, timezone.utc),
                         )
                     )
             return artifacts
@@ -700,7 +700,7 @@ class FileStorageService:
                     checksum=metadata.get("checksum") if isinstance(metadata, dict) else None,
                     content_type=head.get("content_type") if isinstance(head.get("content_type"), str) else None,
                     size_bytes=int(head.get("content_length") or 0),
-                    created_at=head.get("last_modified") if isinstance(head.get("last_modified"), datetime) else datetime.now(UTC),
+                    created_at=head.get("last_modified") if isinstance(head.get("last_modified"), datetime) else datetime.now(timezone.utc),
                 )
             )
         return artifacts

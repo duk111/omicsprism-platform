@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import logging
 import time
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 from backend.app.bootstrap import create_context
 from backend.app.models import JobStatus
@@ -23,7 +23,7 @@ def cleanup_once() -> int:
         remaining_seconds=lambda job, progress: None,
         include_executor=False,
     )
-    cutoff = datetime.now(UTC) - timedelta(hours=settings.job_history_ttl_hours)
+    cutoff = datetime.now(timezone.utc) - timedelta(hours=settings.job_history_ttl_hours)
     removed = 0
 
     for job in context.job_store.list_internal(include_deleted=False):
@@ -34,7 +34,7 @@ def cleanup_once() -> int:
             continue
         try:
             context.files.cleanup_job_storage(job)
-            job.deleted_at = datetime.now(UTC)
+            job.deleted_at = datetime.now(timezone.utc)
             job.updated_at = job.deleted_at
             context.job_store.save(job)
             removed += 1

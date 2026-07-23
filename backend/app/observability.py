@@ -6,7 +6,7 @@ import sys
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from typing import Any, Iterator, Protocol
 from uuid import uuid4
 
@@ -25,7 +25,7 @@ LOG = logging.getLogger("omicsprism.platform")
 class JsonLogFormatter(logging.Formatter):
     def format(self, record: logging.LogRecord) -> str:
         payload: dict[str, object] = {
-            "ts": datetime.fromtimestamp(record.created, UTC).isoformat(),
+            "ts": datetime.fromtimestamp(record.created, timezone.utc).isoformat(),
             "level": record.levelname,
             "logger": record.name,
             "message": record.getMessage(),
@@ -165,7 +165,7 @@ class AuditService:
             entity_id=entity_id,
             message=message,
             metadata=metadata or {},
-            created_at=datetime.now(UTC),
+            created_at=datetime.now(timezone.utc),
         )
         try:
             self.repository.record(event)
