@@ -122,10 +122,8 @@ def get_session_id(request: Request, response: Response) -> str:
 
 
 def require_job_access(job_id: str, session_id: str) -> JobRecord:
-    job = JOB_STORE.get(job_id)
+    job = JOB_STORE.get_for_user(job_id, session_id)
     if job.deleted_at is not None:
-        raise HTTPException(status_code=404, detail="Job not found")
-    if job.owner_id != session_id:
         raise HTTPException(status_code=404, detail="Job not found")
     return job
 
@@ -369,7 +367,7 @@ async def create_job(
 @app.get("/api/jobs", response_model=JobListResponse)
 def list_jobs(request: Request, response: Response) -> JobListResponse:
     session_id = get_session_id(request, response)
-    jobs = [job for job in JOB_STORE.list() if job.owner_id == session_id]
+    jobs = JOB_STORE.list_for_user(session_id)
     return JobListResponse(jobs=[_to_job_response(job) for job in jobs])
 
 
@@ -535,10 +533,10 @@ def delete_job(job_id: str, request: Request, response: Response) -> dict[str, s
         if was_running:
             for _ in range(10):
                 time.sleep(0.3)
-                current = JOB_STORE.get(job_id)
+                current = JOB_STORE.get_for_user(job_id, session_id)
                 if current.progress_step and "cancelled" in current.progress_step.lower():
                     break
-        job = JOB_STORE.get(job_id)
+        job = JOB_STORE.get_for_user(job_id, session_id)
     FILES.cleanup_job_storage(job)
     deleted_at = datetime.now(UTC)
     job.deleted_at = deleted_at
@@ -1057,7 +1055,7 @@ def _estimate_from_input_profile(
 
 def _estimate_from_history(atype: AnalysisType) -> int | None:
     durations: list[float] = []
-    for job in JOB_STORE.list():
+    for job in JOB_STORE.list_internal():
         if job.analysis_type != atype or job.status != JobStatus.SUCCEEDED:
             continue
         if job.started_at and job.completed_at:

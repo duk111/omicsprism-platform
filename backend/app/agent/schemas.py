@@ -108,6 +108,17 @@ class AgentDecision(ContractModel):
     requested_params: dict[str, Any]
 
 
+class ModelContext(ContractModel):
+    """允许发送给模型的最小上下文；禁止传递句柄、凭据与原始文件内容。"""
+
+    user_message: str = Field(min_length=1, max_length=4000)
+    active_profile: ActiveProfile
+    state: AgentState
+    in_scope_job_ids: list[str] = Field(max_length=20)
+    conversation_summary: str | None = Field(default=None, max_length=4000)
+    available_tools: list[ToolName] = Field(max_length=6)
+
+
 class Citation(ContractModel):
     artifact: str = Field(min_length=1)
     checksum: str = Field(min_length=1)

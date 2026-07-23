@@ -7,7 +7,7 @@ services:
     restart: unless-stopped
     environment:
       POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-omicsprism_prod_2024}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
       POSTGRES_DB: omicsprism
     volumes:
       - postgres_data:/var/lib/postgresql/data
@@ -33,8 +33,8 @@ services:
     restart: unless-stopped
     command: server /data --console-address ":9001"
     environment:
-      MINIO_ROOT_USER: ${MINIO_USER:-minioadmin}
-      MINIO_ROOT_PASSWORD: ${MINIO_PASSWORD:-minioadmin_prod_2024}
+      MINIO_ROOT_USER: ${MINIO_USER:?Set MINIO_USER in .env}
+      MINIO_ROOT_PASSWORD: ${MINIO_PASSWORD:?Set MINIO_PASSWORD in .env}
     volumes:
       - minio_data:/data
     healthcheck:
@@ -51,9 +51,23 @@ services:
         condition: service_healthy
     entrypoint: >
       /bin/sh -c "
-      mc alias set local http://minio:9000 ${MINIO_USER:-minioadmin} ${MINIO_PASSWORD:-minioadmin_prod_2024};
+      mc alias set local http://minio:9000 ${MINIO_USER:?Set MINIO_USER in .env} ${MINIO_PASSWORD:?Set MINIO_PASSWORD in .env};
       mc mb -p local/omicsprism || true;
       "
+
+  # Schema migration runs with the admin identity. API and worker never receive it.
+  migrate:
+    build:
+      context: ..
+      dockerfile: omicsprism-platform/Dockerfile.backend
+    profiles: ["migration"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      OMICS_PRISM_MIGRATION_DATABASE_URL: postgresql://postgres:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}@postgres:5432/omicsprism
+      OMICS_PRISM_APP_DB_PASSWORD: ${OMICS_APP_DB_PASSWORD:?Set OMICS_APP_DB_PASSWORD in .env}
+    command: python scripts/migrate.py
 
   # ===== 应用服务 =====
   api:
@@ -71,7 +85,7 @@ services:
     environment:
       # 存储后端
       OMICS_PRISM_STORAGE_BACKEND: postgres
-      OMICS_PRISM_DATABASE_URL: postgresql://postgres:${POSTGRES_PASSWORD:-omicsprism_prod_2024}@postgres:5432/omicsprism
+      OMICS_PRISM_RUNTIME_DATABASE_URL: postgresql://omics_app:${OMICS_APP_DB_PASSWORD:?Set OMICS_APP_DB_PASSWORD in .env}@postgres:5432/omicsprism
       # 任务执行
       OMICS_PRISM_EXECUTOR: redis
       OMICS_PRISM_REDIS_URL: redis://redis:6379/0
@@ -80,8 +94,8 @@ services:
       OMICS_PRISM_FILE_STORAGE_BACKEND: s3
       OMICS_PRISM_S3_ENDPOINT_URL: http://minio:9000
       OMICS_PRISM_S3_REGION: us-east-1
-      OMICS_PRISM_S3_ACCESS_KEY_ID: ${MINIO_USER:-minioadmin}
-      OMICS_PRISM_S3_SECRET_ACCESS_KEY: ${MINIO_PASSWORD:-minioadmin_prod_2024}
+      OMICS_PRISM_S3_ACCESS_KEY_ID: ${MINIO_USER:?Set MINIO_USER in .env}
+      OMICS_PRISM_S3_SECRET_ACCESS_KEY: ${MINIO_PASSWORD:?Set MINIO_PASSWORD in .env}
       OMICS_PRISM_FILE_STORAGE_BUCKET: omicsprism
       OMICS_PRISM_FILE_STORAGE_PREFIX: jobs
       # 运行目录
@@ -113,15 +127,15 @@ services:
         condition: service_healthy
     environment:
       OMICS_PRISM_STORAGE_BACKEND: postgres
-      OMICS_PRISM_DATABASE_URL: postgresql://postgres:${POSTGRES_PASSWORD:-omicsprism_prod_2024}@postgres:5432/omicsprism
+      OMICS_PRISM_RUNTIME_DATABASE_URL: postgresql://omics_app:${OMICS_APP_DB_PASSWORD:?Set OMICS_APP_DB_PASSWORD in .env}@postgres:5432/omicsprism
       OMICS_PRISM_EXECUTOR: redis
       OMICS_PRISM_REDIS_URL: redis://redis:6379/0
       OMICS_PRISM_REDIS_QUEUE: omicsprism:jobs
       OMICS_PRISM_FILE_STORAGE_BACKEND: s3
       OMICS_PRISM_S3_ENDPOINT_URL: http://minio:9000
       OMICS_PRISM_S3_REGION: us-east-1
-      OMICS_PRISM_S3_ACCESS_KEY_ID: ${MINIO_USER:-minioadmin}
-      OMICS_PRISM_S3_SECRET_ACCESS_KEY: ${MINIO_PASSWORD:-minioadmin_prod_2024}
+      OMICS_PRISM_S3_ACCESS_KEY_ID: ${MINIO_USER:?Set MINIO_USER in .env}
+      OMICS_PRISM_S3_SECRET_ACCESS_KEY: ${MINIO_PASSWORD:?Set MINIO_PASSWORD in .env}
       OMICS_PRISM_FILE_STORAGE_BUCKET: omicsprism
       OMICS_PRISM_FILE_STORAGE_PREFIX: jobs
       OMICS_PRISM_RUNS_DIR: /app/data/runs
@@ -138,14 +152,18 @@ services:
       dockerfile: omicsprism-platform/Dockerfile.backend
     restart: unless-stopped
     depends_on:
+      postgres:
+        condition: service_healthy
       minio:
         condition: service_healthy
     environment:
+      OMICS_PRISM_STORAGE_BACKEND: postgres
+      OMICS_PRISM_RUNTIME_DATABASE_URL: postgresql://omics_app:${OMICS_APP_DB_PASSWORD:?Set OMICS_APP_DB_PASSWORD in .env}@postgres:5432/omicsprism
       OMICS_PRISM_FILE_STORAGE_BACKEND: s3
       OMICS_PRISM_S3_ENDPOINT_URL: http://minio:9000
       OMICS_PRISM_S3_REGION: us-east-1
-      OMICS_PRISM_S3_ACCESS_KEY_ID: ${MINIO_USER:-minioadmin}
-      OMICS_PRISM_S3_SECRET_ACCESS_KEY: ${MINIO_PASSWORD:-minioadmin_prod_2024}
+      OMICS_PRISM_S3_ACCESS_KEY_ID: ${MINIO_USER:?Set MINIO_USER in .env}
+      OMICS_PRISM_S3_SECRET_ACCESS_KEY: ${MINIO_PASSWORD:?Set MINIO_PASSWORD in .env}
       OMICS_PRISM_FILE_STORAGE_BUCKET: omicsprism
       OMICS_PRISM_FILE_STORAGE_PREFIX: jobs
       OMICS_PRISM_RUNS_DIR: /app/data/runs

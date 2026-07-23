@@ -122,8 +122,9 @@ docker compose down -v
 
 ## Database migration
 
-The API can use local JSON storage or PostgreSQL.
-For production or the compose stack, run PostgreSQL.
+The API can use local JSON storage or PostgreSQL. For PostgreSQL, schema
+migrations use an administrator DSN while API and worker use the separate
+`omics_app` runtime role.
 
 ### Migrate local JSON data into PostgreSQL
 
@@ -132,10 +133,24 @@ For production or the compose stack, run PostgreSQL.
 
 ```powershell
 $env:OMICS_PRISM_STORAGE_BACKEND = "postgres"
-$env:OMICS_PRISM_DATABASE_URL = "postgresql://postgres:postgres@localhost:5432/omicsprism"
+$env:OMICS_PRISM_RUNTIME_DATABASE_URL = "postgresql://omics_app:<runtime-password>@localhost:5432/omicsprism"
 ```
 
-3. Run the migration script:
+3. Apply platform schema migrations first, with an administrator role:
+
+```powershell
+$env:OMICS_PRISM_MIGRATION_DATABASE_URL = "postgresql://migration_admin:<admin-password>@localhost:5432/omicsprism"
+$env:OMICS_PRISM_APP_DB_PASSWORD = "<runtime-password>"
+python scripts/migrate.py
+```
+
+In the compose stack, run this once before starting API and worker:
+
+```powershell
+docker compose --profile migration run --rm migrate
+```
+
+4. Run the JSON data migration, if required:
 
 ```powershell
 python -m backend.scripts.migrate_json_to_postgres
@@ -297,7 +312,7 @@ application paths:
 
 The full list is in `.env.example`. Important groups:
 
-- Database: `OMICS_PRISM_STORAGE_BACKEND`, `OMICS_PRISM_DATABASE_URL`
+- Database: `OMICS_PRISM_STORAGE_BACKEND`, `OMICS_PRISM_RUNTIME_DATABASE_URL`
 - Queue: `OMICS_PRISM_EXECUTOR`, `OMICS_PRISM_REDIS_URL`, `OMICS_PRISM_REDIS_QUEUE`
 - Object storage: `OMICS_PRISM_FILE_STORAGE_BACKEND`, `OMICS_PRISM_S3_ENDPOINT_URL`, `OMICS_PRISM_FILE_STORAGE_BUCKET`, `OMICS_PRISM_FILE_STORAGE_PREFIX`
 - Quotas: `OMICS_PRISM_MAX_CONCURRENT_JOBS_PER_USER`, `OMICS_PRISM_MAX_CONCURRENT_JOBS_PER_PROJECT`, `OMICS_PRISM_FILE_STORAGE_QUOTA_BYTES`
@@ -310,7 +325,7 @@ The full list is in `.env.example`. Important groups:
 Check that PostgreSQL is reachable and the URL is correct:
 
 ```powershell
-python -c "import os; print(os.getenv('OMICS_PRISM_DATABASE_URL'))"
+python -c "import os; print(os.getenv('OMICS_PRISM_RUNTIME_DATABASE_URL'))"
 ```
 
 Typical fixes:

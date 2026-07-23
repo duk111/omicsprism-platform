@@ -175,7 +175,7 @@ class OmicsPrismJobRunner:
         self.remaining_seconds = remaining_seconds
 
     def run(self, job_id: str) -> None:
-        job = self.store.get(job_id)
+        job = self.store.get_internal(job_id)
         if job.status == JobStatus.CANCELLED:
             LOG.info("skip cancelled job", extra={"job_id": job_id, "event": "job.skip_cancelled"})
             return
@@ -186,7 +186,7 @@ class OmicsPrismJobRunner:
         attempt = job.attempt + 1
 
         def report(progress: int, step: str) -> None:
-            current = self.store.get(job_id)
+            current = self.store.get_internal(job_id)
             if current.status == JobStatus.CANCELLED:
                 LOG.info("stop cancelled job at checkpoint", extra={"job_id": job_id, "event": "job.stop_cancelled"})
                 raise JobCancelled("Job was cancelled by user")
@@ -199,7 +199,7 @@ class OmicsPrismJobRunner:
             )
             synced = self.files.sync_workspace_artifacts(current)
             if synced:
-                current = self.store.get(job_id)
+                current = self.store.get_internal(job_id)
                 current = self.files.update_job_artifacts(current, synced)
                 self.store.save(current)
 
@@ -230,7 +230,7 @@ class OmicsPrismJobRunner:
                 self._raise_if_cancelled(job_id)
                 self.ensure_figure_specs(job_id)
                 artifacts = self.files.sync_workspace_artifacts(job)
-                completed = self.store.get(job_id)
+                completed = self.store.get_internal(job_id)
                 if completed.status == JobStatus.CANCELLED:
                     LOG.info("job cancelled after analysis step", extra={"event": "job.cancelled"})
                     return
@@ -247,7 +247,7 @@ class OmicsPrismJobRunner:
                 self.store.save(completed)
                 LOG.info("job succeeded", extra={"event": "job.succeeded"})
             except JobCancelled:
-                cancelled = self.store.get(job_id)
+                cancelled = self.store.get_internal(job_id)
                 self.store.update(
                     cancelled,
                     status=JobStatus.CANCELLED,
@@ -259,7 +259,7 @@ class OmicsPrismJobRunner:
                 LOG.info("job cancelled", extra={"event": "job.cancelled"})
             except Exception as exc:  # pragma: no cover
                 LOG.exception("job failed", extra={"event": "job.failed"})
-                failed = self.store.get(job_id)
+                failed = self.store.get_internal(job_id)
                 output_dir.mkdir(parents=True, exist_ok=True)
                 self.files.write_error_log(job_id, traceback.format_exc())
                 can_retry = attempt <= failed.max_retries
@@ -274,7 +274,7 @@ class OmicsPrismJobRunner:
                     self.run(job_id)
 
     def _raise_if_cancelled(self, job_id: str) -> None:
-        if self.store.get(job_id).status == JobStatus.CANCELLED:
+        if self.store.get_internal(job_id).status == JobStatus.CANCELLED:
             raise JobCancelled("Job was cancelled by user")
 
 
@@ -436,7 +436,7 @@ def _progress_heartbeat(
     def _run() -> None:
         while not stop.wait(interval_seconds):
             try:
-                current = store.get(job_id)
+                current = store.get_internal(job_id)
             except Exception:
                 LOG.warning("heartbeat failed to read job", extra={"job_id": job_id}, exc_info=True)
                 continue

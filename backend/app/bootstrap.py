@@ -28,7 +28,11 @@ def create_context(
     files = FileStorageService(settings)
 
     if settings.storage_backend == "postgres":
-        job_repository = PostgresJobRepository(settings.database_url)
+        if not settings.runtime_database_url:
+            raise RuntimeError(
+                "OMICS_PRISM_RUNTIME_DATABASE_URL is required when OMICS_PRISM_STORAGE_BACKEND=postgres"
+            )
+        job_repository = PostgresJobRepository(settings.runtime_database_url)
     else:
         job_repository = LocalJsonJobRepository(settings.runs_dir)
     job_store = JobStorageService(job_repository)

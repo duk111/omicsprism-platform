@@ -26,7 +26,7 @@ def cleanup_once() -> int:
     cutoff = datetime.now(UTC) - timedelta(hours=settings.job_history_ttl_hours)
     removed = 0
 
-    for job in context.job_store.list(include_deleted=False):
+    for job in context.job_store.list_internal(include_deleted=False):
         if job.status not in TERMINAL_STATUSES:
             continue
         reference_time = job.completed_at or job.updated_at or job.created_at

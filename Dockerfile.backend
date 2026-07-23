@@ -34,6 +34,8 @@ RUN pip install --no-cache-dir -r /app/platform-requirements.txt
 
 # 复制平台后端代码
 COPY omicsprism-platform/backend/ /app/backend/
+COPY omicsprism-platform/migrations/ /app/migrations/
+COPY omicsprism-platform/scripts/ /app/scripts/
 
 # 创建数据目录
 RUN mkdir -p /app/data/runs /app/data/storage

@@ -35,7 +35,7 @@ class AppSettings:
     max_concurrent_jobs_per_user: int | None = 2
     max_concurrent_jobs_per_project: int | None = 1
     executor_backend: str = "local"
-    database_url: str = "postgresql://postgres:postgres@localhost:5432/omicsprism"
+    runtime_database_url: str | None = None
     redis_url: str = "redis://localhost:6379/0"
     redis_queue_name: str = "omicsprism:jobs"
     log_level: str = "INFO"
@@ -71,7 +71,7 @@ def load_settings() -> AppSettings:
         max_concurrent_jobs_per_user=_parse_optional_int(os.getenv("OMICS_PRISM_MAX_CONCURRENT_JOBS_PER_USER"), default=2),
         max_concurrent_jobs_per_project=_parse_optional_int(os.getenv("OMICS_PRISM_MAX_CONCURRENT_JOBS_PER_PROJECT"), default=1),
         executor_backend=os.getenv("OMICS_PRISM_EXECUTOR", "local").lower(),
-        database_url=os.getenv("OMICS_PRISM_DATABASE_URL", "postgresql://postgres:postgres@localhost:5432/omicsprism"),
+        runtime_database_url=os.getenv("OMICS_PRISM_RUNTIME_DATABASE_URL") or None,
         redis_url=os.getenv("OMICS_PRISM_REDIS_URL", "redis://localhost:6379/0"),
         redis_queue_name=os.getenv("OMICS_PRISM_REDIS_QUEUE", "omicsprism:jobs"),
         log_level=os.getenv("OMICS_PRISM_LOG_LEVEL", "INFO"),

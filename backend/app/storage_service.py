@@ -709,7 +709,7 @@ class FileStorageService:
         if self._job_store is None:
             return None
         try:
-            return self._job_store.get(job_id)
+            return self._job_store.get_internal(job_id)
         except Exception:
             return None
 

@@ -13,13 +13,19 @@ from .observability import AuditService, audit_job_status
 
 
 class JobRepository(Protocol):
-    def get(self, job_id: str) -> JobRecord:
+    def get(self, job_id: str, user_id: str) -> JobRecord:
+        ...
+
+    def get_internal(self, job_id: str) -> JobRecord:
         ...
 
     def save(self, job: JobRecord) -> None:
         ...
 
-    def list(self, include_deleted: bool = False) -> list[JobRecord]:
+    def list_for_user(self, user_id: str, include_deleted: bool = False) -> list[JobRecord]:
+        ...
+
+    def list_internal(self, include_deleted: bool = False) -> list[JobRecord]:
         ...
 
 
@@ -29,7 +35,13 @@ class LocalJsonJobRepository:
     def __init__(self, runs_dir: Path) -> None:
         self.runs_dir = runs_dir
 
-    def get(self, job_id: str) -> JobRecord:
+    def get(self, job_id: str, user_id: str) -> JobRecord:
+        job = self.get_internal(job_id)
+        if job.owner_id != user_id:
+            raise HTTPException(status_code=404, detail="Job not found")
+        return job
+
+    def get_internal(self, job_id: str) -> JobRecord:
         path = self._job_path(job_id)
         if not path.exists():
             raise HTTPException(status_code=404, detail="Job not found")
@@ -43,7 +55,10 @@ class LocalJsonJobRepository:
         temp_path.write_text(job.model_dump_json(indent=2), encoding="utf-8")
         temp_path.replace(path)
 
-    def list(self, include_deleted: bool = False) -> list[JobRecord]:
+    def list_for_user(self, user_id: str, include_deleted: bool = False) -> list[JobRecord]:
+        return [job for job in self.list_internal(include_deleted=include_deleted) if job.owner_id == user_id]
+
+    def list_internal(self, include_deleted: bool = False) -> list[JobRecord]:
         if not self.runs_dir.exists():
             return []
 
@@ -106,9 +121,20 @@ class LocalJsonJobRepository:
 class PostgresJobRepository:
     def __init__(self, database_url: str) -> None:
         self.database_url = database_url
-        self._ensure_schema()
 
-    def get(self, job_id: str) -> JobRecord:
+    def get(self, job_id: str, user_id: str) -> JobRecord:
+        with self._connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "select payload from jobs where id = %s and owner_id = %s",
+                    (job_id, user_id),
+                )
+                row = cur.fetchone()
+        if row is None:
+            raise HTTPException(status_code=404, detail="Job not found")
+        return JobRecord.model_validate(row[0])
+
+    def get_internal(self, job_id: str) -> JobRecord:
         with self._connect() as conn:
             with conn.cursor() as cur:
                 cur.execute("select payload from jobs where id = %s", (job_id,))
@@ -156,7 +182,18 @@ class PostgresJobRepository:
                     ),
                 )
 
-    def list(self, include_deleted: bool = False) -> list[JobRecord]:
+    def list_for_user(self, user_id: str, include_deleted: bool = False) -> list[JobRecord]:
+        deleted_clause = "" if include_deleted else "and deleted_at is null"
+        with self._connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    f"select payload from jobs where owner_id = %s {deleted_clause} order by created_at desc",
+                    (user_id,),
+                )
+                rows = cur.fetchall()
+        return [JobRecord.model_validate(row[0]) for row in rows]
+
+    def list_internal(self, include_deleted: bool = False) -> list[JobRecord]:
         where = "" if include_deleted else "where deleted_at is null"
         with self._connect() as conn:
             with conn.cursor() as cur:
@@ -171,30 +208,6 @@ class PostgresJobRepository:
             raise RuntimeError("Install psycopg[binary]>=3.1.18 to use PostgreSQL storage") from exc
         return psycopg.connect(self.database_url)
 
-    def _ensure_schema(self) -> None:
-        with self._connect() as conn:
-            with conn.cursor() as cur:
-                cur.execute(
-                    """
-                    create table if not exists jobs (
-                        id text primary key,
-                        project_id text,
-                        owner_type text not null default 'user',
-                        owner_id text not null default '',
-                        status text not null,
-                        analysis_type text not null,
-                        created_at timestamptz not null,
-                        updated_at timestamptz not null,
-                        deleted_at timestamptz,
-                        payload jsonb not null
-                    )
-                    """
-                )
-                cur.execute("create index if not exists jobs_created_at_idx on jobs (created_at desc)")
-                cur.execute("create index if not exists jobs_owner_idx on jobs (owner_type, owner_id)")
-                cur.execute("create index if not exists jobs_deleted_at_idx on jobs (deleted_at)")
-
-
 class JobStorageService:
     def __init__(self, repository: JobRepository, audit: AuditService | None = None) -> None:
         self.repository = repository
@@ -208,8 +221,11 @@ class JobStorageService:
                 self._locks[job_id] = threading.Lock()
             return self._locks[job_id]
 
-    def get(self, job_id: str) -> JobRecord:
-        return self.repository.get(job_id)
+    def get_for_user(self, job_id: str, user_id: str) -> JobRecord:
+        return self.repository.get(job_id, user_id)
+
+    def get_internal(self, job_id: str) -> JobRecord:
+        return self.repository.get_internal(job_id)
 
     def save(self, job: JobRecord) -> None:
         with self._job_lock(job.id):
@@ -217,8 +233,11 @@ class JobStorageService:
             self.repository.save(job)
         audit_job_status(self.audit, job=job, previous_status=previous_status)
 
-    def list(self, include_deleted: bool = False) -> list[JobRecord]:
-        return self.repository.list(include_deleted=include_deleted)
+    def list_for_user(self, user_id: str, include_deleted: bool = False) -> list[JobRecord]:
+        return self.repository.list_for_user(user_id, include_deleted=include_deleted)
+
+    def list_internal(self, include_deleted: bool = False) -> list[JobRecord]:
+        return self.repository.list_internal(include_deleted=include_deleted)
 
     def update(
         self,
@@ -256,6 +275,6 @@ class JobStorageService:
 
     def _previous_status(self, job_id: str) -> JobStatus | None:
         try:
-            return self.repository.get(job_id).status
+            return self.repository.get_internal(job_id).status
         except Exception:
             return None
