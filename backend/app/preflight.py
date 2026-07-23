@@ -4,7 +4,6 @@ import csv
 import io
 import math
 from dataclasses import dataclass, field
-from io import TextIOWrapper
 from typing import Iterable
 
 from fastapi import UploadFile
@@ -119,12 +118,7 @@ class PreflightService:
             return None
         profile = MatrixProfile(field=field, filename=upload.filename or field)
         try:
-            upload.file.seek(0)
-            text_file = io.TextIOWrapper(upload.file, encoding="utf-8-sig", errors="replace", newline="")
-            try:
-                rows = list(csv.reader(text_file))
-            finally:
-                text_file.detach()
+            rows = list(csv.reader(io.StringIO(self._read_upload_text(upload), newline="")))
             if not rows:
                 profile.parse_error = "empty file"
                 return profile
@@ -147,20 +141,15 @@ class PreflightService:
             return None
         profile = GroupProfile(field=field, filename=upload.filename or field)
         try:
-            upload.file.seek(0)
-            text_file = io.TextIOWrapper(upload.file, encoding="utf-8-sig", errors="replace", newline="")
-            try:
-                reader = csv.DictReader(text_file)
-                if reader.fieldnames is None:
-                    profile.parse_error = "empty file"
-                    return profile
-                profile.headers = [name.strip() for name in reader.fieldnames]
-                rows = list(reader)
-                profile.rows = rows
-                self._scan_group(profile, rows)
+            reader = csv.DictReader(io.StringIO(self._read_upload_text(upload), newline=""))
+            if reader.fieldnames is None:
+                profile.parse_error = "empty file"
                 return profile
-            finally:
-                text_file.detach()
+            profile.headers = [name.strip() for name in reader.fieldnames]
+            rows = list(reader)
+            profile.rows = rows
+            self._scan_group(profile, rows)
+            return profile
         except Exception as exc:
             profile.parse_error = str(exc)
             return profile
@@ -169,6 +158,16 @@ class PreflightService:
                 upload.file.seek(0)
             except Exception:
                 pass
+
+    def _read_upload_text(self, upload: UploadFile) -> str:
+        """读取上传内容，不依赖临时文件实现完整的 IOBase 接口。"""
+        upload.file.seek(0)
+        raw = upload.file.read()
+        if isinstance(raw, str):
+            return raw
+        if not isinstance(raw, (bytes, bytearray)):
+            raise TypeError("uploaded file stream must return bytes or text")
+        return bytes(raw).decode("utf-8-sig", errors="replace")
 
     def _scan_matrix(self, profile: MatrixProfile, rows: list[list[str]]) -> None:
         expected = len(profile.headers)
