@@ -28,7 +28,7 @@ def capture(source: Path, target: Path, *, max_rows: int) -> dict[str, object]:
     with source.open("r", encoding="utf-8-sig", newline="") as input_handle:
         reader = csv.reader(input_handle)
         with target.open("w", encoding="utf-8", newline="") as output_handle:
-            writer = csv.writer(output_handle)
+            writer = csv.writer(output_handle, lineterminator="\n")
             for index, row in enumerate(reader):
                 if index > max_rows:
                     break
