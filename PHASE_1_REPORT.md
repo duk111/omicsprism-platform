@@ -2,9 +2,9 @@
 
 ## 当前状态
 
-Phase 1 进行中。R1、R3、R6 的应用侧安全基线已经实现并完成本地自动化测试；
+Phase 1 已正式关闭。R1、R3、R6 的应用侧安全基线已经实现并完成本地自动化测试；
 真实 PostgreSQL 角色权限和受限 DSN 下的手工业务回归已在 worker 服务器的专用
-测试环境通过。Compose 展开检查也已通过，目前只剩 R1/R3/R6 人工审阅。
+测试环境通过，Compose 展开检查和 R1/R3/R6 人工审阅均已完成。
 
 ## 已实现
 
@@ -35,7 +35,7 @@ Phase 1 进行中。R1、R3、R6 的应用侧安全基线已经实现并完成�
 - [x] 在 `omics_app` DSN 下完成手工分析、任务处理、状态更新和结果页回归。
 - [x] 在 worker 服务器完成关闭模型后的 API 和手工 DEG 回归。
 - [x] 在 worker 服务器完成 Compose 配置校验。
-- [ ] R1/R3/R6 红线代码由人工审阅后才能关闭 Phase 1。
+- [x] R1/R3/R6 红线代码由人工审阅后关闭 Phase 1。
 
 ## 本地验证
 
@@ -119,8 +119,17 @@ Compose database identity check: PASSED
 这证明 API、worker、housekeeping 均只持有普通 runtime 身份，管理员 DSN 仅出现在
 一次性 migration 服务中。
 
+## 人工审阅
+
+2026-07-23 完成 R1/R3/R6 红线人工审阅，审阅结论原文：
+
+```text
+Phase 1 R1/R3/R6 人工审阅通过
+```
+
+Phase 1 至此正式关闭，下一阶段为 Phase 2 Harness 单步循环、router、profile
+白名单与审批恢复（stub 优先）。
+
 ## 已知缺口
 
-- 尚未提供 vLLM/Qwen endpoint 和模型名，因此没有伪造 live model 结果；真实模型连通验证待配置
-  明确后执行。
-- R1/R3/R6 红线代码仍需人工审阅确认；完成签字后才能正式关闭 Phase 1。
+- Live vLLM/Qwen 连通验证仍待 endpoint 和模型名明确后执行；本阶段没有伪造该结果。
