@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Any
 
 from .models import AnalysisType
 
@@ -15,6 +16,7 @@ class InputRule:
 class ParameterRule:
     name: str
     required: bool = False
+    default: Any = None
 
 
 @dataclass(frozen=True)
@@ -42,6 +44,12 @@ _DEFAULT_SPECS = {
             ParameterRule("tested_levels", required=True),
             ParameterRule("reference_level", required=True),
             ParameterRule("same_fields"),
+            ParameterRule("padj_cutoff", default=0.05),
+            ParameterRule("log2fc_cutoff", default=1.0),
+            ParameterRule("min_total_count", default=10),
+            ParameterRule("min_replicates", default=2),
+            ParameterRule("normalize", default=True),
+            ParameterRule("filter_low_expression", default=True),
         ),
     ),
     AnalysisType.DEM: AnalysisSpec(
@@ -53,6 +61,16 @@ _DEFAULT_SPECS = {
             ParameterRule("tested_levels", required=True),
             ParameterRule("reference_level", required=True),
             ParameterRule("same_fields"),
+            ParameterRule("padj_cutoff", default=0.05),
+            ParameterRule("log2fc_cutoff", default=1.0),
+            ParameterRule("vip_cutoff", default=1.0),
+            ParameterRule("pseudocount", default=1e-9),
+            ParameterRule("max_missing_fraction", default=0.5),
+            ParameterRule("impute_method", default="half-min"),
+            ParameterRule("normalize", default=True),
+            ParameterRule("log_transform", default=True),
+            ParameterRule("min_replicates", default=2),
+            ParameterRule("n_orthogonal_components", default=1),
         ),
     ),
     AnalysisType.CORRELATION: AnalysisSpec(
@@ -63,7 +81,13 @@ _DEFAULT_SPECS = {
             InputRule("metabolome"),
             InputRule("group"),
         ),
-        parameter_rules=(),
+        parameter_rules=(
+            ParameterRule("fdr_cutoff", default=0.05),
+            ParameterRule("enable_modules", default=True),
+            ParameterRule("trans_log2", default=True),
+            ParameterRule("metab_log2", default=True),
+            ParameterRule("max_missing_fraction", default=0.5),
+        ),
     ),
 }
 
@@ -79,3 +103,11 @@ class AnalysisSpecRegistry:
 
     def get(self, analysis_type: AnalysisType | str) -> AnalysisSpec:
         return self._specs[AnalysisType(analysis_type)]
+
+    def effective_params(self, analysis_type: AnalysisType | str, requested: dict[str, Any]) -> dict[str, Any]:
+        spec = self.get(analysis_type)
+        effective = dict(requested)
+        for rule in spec.parameter_rules:
+            if rule.name not in effective and rule.default is not None:
+                effective[rule.name] = rule.default
+        return effective

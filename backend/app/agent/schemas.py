@@ -164,6 +164,21 @@ class ApprovalRecord(ContractModel):
     expires_at: datetime
 
 
+class PlanRecord(ContractModel):
+    plan_id: str = Field(min_length=1)
+    run_id: str = Field(min_length=1)
+    user_id: str = Field(min_length=1)
+    analysis_type: AnalysisType
+    source_job_id: str = Field(min_length=1)
+    requested_params: dict[str, Any]
+    effective_params: dict[str, Any]
+    contrasts: list[dict[str, Any]]
+    plan_hash: str = Field(min_length=1)
+    approval_id: str | None
+    submitted_job_ids: list[str] = Field(default_factory=list)
+    idempotency_key: str | None = None
+
+
 class ToolResult(ContractModel):
     tool: ToolName
     ok: bool

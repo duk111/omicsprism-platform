@@ -3,7 +3,7 @@ from __future__ import annotations
 import pytest
 
 from backend.app.agent.schemas import ToolName
-from backend.app.agent.tools import ToolRegistry
+from backend.app.agent.tools import ToolConfigurationError, ToolRegistry
 
 
 TOOL_CALLS = {
@@ -27,8 +27,8 @@ def test_registry_contains_exactly_six_tools() -> None:
 
 
 @pytest.mark.parametrize(("tool_name", "kwargs"), TOOL_CALLS.items())
-def test_every_registered_tool_is_explicitly_unimplemented(tool_name, kwargs) -> None:
+def test_every_registered_tool_requires_an_injected_runtime(tool_name, kwargs) -> None:
     registry = ToolRegistry()
 
-    with pytest.raises(NotImplementedError):
+    with pytest.raises(ToolConfigurationError):
         registry.call(tool_name, **kwargs)

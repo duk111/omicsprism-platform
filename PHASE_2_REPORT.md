@@ -2,7 +2,7 @@
 
 ## 当前状态
 
-Phase 2 的 stub + fixture 控制平面已实现，自动化 DoD 已完成；Phase 2 尚未正式关闭，等待 R2/R4 红线人工审阅。
+Phase 2 已正式关闭。stub + fixture 控制平面、自动化 DoD、worker 服务器验证和 R2/R4 红线人工审阅均已完成。
 
 ## 已实现
 
@@ -25,7 +25,7 @@ Phase 2 的 stub + fixture 控制平面已实现，自动化 DoD 已完成；Pha
 - [x] StateStore 乐观锁冲突和跨用户覆盖均确定性失败。
 - [x] ContextBuilder 输出不含 DB、shell、凭据、原始路径、原始矩阵、完整 CSV 或完整日志。
 - [x] 单步预算、非法状态转换和模型队列耗尽均确定性失败，不进入无限循环。
-- [ ] R2/R4 红线人工审阅：待用户确认。
+- [x] R2/R4 红线人工审阅通过。
 
 ## 自动化验证
 
@@ -41,8 +41,16 @@ Phase 2 的 stub + fixture 控制平面已实现，自动化 DoD 已完成；Pha
 10 passed
 ```
 
+## Worker 服务器验证与人工审阅
+
+2026-07-24，用户确认 Phase 2 定向测试在 worker 服务器验证正确，并完成 R2/R4 红线人工审阅。审阅结论原文：
+
+```text
+服务器验证结果正确，Phase 2 R2/R4 人工审阅通过
+```
+
 ## 已知缺口 / 下一阶段
 
 1. 仍未实现六个真实工具、真实 preflight、真实 job 提交与监控；这些属于 Phase 3。
 2. 仍未实现 grounding、verifier、结果 adapter 和评测 fixture；这些属于 Phase 3。
-3. 通过人工审阅后，才切换根契约到 Phase 3；在此之前不接入 vLLM 或真实工具。
+3. Phase 3 开始实现真实工具，但仍不接入 UI、grounding/verifier 或完整评测。

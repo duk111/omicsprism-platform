@@ -50,6 +50,125 @@ class GroupProfile:
     parse_error: str | None = None
 
 
+@dataclass(frozen=True)
+class ContrastPreview:
+    compare_field: str
+    tested_level: str
+    reference_level: str
+    same_fields: tuple[str, ...]
+    same_values: dict[str, str]
+    tested_count: int
+    reference_count: int
+
+    def as_dict(self) -> dict[str, object]:
+        return {
+            "compare_field": self.compare_field,
+            "tested_level": self.tested_level,
+            "reference_level": self.reference_level,
+            "same_fields": list(self.same_fields),
+            "same_values": self.same_values,
+            "tested_count": self.tested_count,
+            "reference_count": self.reference_count,
+        }
+
+
+def build_contrast_preview(
+    metadata_rows: Iterable[dict[str, str]],
+    params: JobParams,
+) -> tuple[list[ContrastPreview], list[PreflightIssue]]:
+    """从 metadata 确定性生成 contrast；无完整 tested/reference 时不返回可提交 contrast。"""
+    rows = list(metadata_rows)
+    compare_field = str(params.get("compare_field") or "").strip()
+    reference_level = str(params.get("reference_level") or "").strip()
+    tested_levels = [item.strip() for item in str(params.get("tested_levels") or "").split(",") if item.strip()]
+    same_fields = tuple(item.strip() for item in str(params.get("same_fields") or "").split(",") if item.strip())
+    try:
+        min_replicates = max(1, int(params.get("min_replicates") or 2))
+    except (TypeError, ValueError):
+        min_replicates = 2
+
+    issues: list[PreflightIssue] = []
+    if not compare_field or not reference_level or not tested_levels:
+        issues.append(PreflightIssue(
+            code=PreflightIssueCode.MISSING_REQUIRED_FIELD,
+            field="contrast",
+            message="compare_field, tested_levels and reference_level are required",
+            suggestions=["Provide both tested and reference levels before submitting."],
+        ))
+        return [], issues
+    if compare_field in same_fields:
+        issues.append(PreflightIssue(
+            code=PreflightIssueCode.GROUP_SCHEMA_INVALID,
+            field="same_fields",
+            message="same_fields must not contain compare_field",
+            context={"compare_field": compare_field, "same_fields": list(same_fields)},
+            suggestions=["Remove compare_field from same_fields so the contrast can be formed."],
+        ))
+        return [], issues
+
+    columns = set(rows[0]) if rows else set()
+    if compare_field not in columns:
+        issues.append(PreflightIssue(
+            code=PreflightIssueCode.MISSING_REQUIRED_COLUMNS,
+            field="compare_field",
+            message=f"compare_field '{compare_field}' does not exist in metadata",
+            context={"columns": sorted(columns)},
+            suggestions=["Choose a metadata column containing the experimental groups."],
+        ))
+        return [], issues
+    missing_same = sorted(field for field in same_fields if field not in columns)
+    if missing_same:
+        issues.append(PreflightIssue(
+            code=PreflightIssueCode.MISSING_REQUIRED_COLUMNS,
+            field="same_fields",
+            message="same_fields contains columns not found in metadata",
+            context={"missing": missing_same},
+            suggestions=["Use only metadata column names in same_fields."],
+        ))
+        return [], issues
+
+    grouped_rows: dict[tuple[str, ...], list[dict[str, str]]] = {}
+    for row in rows:
+        key = tuple(row.get(field, "").strip() for field in same_fields)
+        grouped_rows.setdefault(key, []).append(row)
+
+    contrasts: list[ContrastPreview] = []
+    rejected_groups: list[dict[str, object]] = []
+    for tested_level in tested_levels:
+        for same_key, group_rows in grouped_rows.items():
+            tested_count = sum(1 for row in group_rows if row.get(compare_field, "").strip() == tested_level)
+            reference_count = sum(1 for row in group_rows if row.get(compare_field, "").strip() == reference_level)
+            same_values = dict(zip(same_fields, same_key))
+            if tested_level == reference_level or tested_count < min_replicates or reference_count < min_replicates:
+                rejected_groups.append({
+                    "tested_level": tested_level,
+                    "reference_level": reference_level,
+                    "same_values": same_values,
+                    "tested_count": tested_count,
+                    "reference_count": reference_count,
+                })
+                continue
+            contrasts.append(ContrastPreview(
+                compare_field=compare_field,
+                tested_level=tested_level,
+                reference_level=reference_level,
+                same_fields=same_fields,
+                same_values=same_values,
+                tested_count=tested_count,
+                reference_count=reference_count,
+            ))
+    if rejected_groups:
+        issues.append(PreflightIssue(
+            code=PreflightIssueCode.GROUP_SCHEMA_INVALID,
+            field="contrast",
+            severity="warning" if contrasts else "error",
+            message="Some metadata strata do not meet contrast replicate requirements",
+            context={"min_replicates": min_replicates, "rejected_groups": rejected_groups},
+            suggestions=["Choose distinct levels with enough biological replicates in each same_fields stratum."],
+        ))
+    return contrasts, issues
+
+
 class PreflightService:
     def preflight(
         self,

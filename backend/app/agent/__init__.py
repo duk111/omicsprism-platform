@@ -8,13 +8,16 @@ from .schemas import (
     RunState,
     ToolResult,
     VerifierVerdict,
+    PlanRecord,
 )
-from .approvals import InMemoryApprovalGate
+from .approvals import InMemoryApprovalGate, JsonApprovalGate
 from .context import MinimalContextBuilder
 from .model import ScriptedModelAdapter
 from .policy import ProfilePolicyGuard
 from .router import RuleRouter
 from .store import InMemoryStateStore
+from .plans import InMemoryPlanStore, JsonPlanStore
+from .tools import AgentInputFile, AgentToolRuntime, PolicyToolExecutor, ToolConfigurationError, ToolRegistry
 
 __all__ = [
     "AgentDecision",
@@ -25,9 +28,18 @@ __all__ = [
     "ToolResult",
     "VerifierVerdict",
     "InMemoryApprovalGate",
+    "JsonApprovalGate",
     "MinimalContextBuilder",
     "ScriptedModelAdapter",
     "ProfilePolicyGuard",
     "RuleRouter",
     "InMemoryStateStore",
+    "InMemoryPlanStore",
+    "PlanRecord",
+    "JsonPlanStore",
+    "AgentInputFile",
+    "AgentToolRuntime",
+    "PolicyToolExecutor",
+    "ToolConfigurationError",
+    "ToolRegistry",
 ]
