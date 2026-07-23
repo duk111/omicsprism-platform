@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime
 from enum import Enum
 from typing import Any
 
@@ -71,6 +72,12 @@ class RunStatus(str, Enum):
     COMPLETED = "completed"
     FAILED = "failed"
     CANCELLED = "cancelled"
+
+
+class ApprovalStatus(str, Enum):
+    PENDING = "pending"
+    APPROVED = "approved"
+    EXPIRED = "expired"
 
 
 class ToolName(str, Enum):
@@ -146,6 +153,15 @@ class RunState(ContractModel):
     tool_calls: int = Field(ge=0)
     status: RunStatus
     version: int = Field(ge=0)
+
+
+class ApprovalRecord(ContractModel):
+    approval_id: str = Field(min_length=1)
+    run_id: str = Field(min_length=1)
+    user_id: str = Field(min_length=1)
+    plan_hash: str = Field(min_length=1)
+    status: ApprovalStatus
+    expires_at: datetime
 
 
 class ToolResult(ContractModel):

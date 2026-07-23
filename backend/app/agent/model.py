@@ -63,6 +63,19 @@ class UnavailableModelAdapter:
         raise ModelUnavailableError("Agent model is not configured")
 
 
+class ScriptedModelAdapter:
+    """仅供 Phase 2 fixture 使用的预置决策队列。"""
+
+    def __init__(self, decisions: list[AgentDecision]) -> None:
+        self._decisions = list(decisions)
+
+    def decide(self, context: ModelContext) -> AgentDecision:
+        _validate_model_context(context)
+        if not self._decisions:
+            raise ModelBoundaryError("scripted model decision queue exhausted")
+        return self._decisions.pop(0).model_copy(deep=True)
+
+
 def _validate_model_context(context: ModelContext) -> dict[str, JsonValue]:
     if not isinstance(context, ModelContext):
         raise ModelBoundaryError("模型上下文必须是 ModelContext")
