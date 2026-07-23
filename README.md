@@ -25,7 +25,7 @@ For a field-level description of DEG, DEM, and GMA result tables, see
 - Python 3.10+
 - Node.js 18+ or 20+
 - Docker and Docker Compose, if you want the containerized stack
-- The sibling OmicsPrism analysis repository at `../OmicsPrism`
+- The sibling OmicsPrism analysis repository at `../omicsprism`
 
 ## Local development
 
@@ -37,6 +37,14 @@ python -m venv .venv
 .\.venv\Scripts\activate
 python -m pip install -r requirements.txt
 npm install --prefix frontend
+```
+
+The root requirements file installs both the platform dependencies and the
+sibling `../omicsprism` analysis package. On Linux, the lowercase directory
+name is significant. Verify the analysis package before starting API or worker:
+
+```powershell
+python -c "import omicsprism; print(omicsprism.__file__)"
 ```
 
 If you use the local fallback file storage and in-process worker, set these in

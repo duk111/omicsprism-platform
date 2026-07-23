@@ -418,7 +418,8 @@ python -m pip install --upgrade pip
 python -m pip install -e ".[deg]"
 
 cd ..\omicsprism-platform
-python -m pip install -r backend\requirements.txt
+python -m pip install -r requirements.txt
+python -c "import omicsprism; print(omicsprism.__file__)"
 npm install --prefix frontend
 ```
 
