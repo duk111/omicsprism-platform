@@ -3,8 +3,8 @@
 ## 当前状态
 
 Phase 1 进行中。R1、R3、R6 的应用侧安全基线已经实现并完成本地自动化测试；
-真实 PostgreSQL 角色权限已在 worker 服务器的专用测试库通过。受限 DSN 下的完整
-业务回归仍未执行，本文不将尚未执行的项目标记为通过。
+真实 PostgreSQL 角色权限和受限 DSN 下的手工业务回归已在 worker 服务器的专用
+测试环境通过。Compose 展开检查和 R1/R3/R6 人工审阅仍待完成。
 
 ## 已实现
 
@@ -32,14 +32,15 @@ Phase 1 进行中。R1、R3、R6 的应用侧安全基线已经实现并完成�
 - [x] 模型输出必须通过 `AgentDecision` 校验，无效输出最多修复一次。
 - [x] 模型未配置时，原有本地手工任务存取回归通过。
 - [x] 在 worker 服务器运行专用 PostgreSQL 角色权限测试。
-- [ ] 在 `omics_app` DSN 下完成手工分析、任务处理、状态更新和结果页回归。
-- [ ] 在 worker 服务器完成 Compose 配置校验和关闭模型后的 API 回归。
+- [x] 在 `omics_app` DSN 下完成手工分析、任务处理、状态更新和结果页回归。
+- [x] 在 worker 服务器完成关闭模型后的 API 和手工 DEG 回归。
+- [ ] 在 worker 服务器完成 Compose 配置校验。
 - [ ] R1/R3/R6 红线代码由人工审阅后才能关闭 Phase 1。
 
 ## 本地验证
 
 ```text
-45 passed, 2 skipped in 3.83s
+46 passed, 2 skipped in 4.50s
 compileall passed
 ```
 
@@ -80,13 +81,31 @@ applied 003_runtime_jobs.sql
 - `omics_app` 可以创建、读取、列出和更新 `jobs` 业务记录；
 - `omics_app` 不能修改 `jobs` 表结构，也不能删除 `jobs` 记录。
 
-## Worker 服务器验证步骤
+## Worker 服务器手工业务回归
 
-1. API、worker、housekeeping 只设置指向 `omics_app` 的
-   `OMICS_PRISM_RUNTIME_DATABASE_URL`，不要向这些进程暴露管理员 DSN。
-2. 提交一个手工任务，确认 worker 能更新状态，并检查任务列表、任务详情和结果页。
-3. 不配置模型服务，重复一次手工任务的提交、列表和读取回归。
-4. 运行 `docker compose config`，确认 API/worker/housekeeping 展开后的数据库用户名均为
+2026-07-23 在 API 仅持有 `OMICS_PRISM_RUNTIME_DATABASE_URL`、未配置模型服务、
+使用本地隔离执行器和文件目录的条件下完成一次真实 DEG 任务。
+
+```text
+health: HTTP 200
+status: succeeded
+progress: 100
+error: None
+result files: 115
+images: 112
+ZIP download: HTTP 200
+ZIP validation: no errors detected in compressed data
+cross-user job access: HTTP 404
+```
+
+`report_links.summary` 和 `report_links.interactive` 均为 `null`，这是当前 DEG
+流程未生成可选 HTML 报告时的正常结果；结果页依赖的任务详情、结果文件、图片和
+ZIP 均已验证可用。跨用户访问同一任务返回 404，证明 HTTP 层用户隔离在真实
+runtime 数据库上生效。
+
+## 剩余验证步骤
+
+1. 运行 `docker compose config`，确认 API/worker/housekeeping 展开后的数据库用户名均为
    `omics_app`，只有 `migrate` 服务使用管理员用户名。
 
 ## 已知缺口
