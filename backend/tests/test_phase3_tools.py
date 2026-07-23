@@ -294,7 +294,7 @@ def test_status_and_result_evidence_are_user_bound_and_field_based() -> None:
         filters={"Gene": "GeneA"}, sort="EdgeWeight desc", limit=10,
     )
     assert evidence.ok
-    assert evidence.rows == [{"Gene": "GeneA", "EdgeWeight": "0.82", "PearsonR": "0.71"}]
+    assert evidence.rows == [{"_row_id": 1, "Gene": "GeneA", "EdgeWeight": "0.82", "PearsonR": "0.71"}]
     assert evidence.checksum == "sha256:fixture"
 
 

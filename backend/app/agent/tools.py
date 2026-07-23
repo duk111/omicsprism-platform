@@ -293,8 +293,8 @@ class AgentToolRuntime:
         text = self.files.read_artifact_text(job.id, artifact_info.path)
         reader = csv.DictReader(io.StringIO(text))
         rows = [
-            {str(key): value for key, value in row.items() if key is not None}
-            for row in reader
+            {"_row_id": row_id, **{str(key): value for key, value in row.items() if key is not None}}
+            for row_id, row in enumerate(reader, start=1)
         ]
         effective_filters = dict(filters or {})
         if resolve_entity:
