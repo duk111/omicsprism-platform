@@ -2,7 +2,7 @@
 
 ## 当前状态
 
-Phase 3 本地实现和自动化测试已完成第一版，尚未正式关闭。待完成项是 worker 服务器真实 DEG/GMA fixture 采集，以及 R2/R3/R4 红线人工审阅。
+Phase 3 已正式关闭。真实 DEG/GMA fixture 已由 worker 服务器任务采集，R2/R3/R4 人工审阅已通过。
 
 ## 已实现
 
@@ -15,7 +15,7 @@ Phase 3 本地实现和自动化测试已完成第一版，尚未正式关闭。
 - `PolicyToolExecutor` 在调用 handler 前执行 profile 白名单；解读 profile 结构上不能调用写工具。
 - `get_jobs_status` 只调用用户绑定的 repository 接口，并返回裁剪后的日志摘要。
 - `query_result_evidence` 按分析类型限制结果表，按字段名过滤/排序，保留 repository 的跨用户 404，并限制完整 `ToolResult` 不超过 50 行和 32KB。
-- `scripts/capture_agent_fixtures.py` 只从真实 job 输出截取最小 CSV，并记录源文件和 fixture checksum；当前未伪造 fixture。
+- `scripts/capture_agent_fixtures.py` 只从真实 job 输出截取最小 CSV，并记录源文件和 fixture checksum；CSV 固定写入 LF，`.gitattributes` 保证跨平台检出后仍可核验。
 
 ## DoD 自查
 
@@ -26,24 +26,28 @@ Phase 3 本地实现和自动化测试已完成第一版，尚未正式关闭。
 - [x] 解读 profile 调写工具在 handler 前被 `PolicyGuard` 拒绝（R2）。
 - [x] job/result 查询绑定 `resource_id + user_id`，跨用户保留 404（R3）。
 - [x] 工具输出不超过 50 行和 32KB，CSV 按字段名读取。
-- [ ] worker 服务器采集真实 DEG/GMA fixture，并记录源文件 checksum。
-- [ ] R2/R3/R4 红线人工审阅通过。
+- [x] worker 服务器采集真实 DEG/GMA fixture，并记录源文件 checksum。
+- [x] R2/R3/R4 红线人工审阅通过。
 
 ## 本地验证
 
 ```text
-64 passed, 2 skipped in 2.73s
-compileall passed
-git diff --check passed
+worker: 74 passed, 2 skipped, 1 warning in 0.82s
+compileall exit: 0
+git diff --cached --check passed
 ```
 
-两个 skip 是需要专用 PostgreSQL 测试库的 Phase 0/1 权限测试。当前工作区中 `backend/tests/test_phase2_control_plane.py` 仍处于外部删除状态，未计入本次本地测试；远端提交 `4fef219` 中保留了该文件，本轮不会把删除纳入提交。
+两个 skip 是未设置专用 PostgreSQL 测试库环境变量时的 Phase 0/1 权限测试；该库已在此前服务器验收中通过。唯一 warning 来自 FastAPI/Starlette 对当前 `httpx` 兼容层的第三方弃用提示，不属于 Phase 3 实现。
+
+真实 fixture 已人工确认可公开提交，均截取表头和 20 行数据：
+
+| 类型 | source job | artifact | source checksum | fixture checksum |
+| --- | --- | --- | --- | --- |
+| DEG | `efdf997e-21ae-4430-a117-7c0c475b8ce9` | `differential_gene_counts.csv` | `sha256:da1d07cc03ea77e514852c2539e08d1cb80df6f1e0cf64a9b4054b65711c6cb3` | `sha256:3f8bedac699700ca825acf5e20ce59f8de6783b29c28e5e7433df8c8d4bba317` |
+| GMA | `8e39b468-e6ca-4948-8dee-a570382b85e6` | `T02_High_Confidence_Network.csv` | `sha256:6557d261a2b1bc7e80031cdc5adc4a6f12c07e612beacf1cd194ec37e3b8c9bb` | `sha256:6e38154af40abaed4f971717b5dcb4d4108fcc1aef19021b7b6dd1e0f82f03be` |
 
 Phase 3 定向测试覆盖：有效/无效 contrast、`same_fields` 分层、未审批、过期审批、参数篡改、幂等重放、跨用户 404、profile 写拒绝、结果表白名单、字段过滤/排序与输出裁剪。
 
-## 待服务器验证
+## 已知缺口
 
-1. 拉取 Phase 3 代码后运行完整测试。
-2. 使用现有小型 DEG/GMA job，或新跑一个小任务。
-3. 用 `scripts/capture_agent_fixtures.py` 截取真实结果表并将生成的 CSV 与 `manifest.json` 提交回来。
-4. 人工审阅 R2/R3/R4 后再关闭 Phase 3。
+无 Phase 3 阻塞项。Phase 4 将实现 grounded 回答、验证者、多轮 focus 与 trace；不在本阶段接入 vLLM 或完整评测。
