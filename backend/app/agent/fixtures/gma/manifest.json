@@ -1,0 +1,14 @@
+{
+  "source_job_id": "8e39b468-e6ca-4948-8dee-a570382b85e6",
+  "captured_at": "2026-07-23T19:38:39.050748+00:00",
+  "max_rows": 20,
+  "artifacts": [
+    {
+      "source_artifact": "T02_High_Confidence_Network.csv",
+      "source_checksum": "sha256:6557d261a2b1bc7e80031cdc5adc4a6f12c07e612beacf1cd194ec37e3b8c9bb",
+      "fixture": "T02_High_Confidence_Network.csv",
+      "fixture_checksum": "sha256:6e38154af40abaed4f971717b5dcb4d4108fcc1aef19021b7b6dd1e0f82f03be",
+      "fixture_rows": 20
+    }
+  ]
+}

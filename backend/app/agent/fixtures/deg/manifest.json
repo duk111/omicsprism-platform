@@ -1,0 +1,14 @@
+{
+  "source_job_id": "efdf997e-21ae-4430-a117-7c0c475b8ce9",
+  "captured_at": "2026-07-23T19:38:33.268894+00:00",
+  "max_rows": 20,
+  "artifacts": [
+    {
+      "source_artifact": "differential_gene_counts.csv",
+      "source_checksum": "sha256:da1d07cc03ea77e514852c2539e08d1cb80df6f1e0cf64a9b4054b65711c6cb3",
+      "fixture": "differential_gene_counts.csv",
+      "fixture_checksum": "sha256:3f8bedac699700ca825acf5e20ce59f8de6783b29c28e5e7433df8c8d4bba317",
+      "fixture_rows": 20
+    }
+  ]
+}
