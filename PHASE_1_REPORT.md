@@ -3,8 +3,8 @@
 ## 当前状态
 
 Phase 1 进行中。R1、R3、R6 的应用侧安全基线已经实现并完成本地自动化测试；
-真实 PostgreSQL 角色权限和受限 DSN 下的完整业务回归仍需在 worker 服务器的
-专用测试库执行，本文不将这些尚未执行的项目标记为通过。
+真实 PostgreSQL 角色权限已在 worker 服务器的专用测试库通过。受限 DSN 下的完整
+业务回归仍未执行，本文不将尚未执行的项目标记为通过。
 
 ## 已实现
 
@@ -31,7 +31,7 @@ Phase 1 进行中。R1、R3、R6 的应用侧安全基线已经实现并完成�
 - [x] 模型只接受 `ModelContext`，额外的 DSN、原始路径、repository 等字段会被拒绝。
 - [x] 模型输出必须通过 `AgentDecision` 校验，无效输出最多修复一次。
 - [x] 模型未配置时，原有本地手工任务存取回归通过。
-- [ ] 在 worker 服务器运行专用 PostgreSQL 角色权限测试。
+- [x] 在 worker 服务器运行专用 PostgreSQL 角色权限测试。
 - [ ] 在 `omics_app` DSN 下完成手工分析、任务处理、状态更新和结果页回归。
 - [ ] 在 worker 服务器完成 Compose 配置校验和关闭模型后的 API 回归。
 - [ ] R1/R3/R6 红线代码由人工审阅后才能关闭 Phase 1。
@@ -43,7 +43,7 @@ Phase 1 进行中。R1、R3、R6 的应用侧安全基线已经实现并完成�
 compileall passed
 ```
 
-两个 skip 均为真实数据库权限测试，需要以下环境变量：
+本地两个 skip 均为真实数据库权限测试，需要以下环境变量：
 
 ```bash
 export OMICS_PRISM_MIGRATION_DATABASE_URL='postgresql://migration_admin:<admin-password>@<host>:<port>/<test_db>'
@@ -54,28 +54,44 @@ python scripts/migrate.py
 python -m pytest backend/tests/test_agent_db_permissions.py backend/tests/test_runtime_database_permissions.py -q -rs
 ```
 
-Phase 1 关闭前应把以下实际输出追加到本文：
+## Worker 服务器数据库验证
+
+2026-07-23 在 worker 服务器的 Python 3.10 虚拟环境和专用测试库执行。首次运行暴露
+`datetime.UTC` 仅支持 Python 3.11 的兼容性问题；修复提交 `625c49b` 后重新执行通过。
+
+实际迁移输出：
 
 ```text
 applied 003_runtime_jobs.sql
-2 passed
 ```
+
+实际权限测试输出：
+
+```text
+..                                                                       [100%]
+2 passed in 3.63s
+```
+
+这两项测试证明：
+
+- `omics_app` 是非超级用户，且不具备建库、建角色、复制或绕过 RLS 的能力；
+- `omics_app` 可以对 `agent_runs` 执行所需的插入、读取和更新；
+- `omics_app` 可以向 `agent_events` 追加和读取，但不能更新或删除事件；
+- `omics_app` 可以创建、读取、列出和更新 `jobs` 业务记录；
+- `omics_app` 不能修改 `jobs` 表结构，也不能删除 `jobs` 记录。
 
 ## Worker 服务器验证步骤
 
-1. 使用专用测试数据库，不要直接在生产库首次验证。
-2. 用管理员 DSN 运行 `python scripts/migrate.py`，保留输出。
-3. 设置两个 `OMICS_PRISM_TEST_*_DATABASE_URL`，运行上述两项权限测试。
-4. API、worker、housekeeping 只设置指向 `omics_app` 的
+1. API、worker、housekeeping 只设置指向 `omics_app` 的
    `OMICS_PRISM_RUNTIME_DATABASE_URL`，不要向这些进程暴露管理员 DSN。
-5. 提交一个手工任务，确认 worker 能更新状态，并检查任务列表、任务详情和结果页。
-6. 不配置模型服务，重复一次手工任务的提交、列表和读取回归。
-7. 运行 `docker compose config`，确认 API/worker/housekeeping 展开后的数据库用户名均为
+2. 提交一个手工任务，确认 worker 能更新状态，并检查任务列表、任务详情和结果页。
+3. 不配置模型服务，重复一次手工任务的提交、列表和读取回归。
+4. 运行 `docker compose config`，确认 API/worker/housekeeping 展开后的数据库用户名均为
    `omics_app`，只有 `migrate` 服务使用管理员用户名。
 
 ## 已知缺口
 
 - 尚未提供 vLLM/Qwen endpoint 和模型名，因此没有伪造 live model 结果；真实模型连通验证待配置
   明确后执行。
-- 当前 Windows 工作站没有专用 PostgreSQL 测试 DSN，也没有 Docker CLI，所以数据库权限和
-  Compose 实测仍保持未完成状态。
+- 当前 Windows 工作站没有 Docker CLI，因此 Compose 实测和受限 runtime DSN 下的完整
+  手工业务回归仍保持未完成状态。
