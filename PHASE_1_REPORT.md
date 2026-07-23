@@ -4,7 +4,7 @@
 
 Phase 1 进行中。R1、R3、R6 的应用侧安全基线已经实现并完成本地自动化测试；
 真实 PostgreSQL 角色权限和受限 DSN 下的手工业务回归已在 worker 服务器的专用
-测试环境通过。Compose 展开检查和 R1/R3/R6 人工审阅仍待完成。
+测试环境通过。Compose 展开检查也已通过，目前只剩 R1/R3/R6 人工审阅。
 
 ## 已实现
 
@@ -34,7 +34,7 @@ Phase 1 进行中。R1、R3、R6 的应用侧安全基线已经实现并完成�
 - [x] 在 worker 服务器运行专用 PostgreSQL 角色权限测试。
 - [x] 在 `omics_app` DSN 下完成手工分析、任务处理、状态更新和结果页回归。
 - [x] 在 worker 服务器完成关闭模型后的 API 和手工 DEG 回归。
-- [ ] 在 worker 服务器完成 Compose 配置校验。
+- [x] 在 worker 服务器完成 Compose 配置校验。
 - [ ] R1/R3/R6 红线代码由人工审阅后才能关闭 Phase 1。
 
 ## 本地验证
@@ -103,14 +103,24 @@ cross-user job access: HTTP 404
 ZIP 均已验证可用。跨用户访问同一任务返回 404，证明 HTTP 层用户隔离在真实
 runtime 数据库上生效。
 
-## 剩余验证步骤
+## Worker 服务器 Compose 验证
 
-1. 运行 `docker compose config`，确认 API/worker/housekeeping 展开后的数据库用户名均为
-   `omics_app`，只有 `migrate` 服务使用管理员用户名。
+2026-07-23 使用仅用于配置展开的占位密码运行 `docker compose --profile migration config`，
+未启动、停止或重建服务。实际检查输出：
+
+```text
+runtime DSN count: 3
+runtime users: ['omics_app', 'omics_app', 'omics_app']
+migration DSN count: 1
+migration users: ['postgres']
+Compose database identity check: PASSED
+```
+
+这证明 API、worker、housekeeping 均只持有普通 runtime 身份，管理员 DSN 仅出现在
+一次性 migration 服务中。
 
 ## 已知缺口
 
 - 尚未提供 vLLM/Qwen endpoint 和模型名，因此没有伪造 live model 结果；真实模型连通验证待配置
   明确后执行。
-- 当前 Windows 工作站没有 Docker CLI，因此 Compose 实测和受限 runtime DSN 下的完整
-  手工业务回归仍保持未完成状态。
+- R1/R3/R6 红线代码仍需人工审阅确认；完成签字后才能正式关闭 Phase 1。
