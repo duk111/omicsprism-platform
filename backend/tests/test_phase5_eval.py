@@ -183,6 +183,9 @@ def test_vllm_adapter_sends_only_minimal_context_and_validates_response() -> Non
     assert captured["url"] == "http://model-host:8000/v1/chat/completions"
     assert set(sent_context) == set(context.model_dump(mode="json"))
     assert "database_url" not in sent_context
+    assert captured["body"]["response_format"]["type"] == "json_schema"
+    assert captured["body"]["response_format"]["json_schema"]["strict"] is True
+    assert captured["body"]["chat_template_kwargs"] == {"enable_thinking": False}
     assert result.analysis_recommendations[0].value == "differential"
 
 

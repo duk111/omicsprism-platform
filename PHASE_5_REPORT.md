@@ -9,7 +9,7 @@ Phase 5 实现已完成本地验证；live vLLM、真实 PostgreSQL production r
 - 建立 25 个 schema 校验的 golden case：router 5、recommendation 4、contrast/approval 4、failure 3、grounding 9。
 - 覆盖全部必带对抗案例：union 方向、EdgeWeight/相关系数、OPLS-DA score/VIP、空 padj、跨用户 404、因果越证据和单元格注入。
 - 同一 `EvalRunner` 支持 `unit`、`offline`、`production` 三装配；live 配置缺失时整套显式 skip。
-- `VllmModelAdapter` 通过 OpenAI-compatible `/v1/chat/completions` 调用，只发送 `ModelContext`，返回值强制校验为 `AgentDecision`。
+- `VllmModelAdapter` 通过 OpenAI-compatible `/v1/chat/completions` 调用，只发送 `ModelContext`，使用严格 JSON Schema 并关闭 Qwen3 thinking，返回值再次强制校验为 `AgentDecision`。
 - production 跨用户 case 使用真实 `PostgresJobRepository` 和普通 runtime DSN；未通过 ownership 校验前不读取 artifact。
 - 实现 JSON eval report 与 replay diff，包含通过率、模型调用数、P95 延迟、指标差异、新失败、恢复和新 skip。
 - README 补充架构图、三装配、服务器命令；中文演示文档给出 8–10 分钟脚本。
@@ -28,7 +28,7 @@ Phase 5 实现已完成本地验证；live vLLM、真实 PostgreSQL production r
 ```text
 Phase 5 + Phase 4 directed: 17 passed
 unit eval: 25 passed, 0 failed, 0 skipped
-full suite: 82 passed, 2 skipped in 3.48s
+full suite: 82 passed, 2 skipped in 4.09s
 compileall: passed
 git diff --check: passed
 ```

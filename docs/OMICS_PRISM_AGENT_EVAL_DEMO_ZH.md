@@ -44,7 +44,8 @@ python -m scripts.run_agent_eval \
 ```
 
 该装配只让真实模型处理 recommendation case，工具证据使用仓库中的冻结输入，
-不会连接生产数据库。模型响应必须通过 `AgentDecision` schema，否则 case 失败。
+不会连接生产数据库。请求使用严格 `AgentDecision` JSON Schema，并关闭 Qwen3
+thinking；模型响应仍会在应用侧再次校验，否则 case 失败。
 
 ## 3. Production ownership 验证
 
