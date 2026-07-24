@@ -87,13 +87,17 @@ class VllmModelAdapter(StructuredModelAdapter):
         model: str,
         api_key: str | None = None,
         timeout_seconds: float = 60.0,
+        max_output_tokens: int = 512,
         client: httpx.Client | None = None,
     ) -> None:
         if not base_url.strip() or not model.strip():
             raise ValueError("vLLM base_url and model are required")
+        if max_output_tokens < 1:
+            raise ValueError("vLLM max_output_tokens must be positive")
         self.model_name = model.strip()
         self.endpoint = _chat_completions_url(base_url)
         self.api_key = api_key
+        self.max_output_tokens = max_output_tokens
         self.client = client or httpx.Client(timeout=timeout_seconds)
         super().__init__(self._complete_live)
 
@@ -107,6 +111,7 @@ class VllmModelAdapter(StructuredModelAdapter):
             json={
                 "model": self.model_name,
                 "temperature": 0,
+                "max_tokens": self.max_output_tokens,
                 "response_format": {
                     "type": "json_schema",
                     "json_schema": {

@@ -45,7 +45,7 @@ python -m scripts.run_agent_eval \
 
 该装配只让真实模型处理 recommendation case，工具证据使用仓库中的冻结输入，
 不会连接生产数据库。请求使用严格 `AgentDecision` JSON Schema，并关闭 Qwen3
-thinking；模型响应仍会在应用侧再次校验，否则 case 失败。推荐输入包含结构化
+thinking，并限制最多生成 512 tokens；模型响应仍会在应用侧再次校验，否则 case 失败。推荐输入包含结构化
 `available_input_roles`，每项分析的 required inputs 从 `AnalysisSpecRegistry` 生成；
 模型不得从用户散文中补猜缺失的文件角色。
 
