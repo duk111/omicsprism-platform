@@ -2,7 +2,7 @@
 
 ## 当前状态
 
-Phase 4 的本地实现和自动化测试已完成第一版，尚未正式关闭。待完成项为 worker 服务器验证和 R5 人工审阅。
+Phase 4 已正式关闭。worker 服务器完整测试、Phase 4 定向测试、编译检查和 R5/trace 人工审阅均已通过。
 
 ## 已实现
 
@@ -22,8 +22,8 @@ Phase 4 的本地实现和自动化测试已完成第一版，尚未正式关闭
 - [x] `union_significant_genes.csv` 不能产出带方向的结论；结果读取的跨用户 404 保持由 Phase 3 repository 边界保证。
 - [x] 同一 focus 的追问保留 job；重跑在调用模型前切回 analysis profile。
 - [x] 事件接口只有 append/list，trace 查询绑定 `run_id + user_id`，且拒绝敏感 payload 键。
-- [ ] worker 服务器运行完整测试并执行 Phase 4 定向测试。
-- [ ] R5 grounded 回答与 trace 人工审阅通过。
+- [x] worker 服务器运行完整测试并执行 Phase 4 定向测试。
+- [x] R5 grounded 回答与 trace 人工审阅通过。
 
 ## 本地验证
 
@@ -36,7 +36,18 @@ git diff --check passed
 
 两个 skip 是未设置专用 PostgreSQL 测试库环境变量时的既有权限测试。本地工作区仍有外部删除的 `backend/tests/test_phase2_control_plane.py`，因此服务器完整测试数量会更高；该删除未纳入本阶段提交。
 
+## 服务器验证
+
+```text
+Phase 4 directed: 24 passed
+full suite: 82 passed, 2 skipped, 1 warning
+compileall exit: 0
+R5/trace 人工审阅通过
+```
+
+服务器的两个 skip 与本地相同；唯一 warning 仍是 FastAPI/Starlette 对当前 `httpx` 兼容层的第三方弃用提示。服务器工作区中的 4 个交互方案 Markdown 删除和 `docker-compose.worker.yml` 未纳入 Phase 4 提交。
+
 ## 已知缺口
 
-- 不接入 vLLM、完整 golden eval/replay、对外聊天 UI 或独立多 agent 服务，这些不属于 Phase 4。
-- 当前 trace 实现服务于受控 runtime/harness；管理界面将在有真实管理员身份模型后再接入，不能用现有匿名 session 伪造管理员权限。
+- 无 Phase 4 阻塞项。完整 golden eval/replay 和求职交付进入 Phase 5。
+- 当前 trace 实现服务于受控 runtime/harness；管理界面必须等待真实管理员身份模型，不能用现有匿名 session 伪造管理员权限。
