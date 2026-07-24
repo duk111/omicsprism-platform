@@ -189,6 +189,58 @@ def test_vllm_adapter_sends_only_minimal_context_and_validates_response() -> Non
     assert result.analysis_recommendations[0].value == "differential"
 
 
+def test_live_recommendation_receives_structured_registry_requirements() -> None:
+    captured = {}
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        captured["body"] = json.loads(request.content)
+        decision = {
+            "action": "propose_plan",
+            "reasoning_summary": "only DEG has every required input",
+            "feasibility": {
+                "verdict": "answerable",
+                "reasons": ["counts and metadata are present"],
+                "missing_information": [],
+            },
+            "analysis_recommendations": ["differential"],
+            "requires_approval": True,
+            "requested_params": {},
+        }
+        return httpx.Response(200, json={
+            "choices": [{"message": {"content": json.dumps(decision)}}],
+        })
+
+    case = next(case for case in load_golden_cases(DEFAULT_CASES_PATH) if case.case_id == "recommend_deg_001")
+    assembly = EvalAssembly(
+        name=EvalAssemblyName.OFFLINE,
+        label="captured-live-model",
+        available=True,
+        skip_reason=None,
+        model=VllmModelAdapter(
+            base_url="http://model-host:8000",
+            model="captured-live-model",
+            client=httpx.Client(transport=httpx.MockTransport(handle)),
+        ),
+        fixture_tools=True,
+        in_memory_state=True,
+    )
+
+    report = EvalRunner().run([case], assembly)
+
+    sent_context = json.loads(captured["body"]["messages"][1]["content"])
+    assert report.summary.passed == 1
+    assert sent_context["available_input_roles"] == ["counts", "metadata"]
+    assert sent_context["analysis_capabilities"] == [
+        {"analysis_type": "differential", "display_label": "DEG", "required_inputs": ["counts", "metadata"]},
+        {"analysis_type": "dem", "display_label": "DEM", "required_inputs": ["metabs", "metadata"]},
+        {
+            "analysis_type": "correlation",
+            "display_label": "GMA",
+            "required_inputs": ["transcriptome", "metabolome", "group"],
+        },
+    ]
+
+
 def test_replay_diff_reports_new_failures_recoveries_and_metric_deltas() -> None:
     cases = load_golden_cases(DEFAULT_CASES_PATH)
     baseline = EvalRunner().run(cases, EvalAssemblyFactory.unit(label="baseline"))

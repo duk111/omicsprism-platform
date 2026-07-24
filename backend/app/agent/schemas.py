@@ -115,6 +115,12 @@ class AgentDecision(ContractModel):
     requested_params: dict[str, Any]
 
 
+class AnalysisCapability(ContractModel):
+    analysis_type: AnalysisType
+    display_label: str = Field(min_length=1)
+    required_inputs: list[str]
+
+
 class ModelContext(ContractModel):
     """允许发送给模型的最小上下文；禁止传递句柄、凭据与原始文件内容。"""
 
@@ -123,6 +129,8 @@ class ModelContext(ContractModel):
     state: AgentState
     in_scope_job_ids: list[str] = Field(max_length=20)
     conversation_summary: str | None = Field(default=None, max_length=4000)
+    available_input_roles: list[str] = Field(default_factory=list, max_length=20)
+    analysis_capabilities: list[AnalysisCapability] = Field(default_factory=list, max_length=3)
     available_tools: list[ToolName] = Field(max_length=6)
 
 

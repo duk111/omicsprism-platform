@@ -17,6 +17,7 @@ from ..job_store import JobStorageService, PostgresJobRepository
 from ..models import AnalysisType, JobRecord, JobStatus
 from ..preflight import build_contrast_preview
 from .approvals import InMemoryApprovalGate
+from .context import build_analysis_capabilities
 from .grounding import EvidenceGrounder, EvidenceGroundingError, NO_EVIDENCE_TEXT
 from .model import ModelAdapter, ModelBoundaryError, ScriptedModelAdapter, VllmModelAdapter
 from .plans import InMemoryPlanStore, compute_plan_hash
@@ -259,7 +260,9 @@ def _eval_recommendation(case: GoldenCase, assembly: EvalAssembly) -> list[str]:
         active_profile=ActiveProfile.ANALYSIS,
         state=AgentState.CHECK_INPUTS,
         in_scope_job_ids=[],
-        conversation_summary="Available inputs: " + ", ".join(case.input.get("available_inputs", [])),
+        conversation_summary=None,
+        available_input_roles=list(case.input.get("available_inputs", [])),
+        analysis_capabilities=build_analysis_capabilities(),
         available_tools=[ToolName.GET_ANALYSIS_SPEC, ToolName.INSPECT_UPLOADED_INPUTS, ToolName.RUN_PREFLIGHT],
     )
     decision = model.decide(context)

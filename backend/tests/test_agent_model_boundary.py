@@ -54,6 +54,8 @@ def test_model_receives_only_serializable_context_and_returns_validated_decision
         "state": "ANSWER_WITH_EVIDENCE",
         "in_scope_job_ids": ["job-1"],
         "conversation_summary": None,
+        "available_input_roles": [],
+        "analysis_capabilities": [],
         "available_tools": ["get_jobs_status", "query_result_evidence"],
     }
     assert decision.action is AgentAction.REQUEST_MORE_DATA
