@@ -2,7 +2,7 @@
 
 ## 当前状态
 
-Phase 5 实现已完成本地验证；live vLLM、真实 PostgreSQL production replay 和三项人工演示待服务器执行。未配置 live endpoint 时只生成显式 skip，不记录伪造的 live model 成绩。
+Phase 5 实现、本地验证和 Qwen3-14B-AWQ offline live replay 已完成；真实 PostgreSQL production replay 与关闭 vLLM 后的手工分析演示待服务器执行。未配置 live endpoint 时只生成显式 skip，不记录伪造的 live model 成绩。
 
 ## 已实现
 
@@ -19,10 +19,10 @@ Phase 5 实现已完成本地验证；live vLLM、真实 PostgreSQL production r
 
 - [x] golden case 数量与分布达到 spec 第 11 节要求，全部必带对抗案例可确定性 replay。
 - [x] unit stub/fixture 快速集可在普通 CI 运行；live 装配缺 endpoint 时明确 skip。
-- [x] 本地 unit 指标达到门槛：route/recommendation/contrast/numeric/citation 均为 1.0，未审批创建 job 与跨用户访问成功数均为 0。
+- [x] unit 与 Qwen3-14B-AWQ offline live 指标达到门槛：schema/route/recommendation/contrast/numeric/citation 均为 1.0，未审批创建 job 与跨用户访问成功数均为 0。
 - [x] 同一 case 集可在两个报告间生成机器可读 diff，CLI 路径有自动化测试。
 - [x] README、Mermaid 架构图、服务器命令和 8–10 分钟演示脚本与当前实现一致。
-- [ ] 服务器完成跨用户 404、关闭 vLLM 后手工分析可用、换模型 replay 三项人工演示。
+- [ ] 服务器完成 production 跨用户 404 与关闭 vLLM 后手工分析可用两项人工演示；同模型 prompt/schema 变更 replay 与机器可读 diff 已完成。
 
 ## 本地验证
 
@@ -69,13 +69,29 @@ typed capability context 的首次 replay 为 23 passed、2 failed；`recommend_
 
 加入 512-token 上限后的 replay 仍为 23 passed、2 failed，但 P95 从 48.45 秒降至 5.80 秒。vLLM 日志证明四次请求均为 HTTP 200，GPU generation throughput 约 55–70 tokens/s；DEM/GMA 生成满 512 tokens 后返回截断 JSON，使 schema validity 降至 0.5。根因是原 `AgentDecision` schema 的字符串、数组和任意递归 `requested_params` 没有边界，而不是 GPU 或 scheduler 故障。随后已在 schema 中加入文本、列表、推荐数、参数数和标量参数值上限；有界 schema 的 live replay 待服务器执行。
 
+有界 schema 的最终 replay 达标：
+
+```text
+25 passed, 0 failed, 0 skipped
+pass_rate: 1.0
+model_calls: 4
+p95_latency_ms: 897.64
+schema/route/recommendation/contrast/numeric/citation: 1.0
+unapproved_job_creations: 0.0
+cross_user_access_successes: 0.0
+newly_passed: recommend_dem_001, recommend_gma_001
+newly_failed: none
+```
+
+该 diff 使用上一轮 23/25 报告为 baseline，recommendation accuracy 与 schema validity 均提升 0.5；原始失败报告、修复后报告和 diff 保留在服务器 `eval-reports/`，没有覆盖或改写历史成绩。
+
 ## 服务器验证待办
 
 1. 运行 unit eval，确认无外部服务时 25 case 全部执行。
-2. 拉取 typed capability context 修复，使用首次 live 报告作为 baseline 重跑 offline replay 并生成 diff。
+2. [完成] Qwen3-14B-AWQ offline replay 达到 25/25，并保留从失败 baseline 到达标报告的机器可读 diff。
 3. 用 `omics_app` DSN、他人 job id 和请求用户 id 跑 production，确认跨用户 case 为 404。
 4. 关闭 vLLM，通过原手工表单完成一次提交/查询，确认 R6。
-5. 更换模型或 prompt 后 replay，并人工审阅 diff。
+5. [完成] prompt/schema 变更后 replay 并审阅 diff；真正更换第二个模型属于可选的演示扩展，不虚构未运行的模型成绩。
 
 ## 已知缺口
 
