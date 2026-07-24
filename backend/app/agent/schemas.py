@@ -221,3 +221,75 @@ class AgentEvent(ContractModel):
     step_no: int = Field(ge=0)
     event_type: str = Field(min_length=1)
     payload: dict[str, Any]
+
+
+class EvalCategory(str, Enum):
+    ROUTER = "router"
+    RECOMMENDATION = "recommendation"
+    CONTRAST = "contrast"
+    FAILURE = "failure"
+    GROUNDING = "grounding"
+
+
+class EvalAssemblyName(str, Enum):
+    UNIT = "unit"
+    OFFLINE = "offline"
+    PRODUCTION = "production"
+
+
+class EvalCaseStatus(str, Enum):
+    PASSED = "passed"
+    FAILED = "failed"
+    SKIPPED = "skipped"
+
+
+class GoldenCase(ContractModel):
+    case_id: str = Field(min_length=1)
+    category: EvalCategory
+    adversarial: bool = False
+    input: dict[str, Any]
+    expected: dict[str, Any]
+
+
+class EvalCaseResult(ContractModel):
+    case_id: str = Field(min_length=1)
+    category: EvalCategory
+    adversarial: bool
+    status: EvalCaseStatus
+    duration_ms: float = Field(ge=0)
+    model_calls: int = Field(ge=0)
+    schema_valid: bool | None = None
+    issues: list[str]
+
+
+class EvalSummary(ContractModel):
+    total: int = Field(ge=0)
+    passed: int = Field(ge=0)
+    failed: int = Field(ge=0)
+    skipped: int = Field(ge=0)
+    pass_rate: float = Field(ge=0, le=1)
+    model_calls: int = Field(ge=0)
+    p95_latency_ms: float = Field(ge=0)
+    metrics: dict[str, float | None]
+
+
+class EvalRunReport(ContractModel):
+    run_id: str = Field(min_length=1)
+    assembly: EvalAssemblyName
+    model_label: str = Field(min_length=1)
+    generated_at: datetime
+    skip_reason: str | None
+    case_results: list[EvalCaseResult]
+    summary: EvalSummary
+
+
+class EvalDiffReport(ContractModel):
+    baseline_run_id: str = Field(min_length=1)
+    candidate_run_id: str = Field(min_length=1)
+    pass_rate_delta: float
+    model_calls_delta: int
+    p95_latency_ms_delta: float
+    newly_failed: list[str]
+    newly_passed: list[str]
+    newly_skipped: list[str]
+    metric_deltas: dict[str, float | None]

@@ -76,7 +76,24 @@ def _numbers_match(text: str, rows: Sequence[dict[str, Any]]) -> bool:
         for value in [_decimal(str(cell))]
         if value is not None
     }
-    return all(value in available for value in requested)
+    if not all(value in available for value in requested):
+        return False
+    normalized_text = text.lower()
+    for row in rows:
+        for field, cell in row.items():
+            if field == "_row_id" or str(field).lower() not in normalized_text:
+                continue
+            field_values = {
+                value for value in [_decimal(str(cell))] if value is not None
+            }
+            pattern = re.compile(
+                rf"{re.escape(str(field))}\s*(?:为|是|=|:|is)?\s*({_NUMBER.pattern})",
+                re.IGNORECASE,
+            )
+            mentioned = [value for value in (_decimal(match) for match in pattern.findall(text)) if value is not None]
+            if mentioned and not all(value in field_values for value in mentioned):
+                return False
+    return True
 
 
 def _decimal(value: str) -> Decimal | None:

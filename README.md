@@ -20,6 +20,85 @@ For a Chinese handoff and integration reference, see
 For a field-level description of DEG, DEM, and GMA result tables, see
 [`docs/OMICS_PRISM_RESULT_TABLES_ZH.md`](docs/OMICS_PRISM_RESULT_TABLES_ZH.md).
 
+For the agent evaluation and interview demo procedure, see
+[`docs/OMICS_PRISM_AGENT_EVAL_DEMO_ZH.md`](docs/OMICS_PRISM_AGENT_EVAL_DEMO_ZH.md).
+
+## OmicsPrism Copilot architecture
+
+The copilot is a controlled runtime inside the existing backend. The model only
+receives `ModelContext` and returns a schema-validated `AgentDecision`; it never
+receives database, filesystem, shell, credential, or executor handles.
+
+```mermaid
+flowchart LR
+    U[User session] --> R[RuleRouter]
+    R --> H[RunCoordinator]
+    H --> C[MinimalContextBuilder]
+    C --> M[ModelAdapter]
+    M -->|AgentDecision| H
+    H --> P[PolicyGuard]
+    P --> T[ToolExecutor]
+    T --> A[Platform adapters]
+    A --> D[(PostgreSQL / artifacts / worker)]
+    T --> G[EvidenceGrounder]
+    G --> V[AnswerVerifier]
+    V --> H
+    H --> E[(append-only agent_events)]
+```
+
+The analysis profile can inspect inputs, run preflight, and submit only an
+approved plan. The interpretation profile has read-only evidence/status tools.
+The verifier has no tools.
+
+## Agent golden evaluation
+
+The same 25-case harness has three explicit assemblies:
+
+| Assembly | Model | Tools | State/storage | Intended use |
+| --- | --- | --- | --- | --- |
+| `unit` | structured stub | frozen fixtures | in memory | regular CI and local checks |
+| `offline` | live vLLM | frozen fixtures | in memory | model/prompt replay without production data |
+| `production` | live vLLM | live ownership boundary | PostgreSQL | controlled server verification |
+
+Run the deterministic suite from the repository root:
+
+```powershell
+python -m scripts.run_agent_eval --assembly unit --output eval-reports/unit.json --label local-stub
+```
+
+Run the live-model fixture suite only when a vLLM endpoint is available:
+
+```powershell
+$env:OMICS_PRISM_AGENT_MODEL_URL = "http://<vllm-host>:8000"
+$env:OMICS_PRISM_AGENT_MODEL_NAME = "Qwen3-14B-AWQ"
+python -m scripts.run_agent_eval --assembly offline --output eval-reports/qwen14b.json
+```
+
+Production replay additionally verifies that a user cannot read another
+user's real PostgreSQL job. The job id must belong to a user other than
+`OMICS_PRISM_EVAL_CROSS_USER_ID`, and the DSN must use the normal `omics_app`
+role:
+
+```powershell
+$env:OMICS_PRISM_RUNTIME_DATABASE_URL = "postgresql://omics_app:<runtime-password>@<host>:<port>/<database>"
+$env:OMICS_PRISM_EVAL_CROSS_USER_JOB_ID = "<job-owned-by-another-user>"
+$env:OMICS_PRISM_EVAL_CROSS_USER_ID = "<requesting-user-id>"
+python -m scripts.run_agent_eval --assembly production --output eval-reports/production.json
+```
+
+Missing live configuration produces an explicit all-skipped report; it does not
+produce a synthetic live score. Compare a replay with a previous report:
+
+```powershell
+python -m scripts.run_agent_eval --assembly offline `
+  --baseline eval-reports/qwen14b.json `
+  --output eval-reports/qwen30b.json `
+  --diff-output eval-reports/qwen14b-to-qwen30b.diff.json
+```
+
+The diff contains pass-rate, model-call, P95-latency, metric, new-failure,
+recovery, and new-skip changes in machine-readable JSON.
+
 ## Prerequisites
 
 - Python 3.10+

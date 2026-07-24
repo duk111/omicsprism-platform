@@ -12,7 +12,8 @@ from .schemas import (
 )
 from .approvals import InMemoryApprovalGate, JsonApprovalGate
 from .context import MinimalContextBuilder
-from .model import ScriptedModelAdapter
+from .eval import EvalAssembly, EvalAssemblyFactory, EvalRunner, compare_reports, load_golden_cases
+from .model import ScriptedModelAdapter, VllmModelAdapter
 from .policy import ProfilePolicyGuard
 from .router import RuleRouter
 from .store import InMemoryStateStore
@@ -31,6 +32,12 @@ __all__ = [
     "JsonApprovalGate",
     "MinimalContextBuilder",
     "ScriptedModelAdapter",
+    "VllmModelAdapter",
+    "EvalAssembly",
+    "EvalAssemblyFactory",
+    "EvalRunner",
+    "compare_reports",
+    "load_golden_cases",
     "ProfilePolicyGuard",
     "RuleRouter",
     "InMemoryStateStore",
