@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 from enum import Enum
-from typing import Any
+from typing import Annotated, Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -100,19 +100,24 @@ class RouteDecision(ContractModel):
     reason: str = Field(min_length=1)
 
 
+BriefModelText = Annotated[str, Field(min_length=1, max_length=240)]
+AgentParamText = Annotated[str, Field(max_length=200)]
+AgentParamValue = AgentParamText | int | float | bool | None
+
+
 class Feasibility(ContractModel):
     verdict: FeasibilityVerdict
-    reasons: list[str]
-    missing_information: list[str]
+    reasons: list[BriefModelText] = Field(max_length=3)
+    missing_information: list[BriefModelText] = Field(max_length=3)
 
 
 class AgentDecision(ContractModel):
     action: AgentAction
-    reasoning_summary: str = Field(min_length=1)
+    reasoning_summary: BriefModelText
     feasibility: Feasibility | None = None
-    analysis_recommendations: list[AnalysisType]
+    analysis_recommendations: list[AnalysisType] = Field(max_length=3)
     requires_approval: bool
-    requested_params: dict[str, Any]
+    requested_params: dict[str, AgentParamValue] = Field(max_length=32)
 
 
 class AnalysisCapability(ContractModel):

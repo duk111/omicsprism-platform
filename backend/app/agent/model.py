@@ -131,7 +131,9 @@ class VllmModelAdapter(StructuredModelAdapter):
                             "analysis_capability.required_inputs. Recommend a capability only when "
                             "every required input is present; never infer a missing role from prose. "
                             "Preserve the capability list order and recommend every capability whose "
-                            "requirements are fully satisfied, but no others."
+                            "requirements are fully satisfied, but no others. When state is CHECK_INPUTS, "
+                            "keep reasoning_summary under 80 characters, use at most one brief feasibility "
+                            "reason, and keep requested_params empty."
                         ),
                     },
                     {"role": "user", "content": json.dumps(context, ensure_ascii=False)},

@@ -9,7 +9,7 @@ Phase 5 实现已完成本地验证；live vLLM、真实 PostgreSQL production r
 - 建立 25 个 schema 校验的 golden case：router 5、recommendation 4、contrast/approval 4、failure 3、grounding 9。
 - 覆盖全部必带对抗案例：union 方向、EdgeWeight/相关系数、OPLS-DA score/VIP、空 padj、跨用户 404、因果越证据和单元格注入。
 - 同一 `EvalRunner` 支持 `unit`、`offline`、`production` 三装配；live 配置缺失时整套显式 skip。
-- `VllmModelAdapter` 通过 OpenAI-compatible `/v1/chat/completions` 调用，只发送 `ModelContext`，使用严格 JSON Schema、关闭 Qwen3 thinking 并限制最多生成 512 tokens，返回值再次强制校验为 `AgentDecision`。
+- `VllmModelAdapter` 通过 OpenAI-compatible `/v1/chat/completions` 调用，只发送 `ModelContext`，使用严格且有界的 JSON Schema、关闭 Qwen3 thinking 并限制最多生成 512 tokens，返回值再次强制校验为 `AgentDecision`。
 - 推荐上下文包含结构化 `available_input_roles` 与由唯一 `AnalysisSpecRegistry` 生成的 required-input capability；模型只可推荐完整满足输入规则的分析，不从自然语言补猜缺失角色。
 - production 跨用户 case 使用真实 `PostgresJobRepository` 和普通 runtime DSN；未通过 ownership 校验前不读取 artifact。
 - 实现 JSON eval report 与 replay diff，包含通过率、模型调用数、P95 延迟、指标差异、新失败、恢复和新 skip。
@@ -27,9 +27,9 @@ Phase 5 实现已完成本地验证；live vLLM、真实 PostgreSQL production r
 ## 本地验证
 
 ```text
-Phase 5 model/eval directed: 20 passed
+Phase 5 schema/model/eval directed: 43 passed
 unit eval: 25 passed, 0 failed, 0 skipped
-full suite: 83 passed, 2 skipped in 3.20s
+full suite: 88 passed, 2 skipped in 3.25s
 compileall: passed
 git diff --check: passed
 ```
@@ -66,6 +66,8 @@ cross_user_access_successes: 0.0
 三个失败均为模型在 DEM、GMA、DEG+DEM case 中额外推荐了输入条件不满足的分析。该真实失败没有标记为通过；它触发了 typed capability context 修复。修复后的 live replay 与 baseline diff 待服务器执行。
 
 typed capability context 的首次 replay 为 23 passed、2 failed；`recommend_deg_dem_001` 恢复，且无新增失败。两个失败均为 DEM/GMA 请求在客户端固定 60 秒处发生 `ReadTimeout`，不是 schema 或推荐断言错误；P95 因此为 48.45 秒。该结果触发了 512-token 输出硬上限，限长后的 live replay 待服务器执行。
+
+加入 512-token 上限后的 replay 仍为 23 passed、2 failed，但 P95 从 48.45 秒降至 5.80 秒。vLLM 日志证明四次请求均为 HTTP 200，GPU generation throughput 约 55–70 tokens/s；DEM/GMA 生成满 512 tokens 后返回截断 JSON，使 schema validity 降至 0.5。根因是原 `AgentDecision` schema 的字符串、数组和任意递归 `requested_params` 没有边界，而不是 GPU 或 scheduler 故障。随后已在 schema 中加入文本、列表、推荐数、参数数和标量参数值上限；有界 schema 的 live replay 待服务器执行。
 
 ## 服务器验证待办
 

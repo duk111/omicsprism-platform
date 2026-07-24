@@ -146,3 +146,32 @@ def test_unknown_fields_are_rejected() -> None:
 
     with pytest.raises(ValidationError):
         RouteDecision.model_validate(invalid)
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("reasoning_summary", "x" * 241),
+        ("analysis_recommendations", ["differential", "dem", "correlation", "differential"]),
+        ("requested_params", {f"param_{index}": index for index in range(33)}),
+        ("requested_params", {"nested": {"not": "a scalar"}}),
+    ],
+)
+def test_agent_decision_rejects_unbounded_model_output(field, value) -> None:
+    invalid = deepcopy(VALID_SAMPLES[AgentDecision])
+    invalid[field] = value
+
+    with pytest.raises(ValidationError):
+        AgentDecision.model_validate(invalid)
+
+
+def test_agent_decision_json_schema_exposes_guided_output_bounds() -> None:
+    schema = AgentDecision.model_json_schema()
+    properties = schema["properties"]
+
+    assert properties["reasoning_summary"]["maxLength"] == 240
+    assert properties["analysis_recommendations"]["maxItems"] == 3
+    assert properties["requested_params"]["maxProperties"] == 32
+    feasibility = schema["$defs"]["Feasibility"]["properties"]
+    assert feasibility["reasons"]["maxItems"] == 3
+    assert feasibility["missing_information"]["maxItems"] == 3
