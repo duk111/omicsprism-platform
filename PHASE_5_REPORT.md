@@ -67,7 +67,7 @@ cross_user_access_successes: 0.0
 
 typed capability context 的首次 replay 为 23 passed、2 failed；`recommend_deg_dem_001` 恢复，且无新增失败。两个失败均为 DEM/GMA 请求在客户端固定 60 秒处发生 `ReadTimeout`，不是 schema 或推荐断言错误；P95 因此为 48.45 秒。该结果触发了 512-token 输出硬上限，限长后的 live replay 待服务器执行。
 
-加入 512-token 上限后的 replay 仍为 23 passed、2 failed，但 P95 从 48.45 秒降至 5.80 秒。vLLM 日志证明四次请求均为 HTTP 200，GPU generation throughput 约 55–70 tokens/s；DEM/GMA 生成满 512 tokens 后返回截断 JSON，使 schema validity 降至 0.5。根因是原 `AgentDecision` schema 的字符串、数组和任意递归 `requested_params` 没有边界，而不是 GPU 或 scheduler 故障。随后已在 schema 中加入文本、列表、推荐数、参数数和标量参数值上限；有界 schema 的 live replay 待服务器执行。
+加入 512-token 上限后的 replay 仍为 23 passed、2 failed，但 P95 从 48.45 秒降至 5.80 秒。vLLM 日志证明四次请求均为 HTTP 200，GPU generation throughput 约 55–70 tokens/s；DEM/GMA 生成满 512 tokens 后返回截断 JSON，使 schema validity 降至 0.5。根因是原 `AgentDecision` schema 的字符串、数组和任意递归 `requested_params` 没有边界，而不是 GPU 或 scheduler 故障。随后在 schema 中加入文本、列表、推荐数、参数数和标量参数值上限，最终 live replay 结果如下。
 
 有界 schema 的最终 replay 达标：
 
