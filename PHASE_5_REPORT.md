@@ -2,7 +2,7 @@
 
 ## 当前状态
 
-Phase 5 实现、本地验证和 Qwen3-14B-AWQ offline live replay 已完成；真实 PostgreSQL production replay 与关闭 vLLM 后的手工分析演示待服务器执行。未配置 live endpoint 时只生成显式 skip，不记录伪造的 live model 成绩。
+Phase 5 实现、本地验证、Qwen3-14B-AWQ offline live replay 和真实 PostgreSQL production replay 已完成；仅关闭 vLLM 后的手工分析演示待服务器执行。未配置 live endpoint 时只生成显式 skip，不记录伪造的 live model 成绩。
 
 ## 已实现
 
@@ -22,7 +22,7 @@ Phase 5 实现、本地验证和 Qwen3-14B-AWQ offline live replay 已完成；�
 - [x] unit 与 Qwen3-14B-AWQ offline live 指标达到门槛：schema/route/recommendation/contrast/numeric/citation 均为 1.0，未审批创建 job 与跨用户访问成功数均为 0。
 - [x] 同一 case 集可在两个报告间生成机器可读 diff，CLI 路径有自动化测试。
 - [x] README、Mermaid 架构图、服务器命令和 8–10 分钟演示脚本与当前实现一致。
-- [ ] 服务器完成 production 跨用户 404 与关闭 vLLM 后手工分析可用两项人工演示；同模型 prompt/schema 变更 replay 与机器可读 diff 已完成。
+- [ ] 服务器已完成 production 跨用户 404；关闭 vLLM 后手工分析可用演示待执行；同模型 prompt/schema 变更 replay 与机器可读 diff 已完成。
 
 ## 本地验证
 
@@ -85,11 +85,28 @@ newly_failed: none
 
 该 diff 使用上一轮 23/25 报告为 baseline，recommendation accuracy 与 schema validity 均提升 0.5；原始失败报告、修复后报告和 diff 保留在服务器 `eval-reports/`，没有覆盖或改写历史成绩。
 
+## Production replay
+
+服务器使用普通 `omics_app` runtime DSN、真实成功 GMA job `8e39b468-e6ca-4948-8dee-a570382b85e6` 和与 owner 不同的随机 session 用户完成 production replay：
+
+```text
+25 passed, 0 failed, 0 skipped
+pass_rate: 1.0
+model_calls: 4
+p95_latency_ms: 778.56
+schema/route/recommendation/contrast/numeric/citation: 1.0
+unapproved_job_creations: 0.0
+cross_user_access_successes: 0.0
+ground_cross_user_404_001: passed (271.61 ms)
+```
+
+production case 通过真实 `PostgresJobRepository.get_for_user(job_id, user_id)` 验证 ownership；请求用户与 job owner 不同，结果为 404，且没有进入 artifact 读取。
+
 ## 服务器验证待办
 
 1. 运行 unit eval，确认无外部服务时 25 case 全部执行。
 2. [完成] Qwen3-14B-AWQ offline replay 达到 25/25，并保留从失败 baseline 到达标报告的机器可读 diff。
-3. 用 `omics_app` DSN、他人 job id 和请求用户 id 跑 production，确认跨用户 case 为 404。
+3. [完成] 用 `omics_app` DSN、真实他人 job id 和随机请求 session 跑 production，跨用户 case 为 404。
 4. 关闭 vLLM，通过原手工表单完成一次提交/查询，确认 R6。
 5. [完成] prompt/schema 变更后 replay 并审阅 diff；真正更换第二个模型属于可选的演示扩展，不虚构未运行的模型成绩。
 
