@@ -2,7 +2,7 @@
 
 ## 当前状态
 
-Phase 5 实现、本地验证、Qwen3-14B-AWQ offline/production replay、跨用户 404 和关闭 vLLM 后的手工分析演示已完成；第二个真实模型的 offline replay/diff 待执行。未配置 live endpoint 时只生成显式 skip，不记录伪造的 live model 成绩。
+Phase 5 已完成。实现、本地验证、Qwen3-14B-AWQ offline/production replay、跨用户 404、关闭 vLLM 后的手工分析演示，以及 Qwen3-14B-AWQ 到 Qwen3-8B-AWQ 的真实换模型 replay/diff 均已完成。未配置 live endpoint 时只生成显式 skip，不记录伪造的 live model 成绩。
 
 ## 已实现
 
@@ -22,14 +22,14 @@ Phase 5 实现、本地验证、Qwen3-14B-AWQ offline/production replay、跨用
 - [x] unit 与 Qwen3-14B-AWQ offline live 指标达到门槛：schema/route/recommendation/contrast/numeric/citation 均为 1.0，未审批创建 job 与跨用户访问成功数均为 0。
 - [x] 同一 case 集可在两个报告间生成机器可读 diff，CLI 路径有自动化测试。
 - [x] README、Mermaid 架构图、服务器命令和 8–10 分钟演示脚本与当前实现一致。
-- [ ] 服务器已完成 production 跨用户 404、关闭 vLLM 后手工分析可用和同模型 prompt/schema replay；根契约明确要求的第二个真实模型 replay 待执行。
+- [x] 服务器已完成 production 跨用户 404、关闭 vLLM 后手工分析可用、同模型 prompt/schema replay 和 Qwen3-14B-AWQ 到 Qwen3-8B-AWQ 的真实换模型 replay。
 
 ## 本地验证
 
 ```text
 Phase 5 schema/model/eval directed: 43 passed
 unit eval: 25 passed, 0 failed, 0 skipped
-full suite: 88 passed, 2 skipped in 3.25s
+full suite: 88 passed, 2 skipped in 3.41s
 compileall: passed
 git diff --check: passed
 ```
@@ -85,6 +85,23 @@ newly_failed: none
 
 该 diff 使用上一轮 23/25 报告为 baseline，recommendation accuracy 与 schema validity 均提升 0.5；原始失败报告、修复后报告和 diff 保留在服务器 `eval-reports/`，没有覆盖或改写历史成绩。
 
+## 换模型 replay
+
+服务器使用同一套 offline harness、fixture tools 和 InMemory store，将模型从 Qwen3-14B-AWQ 切换为 Qwen3-8B-AWQ，并以 14B 有界 schema 达标报告为 baseline 生成机器可读 diff：
+
+```text
+model: Qwen3-8B-AWQ
+25 passed, 0 failed, 0 skipped
+pass_rate: 1.0
+model_calls: 4
+p95_latency_ms: 488.686
+schema/route/recommendation/contrast/numeric/citation: 1.0
+unapproved_job_creations: 0.0
+cross_user_access_successes: 0.0
+```
+
+8B 与 14B baseline 均为 25/25，确定性指标无回归；8B 本次 P95 比 14B 的 897.64 ms 低 408.954 ms。原始报告和 diff 分别保留为服务器 `eval-reports/qwen3-8b-awq.json` 与 `eval-reports/qwen3-14b-to-8b.diff.json`。该成绩来自真实 vLLM 0.8.5 endpoint 和 Qwen3-8B-AWQ，不代表通过硬编码或 stub 伪造 live 成绩。
+
 ## Production replay
 
 服务器使用普通 `omics_app` runtime DSN、真实成功 GMA job `8e39b468-e6ca-4948-8dee-a570382b85e6` 和与 owner 不同的随机 session 用户完成 production replay：
@@ -115,16 +132,16 @@ OmicsPrism_results.zip: HTTP 206 (browser Range download)
 
 随后 vLLM 容器恢复为 `running`、exit code 0；`127.0.0.1:18000/health` 成功，`/v1/models` 返回 `Qwen3-14B-AWQ`。当前 shell DSN 查询不到手工 job，是因为它指向 production eval 测试库而非部署 API 的 job store；该 SQL 不作为 R6 证据。R6 结论：模型服务停止不影响原手工表单、任务进度、结果文件和下载路径。
 
-## 服务器验证待办
+## 验证记录
 
-1. 运行 unit eval，确认无外部服务时 25 case 全部执行。
+1. [完成] unit eval 在无外部服务时执行全部 25 case。
 2. [完成] Qwen3-14B-AWQ offline replay 达到 25/25，并保留从失败 baseline 到达标报告的机器可读 diff。
 3. [完成] 用 `omics_app` DSN、真实他人 job id 和随机请求 session 跑 production，跨用户 case 为 404。
 4. [完成] 关闭 vLLM，通过原手工流程完成任务与结果访问，确认 R6；随后恢复 Qwen3-14B-AWQ。
-5. [部分完成] prompt/schema 变更后 replay 与 diff 已审阅；第二个真实模型 replay 待执行，不虚构未运行的模型成绩。
+5. [完成] prompt/schema 变更后 replay 与 diff 已审阅；Qwen3-8B-AWQ 第二模型 replay 为 25/25，并生成相对 14B baseline 的机器可读 diff。
 
 ## 已知缺口
 
-- 当前没有可用的本地 vLLM endpoint，因此本报告不包含 live model 成绩。
+- live model eval 依赖服务器 GPU 与显式 endpoint，只作为人工或定时回归运行，不进入普通 CI；endpoint 缺失时 harness 明确 skip。
 - production replay 只应在受控服务器使用准备好的跨用户 fixture job；不能对真实用户数据做开放式探索。
 - 管理 UI、通用 RAG/SQL/shell、新业务工具和独立多-agent 服务均不在 Phase 5 范围内。
