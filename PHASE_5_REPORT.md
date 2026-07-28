@@ -2,7 +2,7 @@
 
 ## 当前状态
 
-Phase 5 实现、本地验证、Qwen3-14B-AWQ offline live replay 和真实 PostgreSQL production replay 已完成；仅关闭 vLLM 后的手工分析演示待服务器执行。未配置 live endpoint 时只生成显式 skip，不记录伪造的 live model 成绩。
+Phase 5 实现、本地验证、Qwen3-14B-AWQ offline/production replay、跨用户 404 和关闭 vLLM 后的手工分析演示已完成；第二个真实模型的 offline replay/diff 待执行。未配置 live endpoint 时只生成显式 skip，不记录伪造的 live model 成绩。
 
 ## 已实现
 
@@ -22,7 +22,7 @@ Phase 5 实现、本地验证、Qwen3-14B-AWQ offline live replay 和真实 Post
 - [x] unit 与 Qwen3-14B-AWQ offline live 指标达到门槛：schema/route/recommendation/contrast/numeric/citation 均为 1.0，未审批创建 job 与跨用户访问成功数均为 0。
 - [x] 同一 case 集可在两个报告间生成机器可读 diff，CLI 路径有自动化测试。
 - [x] README、Mermaid 架构图、服务器命令和 8–10 分钟演示脚本与当前实现一致。
-- [ ] 服务器已完成 production 跨用户 404；关闭 vLLM 后手工分析可用演示待执行；同模型 prompt/schema 变更 replay 与机器可读 diff 已完成。
+- [ ] 服务器已完成 production 跨用户 404、关闭 vLLM 后手工分析可用和同模型 prompt/schema replay；根契约明确要求的第二个真实模型 replay 待执行。
 
 ## 本地验证
 
@@ -102,13 +102,26 @@ ground_cross_user_404_001: passed (271.61 ms)
 
 production case 通过真实 `PostgresJobRepository.get_for_user(job_id, user_id)` 验证 ownership；请求用户与 job owner 不同，结果为 404，且没有进入 artifact 读取。
 
+## R6 手工演示
+
+服务器停止 `omicsprism-vllm` 后，通过部署 API `http://111.170.173.174:18086` 完成原手工工作流验证：
+
+```text
+backend health: HTTP 200
+manual job: 6a071e89-9b46-4605-bcf6-79260a482c26
+progress/files/images: HTTP 200
+OmicsPrism_results.zip: HTTP 206 (browser Range download)
+```
+
+随后 vLLM 容器恢复为 `running`、exit code 0；`127.0.0.1:18000/health` 成功，`/v1/models` 返回 `Qwen3-14B-AWQ`。当前 shell DSN 查询不到手工 job，是因为它指向 production eval 测试库而非部署 API 的 job store；该 SQL 不作为 R6 证据。R6 结论：模型服务停止不影响原手工表单、任务进度、结果文件和下载路径。
+
 ## 服务器验证待办
 
 1. 运行 unit eval，确认无外部服务时 25 case 全部执行。
 2. [完成] Qwen3-14B-AWQ offline replay 达到 25/25，并保留从失败 baseline 到达标报告的机器可读 diff。
 3. [完成] 用 `omics_app` DSN、真实他人 job id 和随机请求 session 跑 production，跨用户 case 为 404。
-4. 关闭 vLLM，通过原手工表单完成一次提交/查询，确认 R6。
-5. [完成] prompt/schema 变更后 replay 并审阅 diff；真正更换第二个模型属于可选的演示扩展，不虚构未运行的模型成绩。
+4. [完成] 关闭 vLLM，通过原手工流程完成任务与结果访问，确认 R6；随后恢复 Qwen3-14B-AWQ。
+5. [部分完成] prompt/schema 变更后 replay 与 diff 已审阅；第二个真实模型 replay 待执行，不虚构未运行的模型成绩。
 
 ## 已知缺口
 
