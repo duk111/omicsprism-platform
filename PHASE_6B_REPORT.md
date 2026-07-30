@@ -2,7 +2,7 @@
 
 ## 当前状态
 
-Gate B 代码、本地测试、Phase 5 回归和服务器真实 PostgreSQL 定向测试已完成。服务器完整回归首次运行暴露 Python 3.10 lease 时间解析兼容问题与旧 Phase 2 测试契约未同步，修复已提交；Gate B 仍等待修复后的服务器完整回归和人工红线审阅，尚未切换 Gate C。
+Gate B 代码、本地测试、Phase 5 回归、服务器真实 PostgreSQL 定向测试和修复后的完整回归均已完成。Gate B 只等待人工红线审阅，尚未切换 Gate C。
 
 ## 已完成工作
 
@@ -75,7 +75,7 @@ passed
 - [x] worker 单元测试覆盖全局串行、过期 lease recovery、稳定模型错误和原子 checkpoint 调用；乐观锁冲突重放不重复创建或 enqueue job。
 - [x] Phase 5 的 25-case unit replay 为 25/25，全部安全指标零回归。
 - [x] 服务器真实 PostgreSQL claim/lease/advisory lock/atomic checkpoint 与完整审批提交测试为 5/5 通过。
-- [ ] 修复后的服务器完整 backend tests 待复跑。
+- [x] 修复后的服务器完整 backend tests 为 134/134 通过，compileall 通过。
 - [ ] Gate B R1/R2/R4/R5/worker trace 人工审阅待完成。
 
 ## 服务器验证命令
@@ -127,7 +127,17 @@ python3 -m pytest \
 - `test_phase2_control_plane.py` 仍断言 Phase 2 旧上下文字段集合，已同步 Gate A/B 新增的 `available_input_roles`、`analysis_capabilities` 和 `evidence`。
 - `test_agent_db_permissions.py` 的 focused 验证已通过，但完整套件中重复建立 app-role 连接时发生一次 `ConnectionTimeout`；已在保持全部权限断言的前提下合并为单一 app-role 连接。
 
-修复后的完整服务器输出待复跑；上述首次失败不记作通过。
+上述首次失败不记作通过。拉取修复提交 `2ddfb5c` 后重新执行：
+
+```text
+python3 -m pytest backend/tests -q -rs
+134 passed, 1 warning in 23.53s
+
+python3 -m compileall -q backend/app backend/agent_worker.py scripts
+无输出，exit code 0
+```
+
+唯一 warning 是既有 FastAPI `TestClient` 对 Starlette/httpx 兼容层的弃用提示，不影响 Gate B 行为或安全结论。
 
 ### 人工审阅
 
@@ -141,6 +151,6 @@ python3 -m pytest \
 
 ## 已知缺口
 
-- 本地没有专用 PostgreSQL；Gate B 两个数据库用例已在服务器通过，修复后的完整服务器回归仍待复跑。
+- 本地没有专用 PostgreSQL；Gate B 的两个真实数据库用例和完整测试集已在服务器通过。
 - 业务 job 的持久化与 Redis publish 沿用现有 OmicsPrism 提交流程；跨 PostgreSQL/Redis 的事务 outbox 不属于 Gate B，本 Gate 依靠确定性 job id、plan submitted ids 与现有 job 状态幂等收敛。
 - HTTP/SSE、`/copilot` 前端和部署闭环分别属于 Gate C、D、E，当前按契约未实现。
