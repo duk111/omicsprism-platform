@@ -2,7 +2,7 @@
 
 ## 当前状态
 
-Gate B 代码、本地测试、Phase 5 回归、服务器真实 PostgreSQL 定向测试和修复后的完整回归均已完成。Gate B 只等待人工红线审阅，尚未切换 Gate C。
+Gate B 代码、本地测试、Phase 5 回归、服务器真实 PostgreSQL 定向测试、修复后的完整回归和人工红线审阅均已完成。契约已切换到 Gate C。
 
 ## 已完成工作
 
@@ -76,7 +76,7 @@ passed
 - [x] Phase 5 的 25-case unit replay 为 25/25，全部安全指标零回归。
 - [x] 服务器真实 PostgreSQL claim/lease/advisory lock/atomic checkpoint 与完整审批提交测试为 5/5 通过。
 - [x] 修复后的服务器完整 backend tests 为 134/134 通过，compileall 通过。
-- [ ] Gate B R1/R2/R4/R5/worker trace 人工审阅待完成。
+- [x] Gate B R1/R2/R4/R5/worker trace 人工审阅通过。
 
 ## 服务器验证命令
 
@@ -141,7 +141,7 @@ python3 -m compileall -q backend/app backend/agent_worker.py scripts
 
 ### 人工审阅
 
-待人工确认：
+2026-07-30，Phase 6 Gate B R1/R2/R4/R5/worker trace 人工审阅通过：
 
 - R1：worker 发往模型的上下文无句柄、凭据、路径/storage key 或原始 CSV。
 - R2：interpretation profile 结构上无写工具。
