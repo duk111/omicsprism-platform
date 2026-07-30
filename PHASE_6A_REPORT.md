@@ -2,7 +2,7 @@
 
 ## 当前状态
 
-Gate A 实现与本地验证已完成。真实 PostgreSQL 权限测试和规定的人工红线审阅仍待完成，Gate B 尚未开始。
+Gate A 实现、本地验证与服务器真实 PostgreSQL 权限测试已完成。规定的人工红线审阅仍待确认，Gate B 尚未开始。
 
 ## 已完成工作
 
@@ -62,8 +62,8 @@ citation_coverage 1.0
 - [x] 相同幂等请求只返回一个 turn；request、thread 或 run 改变时返回冲突。
 - [x] SQL 授权规定 `agent_messages`/`agent_events` 仅有 SELECT/INSERT，所有产品表均无 DELETE 权限。
 - [x] 单元测试证明未审批、过期、hash 不匹配、已拒绝和跨用户审批均保持 job 创建数为 0。
-- [ ] 在服务器专用测试库应用 migration 004/005，并运行真实 PostgreSQL 权限测试。
-- [ ] 将服务器输出补入下节，并完成人工 R3/R4/append-only 审阅。
+- [x] 已在服务器专用测试库应用 migration 004/005，并通过真实 PostgreSQL 权限测试。
+- [ ] 完成人工 R3/R4/append-only 审阅。
 
 ## 服务器验证
 
@@ -94,7 +94,21 @@ applied 005_agent_product_roles.sql
 
 ### 服务器输出
 
-待补充。
+2026-07-30 在 worker 所在服务器执行：
+
+```text
+python3 scripts/migrate.py
+applied 004_agent_product_tables.sql
+applied 005_agent_product_roles.sql
+
+python3 -m pytest \
+  backend/tests/test_agent_db_permissions.py \
+  backend/tests/test_runtime_database_permissions.py \
+  backend/tests/test_phase6a_db_permissions.py \
+  -q -rs
+... [100%]
+3 passed in 12.81s
+```
 
 ### 人工审阅
 
@@ -102,6 +116,6 @@ applied 005_agent_product_roles.sql
 
 ## 已知缺口
 
-- 本工作站没有执行真实 PostgreSQL constraints/grants；缺少数据库环境变量时相关测试按契约明确 skip。
+- 本工作站缺少数据库环境变量时相关测试按契约明确 skip；真实 constraints/grants 已在服务器专用测试库验证通过。
 - Gate B 的生产协调器和 agent worker 按范围尚未实现。
 - HTTP/SSE 路由与前端接入分别属于 Gate C/D，当前按契约不存在。
