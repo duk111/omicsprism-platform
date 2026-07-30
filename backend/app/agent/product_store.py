@@ -171,14 +171,17 @@ class InMemoryAgentProductStore:
     def claim_next_turn(self, *, worker_id: str, now: datetime, lease_seconds: int) -> AgentTurnRecord | None:
         if not worker_id or lease_seconds < 1:
             raise ValueError("worker_id and a positive lease are required")
-        eligible = [
+        turns = [
             AgentTurnRecord.model_validate(deepcopy(payload))
             for payload in self._turns.values()
-            if payload["status"] == AgentTurnStatus.QUEUED.value
+        ]
+        eligible = [
+            turn for turn in turns
+            if turn.status is AgentTurnStatus.QUEUED
             or (
-                payload["status"] == AgentTurnStatus.RUNNING.value
-                and payload.get("lease_expires_at") is not None
-                and datetime.fromisoformat(payload["lease_expires_at"]) <= now
+                turn.status is AgentTurnStatus.RUNNING
+                and turn.lease_expires_at is not None
+                and turn.lease_expires_at <= now
             )
         ]
         eligible.sort(key=lambda item: (item.created_at, item.turn_id))

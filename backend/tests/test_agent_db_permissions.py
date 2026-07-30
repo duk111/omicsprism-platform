@@ -80,15 +80,11 @@ def test_omics_app_can_append_but_cannot_mutate_agent_events() -> None:
                 "update agent_runs set version = 1 where run_id = %s and user_id = %s",
                 (run_id, user_id),
             )
-
-        with psycopg.connect(APP_DSN, autocommit=True) as conn:
             with pytest.raises(InsufficientPrivilege):
                 conn.execute(
                     "update agent_events set event_type = 'tampered' where event_id = %s",
                     (event_id,),
                 )
-
-        with psycopg.connect(APP_DSN, autocommit=True) as conn:
             with pytest.raises(InsufficientPrivilege):
                 conn.execute("delete from agent_events where event_id = %s", (event_id,))
     finally:

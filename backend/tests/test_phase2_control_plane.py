@@ -235,6 +235,9 @@ def test_context_builder_only_emits_minimal_serializable_context() -> None:
         "in_scope_job_ids",
         "conversation_summary",
         "available_tools",
+        "available_input_roles",
+        "analysis_capabilities",
+        "evidence",
     }
     assert "database_url" not in context.model_dump()
     assert "raw_file_path" not in context.model_dump()
