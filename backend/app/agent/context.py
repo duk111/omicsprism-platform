@@ -5,7 +5,7 @@ from typing import Protocol
 
 from ..analysis_specs import AnalysisSpecRegistry
 from .policy import ProfilePolicyGuard
-from .schemas import ActiveProfile, AnalysisCapability, ModelContext, RunState
+from .schemas import ActiveProfile, AnalysisCapability, ModelContext, RunState, ToolResult
 
 
 class ContextBuilder(Protocol):
@@ -18,6 +18,7 @@ class ContextBuilder(Protocol):
         active_profile: ActiveProfile,
         user_message: str,
         available_input_roles: Sequence[str] = (),
+        evidence: ToolResult | None = None,
     ) -> ModelContext:
         ...
 
@@ -33,6 +34,7 @@ class MinimalContextBuilder:
         active_profile: ActiveProfile,
         user_message: str,
         available_input_roles: Sequence[str] = (),
+        evidence: ToolResult | None = None,
     ) -> ModelContext:
         tools = sorted(ProfilePolicyGuard.allowed_tools(active_profile), key=lambda tool: tool.value)
         is_analysis = active_profile is ActiveProfile.ANALYSIS
@@ -45,6 +47,7 @@ class MinimalContextBuilder:
             available_input_roles=sorted(set(available_input_roles)) if is_analysis else [],
             analysis_capabilities=build_analysis_capabilities(self.analysis_specs) if is_analysis else [],
             available_tools=tools,
+            evidence=evidence,
         )
 
 

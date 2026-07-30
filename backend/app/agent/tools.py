@@ -8,19 +8,26 @@ from pathlib import Path
 from datetime import datetime, timezone
 from uuid import NAMESPACE_URL, uuid5
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Protocol
 
 from fastapi import HTTPException, UploadFile
 
 from ..analysis_specs import AnalysisSpecRegistry
-from ..models import AnalysisType, JobOwnerType, JobRecord, JobStatus
+from ..models import AnalysisType, JobOwnerType, JobRecord, JobStatus, UploadedFileInfo
 from ..preflight import PreflightService, build_contrast_preview
 from .schemas import ToolName, ToolResult
 from .approvals import ApprovalGate
 from .plans import PlanNotFound, PlanStore, compute_plan_hash
 from .policy import PolicyGuard
-from .schemas import ActiveProfile, AgentInputSourceKind
+from .product_store import AgentProductStore, AgentResourceNotFound
+from .schemas import (
+    ActiveProfile,
+    AgentInputBundleStatus,
+    AgentInputFileRecord,
+    AgentInputSourceKind,
+    AgentInputSourceRef,
+)
 
 
 MAX_TOOL_ROWS = 50
@@ -64,12 +71,101 @@ class AgentExecutor(Protocol):
         ...
 
 
+class AgentInputSource(Protocol):
+    """已经绑定会话用户的输入来源；模型永远拿不到该对象。"""
+
+    user_id: str
+    ref: AgentInputSourceRef
+    project_id: str | None
+    project_name: str
+    owner_label: str | None
+
+    def load_inputs(self) -> Mapping[str, AgentInputFile]:
+        ...
+
+    def copy_inputs(self, target_job_id: str) -> list[UploadedFileInfo]:
+        ...
+
+
+class AgentStagedFileService(Protocol):
+    def open_storage_key(self, storage_key: str):
+        ...
+
+    def copy_staged_input(self, target_job_id: str, item: AgentInputFileRecord) -> UploadedFileInfo:
+        ...
+
+
+class ExistingJobInputSource:
+    def __init__(self, *, user_id: str, source_job_id: str,
+                 job_store: AgentJobStore, files: AgentFileService) -> None:
+        self.user_id = user_id
+        self.job_store = job_store
+        self.files = files
+        self.job = job_store.get_for_user(source_job_id, user_id)
+        self.ref = AgentInputSourceRef(kind=AgentInputSourceKind.EXISTING_JOB, source_id=source_job_id)
+        self.project_id = self.job.project_id
+        self.project_name = self.job.project_name
+        self.owner_label = self.job.owner_label
+
+    def load_inputs(self) -> Mapping[str, AgentInputFile]:
+        inputs: dict[str, AgentInputFile] = {}
+        for item in self.job.inputs:
+            with self.files.open_artifact(self.job.id, item.path) as handle:
+                content = handle.read(50 * 1024 * 1024 + 1)
+            if len(content) > 50 * 1024 * 1024:
+                raise ToolConfigurationError(f"input {item.field} exceeds 50 MB")
+            _verify_input_checksum(content, item.checksum, item.field)
+            inputs[item.field] = AgentInputFile(item.filename, bytes(content))
+        return inputs
+
+    def copy_inputs(self, target_job_id: str) -> list[UploadedFileInfo]:
+        return [
+            self.files.copy_input_artifact(self.job.id, target_job_id, item)
+            for item in self.job.inputs
+        ]
+
+
+class StagedBundleInputSource:
+    def __init__(self, *, user_id: str, thread_id: str, bundle_id: str,
+                 product_store: AgentProductStore, files: AgentStagedFileService,
+                 now: datetime | None = None) -> None:
+        current = now or datetime.now(timezone.utc)
+        bundle = product_store.get_input_bundle(bundle_id=bundle_id, user_id=user_id)
+        if bundle.thread_id != thread_id:
+            raise AgentResourceNotFound(bundle_id)
+        if bundle.status is not AgentInputBundleStatus.ACTIVE or current >= bundle.expires_at:
+            raise ToolConfigurationError("staged input bundle is not active")
+        self.user_id = user_id
+        self.product_store = product_store
+        self.files = files
+        self.items = product_store.list_input_files(bundle_id=bundle_id, user_id=user_id)
+        self.ref = AgentInputSourceRef(kind=AgentInputSourceKind.STAGED_BUNDLE, source_id=bundle_id)
+        self.project_id = None
+        self.project_name = "Copilot analysis"
+        self.owner_label = None
+
+    def load_inputs(self) -> Mapping[str, AgentInputFile]:
+        inputs: dict[str, AgentInputFile] = {}
+        for item in self.items:
+            with self.files.open_storage_key(item.storage_key) as handle:
+                content = handle.read(50 * 1024 * 1024 + 1)
+            if len(content) > 50 * 1024 * 1024:
+                raise ToolConfigurationError(f"input {item.field} exceeds 50 MB")
+            _verify_input_checksum(content, item.checksum, item.field)
+            inputs[item.field] = AgentInputFile(item.filename, bytes(content))
+        return inputs
+
+    def copy_inputs(self, target_job_id: str) -> list[UploadedFileInfo]:
+        return [self.files.copy_staged_input(target_job_id, item) for item in self.items]
+
+
 @dataclass
 class AgentToolRuntime:
     """由 API 会话创建的工具运行时；身份和服务句柄不会进入模型上下文。"""
 
     user_id: str
-    inputs: Mapping[str, AgentInputFile]
+    inputs: Mapping[str, AgentInputFile] = field(default_factory=dict)
+    input_source: AgentInputSource | None = None
     input_source_job_id: str | None = None
     analysis_specs: AnalysisSpecRegistry | None = None
     preflight_service: PreflightService | None = None
@@ -91,18 +187,45 @@ class AgentToolRuntime:
         executor: AgentExecutor | None = None,
         approval_gate: ApprovalGate | None = None,
     ) -> "AgentToolRuntime":
-        job = job_store.get_for_user(source_job_id, user_id)
-        inputs: dict[str, AgentInputFile] = {}
-        for item in job.inputs:
-            with files.open_artifact(job.id, item.path) as handle:
-                content = handle.read(50 * 1024 * 1024 + 1)
-            if len(content) > 50 * 1024 * 1024:
-                raise ToolConfigurationError(f"input {item.field} exceeds 50 MB")
-            inputs[item.field] = AgentInputFile(item.filename, bytes(content))
+        source = ExistingJobInputSource(
+            user_id=user_id,
+            source_job_id=source_job_id,
+            job_store=job_store,
+            files=files,
+        )
+        return cls.from_input_source(
+            user_id=user_id,
+            input_source=source,
+            plans=plans,
+            job_store=job_store,
+            files=files,
+            executor=executor,
+            approval_gate=approval_gate,
+        )
+
+    @classmethod
+    def from_input_source(
+        cls,
+        *,
+        user_id: str,
+        input_source: AgentInputSource,
+        plans: PlanStore | None = None,
+        job_store: AgentJobStore | None = None,
+        files: AgentFileService | None = None,
+        executor: AgentExecutor | None = None,
+        approval_gate: ApprovalGate | None = None,
+    ) -> "AgentToolRuntime":
+        if input_source.user_id != user_id:
+            raise ToolConfigurationError("input source belongs to another user")
         return cls(
             user_id=user_id,
-            inputs=inputs,
-            input_source_job_id=source_job_id,
+            inputs=input_source.load_inputs(),
+            input_source=input_source,
+            input_source_job_id=(
+                input_source.ref.source_id
+                if input_source.ref.kind is AgentInputSourceKind.EXISTING_JOB
+                else None
+            ),
             plans=plans,
             job_store=job_store,
             files=files,
@@ -113,10 +236,23 @@ class AgentToolRuntime:
     def __post_init__(self) -> None:
         if not self.user_id:
             raise ToolConfigurationError("session user_id is required")
+        if self.input_source is not None and self.input_source.user_id != self.user_id:
+            raise ToolConfigurationError("input source belongs to another user")
         if self.analysis_specs is None:
             self.analysis_specs = AnalysisSpecRegistry()
         if self.preflight_service is None:
             self.preflight_service = PreflightService()
+
+    @property
+    def input_source_ref(self) -> AgentInputSourceRef:
+        if self.input_source is not None:
+            return self.input_source.ref
+        if self.input_source_job_id:
+            return AgentInputSourceRef(
+                kind=AgentInputSourceKind.EXISTING_JOB,
+                source_id=self.input_source_job_id,
+            )
+        raise ToolConfigurationError("agent input source is not configured")
 
     def inspect_uploaded_inputs(self) -> ToolResult:
         rows = [_inspect_input(field, item) for field, item in sorted(self.inputs.items())]
@@ -190,10 +326,11 @@ class AgentToolRuntime:
             return _tool_result(ToolName.SUBMIT_APPROVED_PLAN, rows=[], ok=False, error_code="preflight_blocked")
         if compute_plan_hash(plan) != plan.plan_hash:
             return _tool_result(ToolName.SUBMIT_APPROVED_PLAN, rows=[], ok=False, error_code="plan_hash_mismatch")
-        if plan.input_source.kind is not AgentInputSourceKind.EXISTING_JOB:
-            return _tool_result(ToolName.SUBMIT_APPROVED_PLAN, rows=[], ok=False, error_code="input_source_mismatch")
-        source_job_id = plan.input_source.source_id
-        if self.input_source_job_id != source_job_id:
+        try:
+            runtime_ref = self.input_source_ref
+        except ToolConfigurationError:
+            runtime_ref = None
+        if runtime_ref != plan.input_source:
             return _tool_result(ToolName.SUBMIT_APPROVED_PLAN, rows=[], ok=False, error_code="input_source_mismatch")
         fresh_preflight = self.run_preflight(plan.analysis_type, plan.effective_params)
         if not fresh_preflight.ok:
@@ -208,7 +345,6 @@ class AgentToolRuntime:
             now=datetime.now(timezone.utc),
         ):
             return _tool_result(ToolName.SUBMIT_APPROVED_PLAN, rows=[], ok=False, error_code="approval_required")
-        source = self.job_store.get_for_user(source_job_id, self.user_id)
         job_id = str(uuid5(NAMESPACE_URL, f"omicsprism:{self.user_id}:{idempotency_key}"))
         try:
             existing = self.job_store.get_for_user(job_id, self.user_id)
@@ -220,21 +356,28 @@ class AgentToolRuntime:
             existing = None
         if existing is None:
             now = datetime.now(timezone.utc)
-            inputs = [
-                self.files.copy_input_artifact(source.id, job_id, item)
-                for item in source.inputs
-            ]
+            if self.input_source is not None:
+                inputs = self.input_source.copy_inputs(job_id)
+                project_id = self.input_source.project_id or job_id
+                project_name = self.input_source.project_name
+                owner_label = self.input_source.owner_label
+            else:
+                source = self.job_store.get_for_user(plan.input_source.source_id, self.user_id)
+                inputs = [self.files.copy_input_artifact(source.id, job_id, item) for item in source.inputs]
+                project_id = source.project_id or job_id
+                project_name = source.project_name
+                owner_label = source.owner_label
             job = JobRecord(
                 id=job_id,
-                project_id=source.project_id or job_id,
-                project_name=source.project_name,
+                project_id=project_id,
+                project_name=project_name,
                 analysis_type=plan.analysis_type,
                 status=JobStatus.QUEUED,
                 created_at=now,
                 updated_at=now,
                 owner_type=JobOwnerType.USER,
                 owner_id=self.user_id,
-                owner_label=source.owner_label,
+                owner_label=owner_label,
                 inputs=inputs,
                 params=plan.effective_params,
                 progress=0,
@@ -490,3 +633,12 @@ def _sort_value(value: str | None) -> tuple[int, object]:
         return (1, float(value))
     except (TypeError, ValueError):
         return (2, str(value))
+
+
+def _verify_input_checksum(content: bytes, expected_checksum: str | None, field: str) -> None:
+    if not expected_checksum:
+        return
+    expected = str(expected_checksum).removeprefix("sha256:")
+    actual = hashlib.sha256(content).hexdigest()
+    if expected != actual:
+        raise ToolConfigurationError(f"input {field} checksum changed")

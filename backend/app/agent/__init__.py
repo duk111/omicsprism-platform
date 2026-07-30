@@ -17,10 +17,19 @@ from .eval import EvalAssembly, EvalAssemblyFactory, EvalRunner, compare_reports
 from .model import ScriptedModelAdapter, VllmModelAdapter
 from .policy import ProfilePolicyGuard
 from .router import RuleRouter
+from .runtime import ProductionRunCoordinator
 from .store import InMemoryStateStore, PostgresStateStore
 from .plans import InMemoryPlanStore, JsonPlanStore, PostgresPlanStore
 from .product_store import InMemoryAgentProductStore, PostgresAgentProductStore
-from .tools import AgentInputFile, AgentToolRuntime, PolicyToolExecutor, ToolConfigurationError, ToolRegistry
+from .tools import (
+    AgentInputFile,
+    AgentToolRuntime,
+    ExistingJobInputSource,
+    PolicyToolExecutor,
+    StagedBundleInputSource,
+    ToolConfigurationError,
+    ToolRegistry,
+)
 
 __all__ = [
     "AgentDecision",
@@ -44,6 +53,7 @@ __all__ = [
     "load_golden_cases",
     "ProfilePolicyGuard",
     "RuleRouter",
+    "ProductionRunCoordinator",
     "InMemoryStateStore",
     "PostgresStateStore",
     "InMemoryPlanStore",
@@ -54,6 +64,8 @@ __all__ = [
     "PostgresAgentProductStore",
     "AgentInputFile",
     "AgentToolRuntime",
+    "ExistingJobInputSource",
+    "StagedBundleInputSource",
     "PolicyToolExecutor",
     "ToolConfigurationError",
     "ToolRegistry",

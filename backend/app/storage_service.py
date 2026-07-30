@@ -350,6 +350,48 @@ class FileStorageService:
             created_at=datetime.now(timezone.utc),
         )
 
+    def open_storage_key(self, storage_key: str) -> BinaryIO:
+        """仅供已经过 ownership 校验的内部输入源读取暂存对象。"""
+        return self.backend.open(storage_key)
+
+    def copy_staged_input(self, target_job_id: str, item) -> UploadedFileInfo:
+        filename = _safe_filename(item.filename, f"{item.field}.csv")
+        relative_path = f"inputs/{item.field}.csv"
+        storage_key = self._storage_key(target_job_id, relative_path)
+        with self.backend.open(item.storage_key) as handle:
+            content = handle.read(CSV_MAX_BYTES + 1)
+        if not content or len(content) > CSV_MAX_BYTES:
+            raise HTTPException(status_code=400, detail=f"{item.field} staged input is invalid")
+        checksum = hashlib.sha256(content).hexdigest()
+        expected = str(item.checksum).removeprefix("sha256:")
+        if expected and checksum != expected:
+            raise HTTPException(status_code=409, detail=f"{item.field} staged input checksum changed")
+        self.backend.put_bytes(
+            content,
+            storage_key,
+            content_type=item.content_type or "text/csv",
+            metadata={
+                "checksum": checksum,
+                "created_at": datetime.now(timezone.utc).isoformat(),
+                "kind": FileArtifactKind.INPUT.value,
+                "field": item.field,
+                "filename": filename,
+                "path": relative_path,
+                "source_bundle_id": item.bundle_id,
+            },
+        )
+        return UploadedFileInfo(
+            kind=FileArtifactKind.INPUT,
+            field=item.field,
+            filename=filename,
+            path=relative_path,
+            storage_key=storage_key,
+            checksum=checksum,
+            content_type=item.content_type or "text/csv",
+            size_bytes=len(content),
+            created_at=datetime.now(timezone.utc),
+        )
+
     def ensure_local_copy(self, job_id: str, artifact: FileArtifactInfo) -> Path:
         relative_path = artifact.path
         workspace_path = self._workspace_path(job_id, relative_path)

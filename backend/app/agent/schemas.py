@@ -172,6 +172,7 @@ class ModelContext(ContractModel):
     available_input_roles: list[str] = Field(default_factory=list, max_length=20)
     analysis_capabilities: list[AnalysisCapability] = Field(default_factory=list, max_length=3)
     available_tools: list[ToolName] = Field(max_length=6)
+    evidence: ToolResult | None = None
 
 
 class Citation(ContractModel):
@@ -340,6 +341,13 @@ AgentMessageBlock = Annotated[
     | AgentErrorBlock,
     Field(discriminator="type"),
 ]
+
+
+class AgentTurnExecutionResult(ContractModel):
+    state: RunState
+    blocks: list[AgentMessageBlock] = Field(max_length=20)
+    expected_version: int = Field(ge=0)
+    events: list[AgentEvent] = Field(default_factory=list, max_length=20)
 
 
 class AgentThreadCreateRequest(ContractModel):
@@ -570,3 +578,5 @@ class EvalDiffReport(ContractModel):
 
 
 AgentDecision.model_rebuild()
+ModelContext.model_rebuild()
+AgentTurnExecutionResult.model_rebuild()

@@ -38,6 +38,13 @@ class AppSettings:
     runtime_database_url: str | None = None
     redis_url: str = "redis://localhost:6379/0"
     redis_queue_name: str = "omicsprism:jobs"
+    agent_model_url: str | None = None
+    agent_model_name: str | None = None
+    agent_model_api_key: str | None = None
+    agent_turn_timeout_seconds: float = 90.0
+    agent_lease_seconds: int = 120
+    agent_max_attempts: int = 3
+    agent_poll_seconds: float = 1.0
     log_level: str = "INFO"
     dev_email: str = "dev@omicsprism.local"
     dev_password: str = "dev-password"
@@ -74,6 +81,13 @@ def load_settings() -> AppSettings:
         runtime_database_url=os.getenv("OMICS_PRISM_RUNTIME_DATABASE_URL") or None,
         redis_url=os.getenv("OMICS_PRISM_REDIS_URL", "redis://localhost:6379/0"),
         redis_queue_name=os.getenv("OMICS_PRISM_REDIS_QUEUE", "omicsprism:jobs"),
+        agent_model_url=os.getenv("OMICS_PRISM_AGENT_MODEL_URL") or None,
+        agent_model_name=os.getenv("OMICS_PRISM_AGENT_MODEL_NAME") or None,
+        agent_model_api_key=os.getenv("OMICS_PRISM_AGENT_MODEL_API_KEY") or None,
+        agent_turn_timeout_seconds=float(os.getenv("OMICS_PRISM_AGENT_TURN_TIMEOUT_SECONDS", "90")),
+        agent_lease_seconds=int(os.getenv("OMICS_PRISM_AGENT_LEASE_SECONDS", "120")),
+        agent_max_attempts=int(os.getenv("OMICS_PRISM_AGENT_MAX_ATTEMPTS", "3")),
+        agent_poll_seconds=float(os.getenv("OMICS_PRISM_AGENT_POLL_SECONDS", "1")),
         log_level=os.getenv("OMICS_PRISM_LOG_LEVEL", "INFO"),
         dev_email=os.getenv("OMICS_PRISM_DEV_EMAIL", "dev@omicsprism.local"),
         dev_password=os.getenv("OMICS_PRISM_DEV_PASSWORD", "dev-password"),

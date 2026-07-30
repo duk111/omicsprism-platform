@@ -1,16 +1,24 @@
 from __future__ import annotations
 
+from contextlib import contextmanager
 from copy import deepcopy
-from typing import Any, Protocol
+from datetime import datetime, timedelta
+import threading
+from typing import Any, Iterator, Protocol
 
 from .schemas import (
+    AgentEvent,
     AgentInputBundleRecord,
     AgentInputFileRecord,
+    AgentMessageBlock,
     AgentMessageRecord,
+    AgentMessageRole,
     AgentThreadRecord,
     AgentTurnRecord,
     AgentTurnStatus,
+    RunState,
 )
+from .store import StateConflict
 
 
 class AgentResourceNotFound(LookupError):
@@ -22,6 +30,10 @@ class IdempotencyConflict(RuntimeError):
 
 
 class ActiveTurnConflict(RuntimeError):
+    pass
+
+
+class TurnLeaseMismatch(RuntimeError):
     pass
 
 
@@ -47,6 +59,16 @@ class AgentProductStore(Protocol):
     def list_turns(self, *, thread_id: str, user_id: str, limit: int = 100) -> list[AgentTurnRecord]:
         ...
 
+    def claim_next_turn(self, *, worker_id: str, now: datetime, lease_seconds: int) -> AgentTurnRecord | None:
+        ...
+
+    def finish_turn(self, *, turn_id: str, user_id: str, worker_id: str,
+                    status: AgentTurnStatus, now: datetime, error_code: str | None = None) -> AgentTurnRecord:
+        ...
+
+    def worker_slot(self) -> Iterator[bool]:
+        ...
+
     def save_input_bundle(self, bundle: AgentInputBundleRecord) -> None:
         ...
 
@@ -62,6 +84,8 @@ class AgentProductStore(Protocol):
 
 class InMemoryAgentProductStore:
     """普通 CI 使用的精确 repository 契约，不生成业务假数据。"""
+
+    _worker_lock = threading.Lock()
 
     def __init__(self, shared: dict[str, Any] | None = None) -> None:
         self._shared = shared if shared is not None else {}
@@ -143,6 +167,57 @@ class InMemoryAgentProductStore:
         ]
         records.sort(key=lambda item: (item.created_at, item.turn_id))
         return records[-bounded:]
+
+    def claim_next_turn(self, *, worker_id: str, now: datetime, lease_seconds: int) -> AgentTurnRecord | None:
+        if not worker_id or lease_seconds < 1:
+            raise ValueError("worker_id and a positive lease are required")
+        eligible = [
+            AgentTurnRecord.model_validate(deepcopy(payload))
+            for payload in self._turns.values()
+            if payload["status"] == AgentTurnStatus.QUEUED.value
+            or (
+                payload["status"] == AgentTurnStatus.RUNNING.value
+                and payload.get("lease_expires_at") is not None
+                and datetime.fromisoformat(payload["lease_expires_at"]) <= now
+            )
+        ]
+        eligible.sort(key=lambda item: (item.created_at, item.turn_id))
+        if not eligible:
+            return None
+        turn = eligible[0]
+        turn.status = AgentTurnStatus.RUNNING
+        turn.attempt += 1
+        turn.lease_owner = worker_id
+        turn.lease_expires_at = now + timedelta(seconds=lease_seconds)
+        turn.started_at = turn.started_at or now
+        turn.updated_at = now
+        self._turns[turn.turn_id] = turn.model_dump(mode="json")
+        return turn.model_copy(deep=True)
+
+    def finish_turn(self, *, turn_id: str, user_id: str, worker_id: str,
+                    status: AgentTurnStatus, now: datetime, error_code: str | None = None) -> AgentTurnRecord:
+        if status not in {AgentTurnStatus.COMPLETED, AgentTurnStatus.FAILED}:
+            raise ValueError("turn may only finish as completed or failed")
+        turn = self.get_turn(turn_id=turn_id, user_id=user_id)
+        if turn.status is not AgentTurnStatus.RUNNING or turn.lease_owner != worker_id:
+            raise TurnLeaseMismatch(turn_id)
+        turn.status = status
+        turn.error_code = error_code
+        turn.lease_owner = None
+        turn.lease_expires_at = None
+        turn.completed_at = now
+        turn.updated_at = now
+        self._turns[turn.turn_id] = turn.model_dump(mode="json")
+        return turn.model_copy(deep=True)
+
+    @contextmanager
+    def worker_slot(self) -> Iterator[bool]:
+        acquired = self._worker_lock.acquire(blocking=False)
+        try:
+            yield acquired
+        finally:
+            if acquired:
+                self._worker_lock.release()
 
     def save_input_bundle(self, bundle: AgentInputBundleRecord) -> None:
         self.get_thread(thread_id=bundle.thread_id, user_id=bundle.user_id)
@@ -332,6 +407,187 @@ class PostgresAgentProductStore:
                 (thread_id, user_id, bounded),
             ).fetchall()
         return [_turn_from_row(row) for row in reversed(rows)]
+
+    def claim_next_turn(self, *, worker_id: str, now: datetime, lease_seconds: int) -> AgentTurnRecord | None:
+        if not worker_id or lease_seconds < 1:
+            raise ValueError("worker_id and a positive lease are required")
+        lease_expires_at = now + timedelta(seconds=lease_seconds)
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                with candidate as (
+                    select turn_id
+                    from agent_turns
+                    where status = 'queued'
+                       or (status = 'running' and lease_expires_at <= %s)
+                    order by created_at, turn_id
+                    for update skip locked
+                    limit 1
+                )
+                update agent_turns as turn set
+                    status = 'running',
+                    attempt = turn.attempt + 1,
+                    lease_owner = %s,
+                    lease_expires_at = %s,
+                    started_at = coalesce(turn.started_at, %s),
+                    updated_at = %s
+                from candidate
+                where turn.turn_id = candidate.turn_id
+                returning turn.turn_id, turn.thread_id, turn.run_id, turn.user_id,
+                          turn.idempotency_key, turn.request_hash, turn.status, turn.attempt,
+                          turn.lease_owner, turn.lease_expires_at, turn.error_code,
+                          turn.created_at, turn.updated_at, turn.started_at, turn.completed_at
+                """,
+                (now, worker_id, lease_expires_at, now, now),
+            ).fetchone()
+        return _turn_from_row(row) if row is not None else None
+
+    def finish_turn(self, *, turn_id: str, user_id: str, worker_id: str,
+                    status: AgentTurnStatus, now: datetime, error_code: str | None = None) -> AgentTurnRecord:
+        if status not in {AgentTurnStatus.COMPLETED, AgentTurnStatus.FAILED}:
+            raise ValueError("turn may only finish as completed or failed")
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                update agent_turns set
+                    status = %s,
+                    error_code = %s,
+                    lease_owner = null,
+                    lease_expires_at = null,
+                    completed_at = %s,
+                    updated_at = %s
+                where turn_id = %s and user_id = %s
+                  and status = 'running' and lease_owner = %s
+                returning turn_id, thread_id, run_id, user_id, idempotency_key,
+                          request_hash, status, attempt, lease_owner, lease_expires_at,
+                          error_code, created_at, updated_at, started_at, completed_at
+                """,
+                (status.value, error_code, now, now, turn_id, user_id, worker_id),
+            ).fetchone()
+        if row is None:
+            raise TurnLeaseMismatch(turn_id)
+        return _turn_from_row(row)
+
+    def commit_turn_result(self, *, turn: AgentTurnRecord, worker_id: str,
+                           state: RunState, expected_version: int,
+                           blocks: list[AgentMessageBlock], events: list[AgentEvent],
+                           now: datetime) -> AgentTurnRecord:
+        if (state.run_id, state.user_id, state.thread_id) != (turn.run_id, turn.user_id, turn.thread_id):
+            raise ValueError("turn checkpoint does not match run ownership")
+        if state.version != expected_version + 1:
+            raise ValueError("turn checkpoint version is not the next run version")
+        Jsonb = _jsonb_type()
+        with self._connect() as conn:
+            updated = conn.execute(
+                """
+                update agent_runs set
+                    thread_id = %s,
+                    active_profile = %s,
+                    state = %s,
+                    step_no = %s,
+                    plan_id = %s,
+                    plan_hash = %s,
+                    pending_approval_id = %s,
+                    focus = %s,
+                    model_calls = %s,
+                    tool_calls = %s,
+                    status = %s,
+                    version = %s,
+                    updated_at = %s
+                where run_id = %s and user_id = %s and version = %s
+                returning run_id
+                """,
+                (
+                    state.thread_id,
+                    state.active_profile.value,
+                    state.state.value,
+                    state.step_no,
+                    state.plan_id,
+                    state.plan_hash,
+                    state.pending_approval_id,
+                    Jsonb(state.focus.model_dump(mode="json")),
+                    state.model_calls,
+                    state.tool_calls,
+                    state.status.value,
+                    expected_version + 1,
+                    now,
+                    state.run_id,
+                    state.user_id,
+                    expected_version,
+                ),
+            ).fetchone()
+            if updated is None:
+                raise StateConflict(f"expected version {expected_version}")
+            if blocks:
+                conn.execute(
+                    """
+                    insert into agent_messages (
+                        message_id, thread_id, run_id, user_id, role, blocks, created_at
+                    ) values (%s, %s, %s, %s, %s, %s, %s)
+                    """,
+                    (
+                        f"assistant-{turn.turn_id}",
+                        turn.thread_id,
+                        turn.run_id,
+                        turn.user_id,
+                        AgentMessageRole.ASSISTANT.value,
+                        Jsonb([block.model_dump(mode="json") for block in blocks]),
+                        now,
+                    ),
+                )
+            for event in events:
+                if event.run_id != turn.run_id or event.user_id != turn.user_id:
+                    raise ValueError("turn event does not match run ownership")
+                conn.execute(
+                    """
+                    insert into agent_events (
+                        event_id, run_id, user_id, step_no, event_type, payload, created_at
+                    ) values (%s, %s, %s, %s, %s, %s, %s)
+                    """,
+                    (
+                        event.event_id,
+                        event.run_id,
+                        event.user_id,
+                        state.step_no,
+                        event.event_type,
+                        Jsonb(event.payload),
+                        now,
+                    ),
+                )
+            finished = conn.execute(
+                """
+                update agent_turns set
+                    status = 'completed',
+                    error_code = null,
+                    lease_owner = null,
+                    lease_expires_at = null,
+                    completed_at = %s,
+                    updated_at = %s
+                where turn_id = %s and user_id = %s
+                  and status = 'running' and lease_owner = %s
+                returning turn_id, thread_id, run_id, user_id, idempotency_key,
+                          request_hash, status, attempt, lease_owner, lease_expires_at,
+                          error_code, created_at, updated_at, started_at, completed_at
+                """,
+                (now, now, turn.turn_id, turn.user_id, worker_id),
+            ).fetchone()
+            if finished is None:
+                raise TurnLeaseMismatch(turn.turn_id)
+        return _turn_from_row(finished)
+
+    @contextmanager
+    def worker_slot(self) -> Iterator[bool]:
+        conn = self._connect()
+        conn.autocommit = True
+        acquired = bool(conn.execute(
+            "select pg_try_advisory_lock(hashtext('omicsprism-agent-worker-global'))"
+        ).fetchone()[0])
+        try:
+            yield acquired
+        finally:
+            if acquired:
+                conn.execute("select pg_advisory_unlock(hashtext('omicsprism-agent-worker-global'))")
+            conn.close()
 
     def save_input_bundle(self, bundle: AgentInputBundleRecord) -> None:
         self.get_thread(thread_id=bundle.thread_id, user_id=bundle.user_id)

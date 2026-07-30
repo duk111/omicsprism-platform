@@ -132,8 +132,12 @@ class VllmModelAdapter(StructuredModelAdapter):
                             "every required input is present; never infer a missing role from prose. "
                             "Preserve the capability list order and recommend every capability whose "
                             "requirements are fully satisfied, but no others. When state is CHECK_INPUTS, "
-                            "keep reasoning_summary under 80 characters, use at most one brief feasibility "
-                            "reason, and keep requested_params empty."
+                            "keep reasoning_summary under 80 characters and use at most one brief feasibility "
+                            "reason. When state is ANSWER_WITH_EVIDENCE and evidence is null, return only safe "
+                            "query fields in requested_params (job_id, artifact, sort, limit, resolve_entity) "
+                            "and keep grounded_answer null. When evidence is present, keep requested_params "
+                            "empty and cite only its artifact, checksum, and returned _row_id values in "
+                            "grounded_answer; every number must occur in the cited rows."
                         ),
                     },
                     {"role": "user", "content": json.dumps(context, ensure_ascii=False)},

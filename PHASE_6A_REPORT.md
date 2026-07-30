@@ -2,7 +2,7 @@
 
 ## 当前状态
 
-Gate A 实现、本地验证与服务器真实 PostgreSQL 权限测试已完成。规定的人工红线审阅仍待确认，Gate B 尚未开始。
+Gate A 实现、本地验证、服务器真实 PostgreSQL 权限测试和人工红线审阅均已完成。契约已切换到 Gate B。
 
 ## 已完成工作
 
@@ -63,7 +63,7 @@ citation_coverage 1.0
 - [x] SQL 授权规定 `agent_messages`/`agent_events` 仅有 SELECT/INSERT，所有产品表均无 DELETE 权限。
 - [x] 单元测试证明未审批、过期、hash 不匹配、已拒绝和跨用户审批均保持 job 创建数为 0。
 - [x] 已在服务器专用测试库应用 migration 004/005，并通过真实 PostgreSQL 权限测试。
-- [ ] 完成人工 R3/R4/append-only 审阅。
+- [x] 已完成人工 R3/R4/append-only 审阅。
 
 ## 服务器验证
 
@@ -112,10 +112,10 @@ python3 -m pytest \
 
 ### 人工审阅
 
-待完成：Phase 6 Gate A R3/R4/append-only 人工审阅。
+2026-07-30，Phase 6 Gate A R3/R4/append-only 人工审阅通过。
 
 ## 已知缺口
 
 - 本工作站缺少数据库环境变量时相关测试按契约明确 skip；真实 constraints/grants 已在服务器专用测试库验证通过。
-- Gate B 的生产协调器和 agent worker 按范围尚未实现。
+- Gate B 的生产协调器和 agent worker 在 Gate A 关闭时尚未实现，已转入 Gate B 范围。
 - HTTP/SSE 路由与前端接入分别属于 Gate C/D，当前按契约不存在。

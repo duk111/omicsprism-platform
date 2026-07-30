@@ -9,6 +9,8 @@ class InvalidDecision(ValueError):
 
 class DecisionValidator:
     def validate(self, state: RunState, decision: AgentDecision) -> None:
+        if decision.grounded_answer is not None and decision.action is not AgentAction.ANSWER:
+            raise InvalidDecision("grounded answer is only valid for ANSWER")
         if state.state is AgentState.CHECK_INPUTS:
             if decision.action is not AgentAction.PROPOSE_PLAN:
                 raise InvalidDecision("CHECK_INPUTS requires PROPOSE_PLAN")
