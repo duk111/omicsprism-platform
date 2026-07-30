@@ -10,14 +10,16 @@ from .schemas import (
     VerifierVerdict,
     PlanRecord,
 )
-from .approvals import InMemoryApprovalGate, JsonApprovalGate
+from .approvals import InMemoryApprovalGate, JsonApprovalGate, PostgresApprovalGate
+from .audit import PostgresAgentEventStore
 from .context import MinimalContextBuilder
 from .eval import EvalAssembly, EvalAssemblyFactory, EvalRunner, compare_reports, load_golden_cases
 from .model import ScriptedModelAdapter, VllmModelAdapter
 from .policy import ProfilePolicyGuard
 from .router import RuleRouter
-from .store import InMemoryStateStore
-from .plans import InMemoryPlanStore, JsonPlanStore
+from .store import InMemoryStateStore, PostgresStateStore
+from .plans import InMemoryPlanStore, JsonPlanStore, PostgresPlanStore
+from .product_store import InMemoryAgentProductStore, PostgresAgentProductStore
 from .tools import AgentInputFile, AgentToolRuntime, PolicyToolExecutor, ToolConfigurationError, ToolRegistry
 
 __all__ = [
@@ -30,6 +32,8 @@ __all__ = [
     "VerifierVerdict",
     "InMemoryApprovalGate",
     "JsonApprovalGate",
+    "PostgresApprovalGate",
+    "PostgresAgentEventStore",
     "MinimalContextBuilder",
     "ScriptedModelAdapter",
     "VllmModelAdapter",
@@ -41,9 +45,13 @@ __all__ = [
     "ProfilePolicyGuard",
     "RuleRouter",
     "InMemoryStateStore",
+    "PostgresStateStore",
     "InMemoryPlanStore",
     "PlanRecord",
     "JsonPlanStore",
+    "PostgresPlanStore",
+    "InMemoryAgentProductStore",
+    "PostgresAgentProductStore",
     "AgentInputFile",
     "AgentToolRuntime",
     "PolicyToolExecutor",

@@ -55,3 +55,60 @@ def _assert_safe_payload(payload: dict[str, Any]) -> None:
             for item in value:
                 if isinstance(item, dict):
                     _assert_safe_payload(item)
+
+
+class PostgresAgentEventStore:
+    """append-only PostgreSQL 事件存储；接口不提供更新或删除。"""
+
+    def __init__(self, database_url: str) -> None:
+        self.database_url = database_url
+
+    def append(self, event: AgentEvent) -> None:
+        _assert_safe_payload(event.payload)
+        Jsonb = self._jsonb_type()
+        with self._connect() as conn:
+            conn.execute(
+                """
+                insert into agent_events (
+                    event_id, run_id, user_id, step_no, event_type, payload
+                ) values (%s, %s, %s, %s, %s, %s)
+                """,
+                (
+                    event.event_id,
+                    event.run_id,
+                    event.user_id,
+                    event.step_no,
+                    event.event_type,
+                    Jsonb(event.payload),
+                ),
+            )
+
+    def list_for_run(self, *, run_id: str, user_id: str, limit: int = 100) -> list[AgentEvent]:
+        bounded = max(1, min(limit, 100))
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                select event_id, run_id, user_id, step_no, event_type, payload
+                from agent_events
+                where run_id = %s and user_id = %s
+                order by created_at desc, event_id desc limit %s
+                """,
+                (run_id, user_id, bounded),
+            ).fetchall()
+        fields = ("event_id", "run_id", "user_id", "step_no", "event_type", "payload")
+        return [AgentEvent.model_validate(dict(zip(fields, row))) for row in reversed(rows)]
+
+    def _connect(self):
+        try:
+            import psycopg
+        except ImportError as exc:  # pragma: no cover - dependency guard
+            raise RuntimeError("Install psycopg[binary]>=3.1.18 to use PostgreSQL storage") from exc
+        return psycopg.connect(self.database_url)
+
+    @staticmethod
+    def _jsonb_type():
+        try:
+            from psycopg.types.json import Jsonb
+        except ImportError as exc:  # pragma: no cover - dependency guard
+            raise RuntimeError("Install psycopg[binary]>=3.1.18 to use PostgreSQL storage") from exc
+        return Jsonb

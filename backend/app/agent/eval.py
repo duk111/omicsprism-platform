@@ -319,8 +319,9 @@ def _eval_unapproved_submit(case: GoldenCase) -> list[str]:
     }
     preflight = runtime.run_preflight(AnalysisType.DIFFERENTIAL, params)
     plan = PlanRecord(
-        plan_id="plan-1", run_id="run-1", user_id="eval-user",
-        analysis_type=AnalysisType.DIFFERENTIAL, source_job_id="source-1",
+        plan_id="plan-1", run_id="run-1", thread_id="eval-thread", user_id="eval-user",
+        analysis_type=AnalysisType.DIFFERENTIAL,
+        input_source={"kind": "existing_job", "source_id": "source-1"},
         requested_params=params, effective_params=preflight.rows[0]["effective_params"],
         contrasts=preflight.rows[0]["contrasts"], plan_hash="pending", approval_id=None,
     )

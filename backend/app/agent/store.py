@@ -44,3 +44,118 @@ class InMemoryStateStore:
         next_state = state.model_copy(deep=True)
         next_state.version = expected_version + 1
         self._shared[state.run_id] = next_state.model_dump(mode="json")
+
+
+class PostgresStateStore:
+    def __init__(self, database_url: str) -> None:
+        self.database_url = database_url
+
+    def get(self, *, run_id: str, user_id: str) -> RunState:
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                select run_id, user_id, thread_id, active_profile, state, step_no,
+                       plan_id, plan_hash, pending_approval_id, focus, model_calls,
+                       tool_calls, status, version
+                from agent_runs where run_id = %s and user_id = %s
+                """,
+                (run_id, user_id),
+            ).fetchone()
+        if row is None:
+            raise StateNotFound(run_id)
+        fields = (
+            "run_id", "user_id", "thread_id", "active_profile", "state", "step_no",
+            "plan_id", "plan_hash", "pending_approval_id", "focus", "model_calls",
+            "tool_calls", "status", "version",
+        )
+        return RunState.model_validate(dict(zip(fields, row)))
+
+    def save(self, state: RunState, *, expected_version: int) -> None:
+        Jsonb = self._jsonb_type()
+        next_version = expected_version + 1
+        values = (
+            state.thread_id,
+            state.active_profile.value,
+            state.state.value,
+            state.step_no,
+            state.plan_id,
+            state.plan_hash,
+            state.pending_approval_id,
+            Jsonb(state.focus.model_dump(mode="json")),
+            state.model_calls,
+            state.tool_calls,
+            state.status.value,
+            next_version,
+            state.run_id,
+            state.user_id,
+            expected_version,
+        )
+        with self._connect() as conn:
+            updated = conn.execute(
+                """
+                update agent_runs set
+                    thread_id = %s,
+                    active_profile = %s,
+                    state = %s,
+                    step_no = %s,
+                    plan_id = %s,
+                    plan_hash = %s,
+                    pending_approval_id = %s,
+                    focus = %s,
+                    model_calls = %s,
+                    tool_calls = %s,
+                    status = %s,
+                    version = %s,
+                    updated_at = now()
+                where run_id = %s and user_id = %s and version = %s
+                returning run_id
+                """,
+                values,
+            ).fetchone()
+            if updated is not None:
+                return
+            if expected_version != 0:
+                raise StateConflict(f"expected version {expected_version}")
+            try:
+                conn.execute(
+                    """
+                    insert into agent_runs (
+                        run_id, user_id, thread_id, active_profile, state, step_no,
+                        plan_id, plan_hash, pending_approval_id, focus, model_calls,
+                        tool_calls, status, version
+                    ) values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    """,
+                    (
+                        state.run_id,
+                        state.user_id,
+                        state.thread_id,
+                        state.active_profile.value,
+                        state.state.value,
+                        state.step_no,
+                        state.plan_id,
+                        state.plan_hash,
+                        state.pending_approval_id,
+                        Jsonb(state.focus.model_dump(mode="json")),
+                        state.model_calls,
+                        state.tool_calls,
+                        state.status.value,
+                        next_version,
+                    ),
+                )
+            except Exception as exc:
+                raise StateConflict(f"expected version {expected_version}") from exc
+
+    def _connect(self):
+        try:
+            import psycopg
+        except ImportError as exc:  # pragma: no cover - dependency guard
+            raise RuntimeError("Install psycopg[binary]>=3.1.18 to use PostgreSQL storage") from exc
+        return psycopg.connect(self.database_url)
+
+    @staticmethod
+    def _jsonb_type():
+        try:
+            from psycopg.types.json import Jsonb
+        except ImportError as exc:  # pragma: no cover - dependency guard
+            raise RuntimeError("Install psycopg[binary]>=3.1.18 to use PostgreSQL storage") from exc
+        return Jsonb

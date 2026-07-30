@@ -112,9 +112,10 @@ def _plan() -> PlanRecord:
     plan = PlanRecord(
         plan_id="plan-1",
         run_id="run-1",
+        thread_id="thread-1",
         user_id="user-1",
         analysis_type=AnalysisType.DIFFERENTIAL,
-        source_job_id="source-1",
+        input_source={"kind": "existing_job", "source_id": "source-1"},
         requested_params={"compare_field": "treatment", "tested_levels": "salt", "reference_level": "control"},
         effective_params={"compare_field": "treatment", "tested_levels": "salt", "reference_level": "control"},
         contrasts=[{

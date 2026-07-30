@@ -20,7 +20,7 @@ from .schemas import ToolName, ToolResult
 from .approvals import ApprovalGate
 from .plans import PlanNotFound, PlanStore, compute_plan_hash
 from .policy import PolicyGuard
-from .schemas import ActiveProfile
+from .schemas import ActiveProfile, AgentInputSourceKind
 
 
 MAX_TOOL_ROWS = 50
@@ -190,7 +190,10 @@ class AgentToolRuntime:
             return _tool_result(ToolName.SUBMIT_APPROVED_PLAN, rows=[], ok=False, error_code="preflight_blocked")
         if compute_plan_hash(plan) != plan.plan_hash:
             return _tool_result(ToolName.SUBMIT_APPROVED_PLAN, rows=[], ok=False, error_code="plan_hash_mismatch")
-        if self.input_source_job_id != plan.source_job_id:
+        if plan.input_source.kind is not AgentInputSourceKind.EXISTING_JOB:
+            return _tool_result(ToolName.SUBMIT_APPROVED_PLAN, rows=[], ok=False, error_code="input_source_mismatch")
+        source_job_id = plan.input_source.source_id
+        if self.input_source_job_id != source_job_id:
             return _tool_result(ToolName.SUBMIT_APPROVED_PLAN, rows=[], ok=False, error_code="input_source_mismatch")
         fresh_preflight = self.run_preflight(plan.analysis_type, plan.effective_params)
         if not fresh_preflight.ok:
@@ -205,7 +208,7 @@ class AgentToolRuntime:
             now=datetime.now(timezone.utc),
         ):
             return _tool_result(ToolName.SUBMIT_APPROVED_PLAN, rows=[], ok=False, error_code="approval_required")
-        source = self.job_store.get_for_user(plan.source_job_id, self.user_id)
+        source = self.job_store.get_for_user(source_job_id, self.user_id)
         job_id = str(uuid5(NAMESPACE_URL, f"omicsprism:{self.user_id}:{idempotency_key}"))
         try:
             existing = self.job_store.get_for_user(job_id, self.user_id)

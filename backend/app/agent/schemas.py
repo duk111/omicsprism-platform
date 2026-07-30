@@ -2,11 +2,11 @@ from __future__ import annotations
 
 from datetime import datetime
 from enum import Enum
-from typing import Annotated, Any
+from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from ..models import AnalysisType
+from ..models import AnalysisType, JobStatus
 
 
 class ContractModel(BaseModel):
@@ -77,7 +77,41 @@ class RunStatus(str, Enum):
 class ApprovalStatus(str, Enum):
     PENDING = "pending"
     APPROVED = "approved"
+    REJECTED = "rejected"
     EXPIRED = "expired"
+
+
+class AgentThreadStatus(str, Enum):
+    ACTIVE = "active"
+    ARCHIVED = "archived"
+
+
+class AgentTurnStatus(str, Enum):
+    QUEUED = "queued"
+    RUNNING = "running"
+    COMPLETED = "completed"
+    FAILED = "failed"
+
+
+class AgentMessageRole(str, Enum):
+    USER = "user"
+    ASSISTANT = "assistant"
+
+
+class AgentInputBundleStatus(str, Enum):
+    ACTIVE = "active"
+    CONSUMED = "consumed"
+    EXPIRED = "expired"
+
+
+class AgentInputSourceKind(str, Enum):
+    EXISTING_JOB = "existing_job"
+    STAGED_BUNDLE = "staged_bundle"
+
+
+class AgentApprovalDecision(str, Enum):
+    APPROVE = "approve"
+    REJECT = "reject"
 
 
 class ToolName(str, Enum):
@@ -118,6 +152,7 @@ class AgentDecision(ContractModel):
     analysis_recommendations: list[AnalysisType] = Field(max_length=3)
     requires_approval: bool
     requested_params: dict[str, AgentParamValue] = Field(max_length=32)
+    grounded_answer: GroundedAnswer | None = None
 
 
 class AnalysisCapability(ContractModel):
@@ -140,9 +175,9 @@ class ModelContext(ContractModel):
 
 
 class Citation(ContractModel):
-    artifact: str = Field(min_length=1)
-    checksum: str = Field(min_length=1)
-    row_ids: list[int]
+    artifact: str = Field(min_length=1, max_length=500)
+    checksum: str = Field(min_length=1, max_length=200)
+    row_ids: list[int] = Field(max_length=50)
 
 
 class RunFocus(ContractModel):
@@ -177,12 +212,18 @@ class ApprovalRecord(ContractModel):
     expires_at: datetime
 
 
+class AgentInputSourceRef(ContractModel):
+    kind: AgentInputSourceKind
+    source_id: str = Field(min_length=1, max_length=200)
+
+
 class PlanRecord(ContractModel):
     plan_id: str = Field(min_length=1)
     run_id: str = Field(min_length=1)
+    thread_id: str = Field(min_length=1)
     user_id: str = Field(min_length=1)
     analysis_type: AnalysisType
-    source_job_id: str = Field(min_length=1)
+    input_source: AgentInputSourceRef
     requested_params: dict[str, Any]
     effective_params: dict[str, Any]
     contrasts: list[dict[str, Any]]
@@ -206,12 +247,232 @@ class ToolResult(ContractModel):
 
 
 class GroundedClaim(ContractModel):
-    text: str = Field(min_length=1)
+    text: str = Field(min_length=1, max_length=1000)
     citation: Citation
 
 
 class GroundedAnswer(ContractModel):
-    claims: list[GroundedClaim]
+    claims: list[GroundedClaim] = Field(max_length=50)
+
+
+class AgentTextBlock(ContractModel):
+    type: Literal["text"] = "text"
+    text: str = Field(min_length=1, max_length=4000)
+
+
+class AgentInputFileResponse(ContractModel):
+    file_id: str = Field(min_length=1)
+    field: str = Field(min_length=1)
+    filename: str = Field(min_length=1)
+    checksum: str = Field(min_length=1)
+    content_type: str | None = None
+    size_bytes: int = Field(ge=0)
+    created_at: datetime
+
+
+class AgentInputSummaryBlock(ContractModel):
+    type: Literal["input_summary"] = "input_summary"
+    bundle_id: str = Field(min_length=1)
+    files: list[AgentInputFileResponse] = Field(max_length=6)
+
+
+class AgentRecommendationItem(ContractModel):
+    analysis_type: AnalysisType
+    display_label: str = Field(min_length=1, max_length=100)
+    reasons: list[BriefModelText] = Field(default_factory=list, max_length=3)
+
+
+class AgentRecommendationBlock(ContractModel):
+    type: Literal["recommendation"] = "recommendation"
+    recommendations: list[AgentRecommendationItem] = Field(max_length=3)
+
+
+class AgentPlanBlock(ContractModel):
+    type: Literal["plan"] = "plan"
+    plan_id: str = Field(min_length=1)
+    plan_hash: str = Field(min_length=1)
+    analysis_type: AnalysisType
+    requested_params: dict[str, AgentParamValue] = Field(max_length=32)
+    effective_params: dict[str, AgentParamValue] = Field(max_length=32)
+    contrasts: list[dict[str, Any]] = Field(max_length=50)
+    warnings: list[str] = Field(default_factory=list, max_length=20)
+    expires_at: datetime
+
+
+class AgentApprovalBlock(ContractModel):
+    type: Literal["approval"] = "approval"
+    approval_id: str = Field(min_length=1)
+    plan_hash: str = Field(min_length=1)
+    status: ApprovalStatus
+    expires_at: datetime
+
+
+class AgentJobBlock(ContractModel):
+    type: Literal["job"] = "job"
+    job_id: str = Field(min_length=1)
+    status: JobStatus
+    progress: int = Field(ge=0, le=100)
+    progress_url: str = Field(min_length=1)
+    results_url: str | None = None
+
+
+class AgentEvidenceBlock(ContractModel):
+    type: Literal["evidence"] = "evidence"
+    claims: list[GroundedClaim] = Field(max_length=50)
+
+
+class AgentErrorBlock(ContractModel):
+    type: Literal["error"] = "error"
+    code: str = Field(min_length=1, max_length=100)
+    user_message: str = Field(min_length=1, max_length=1000)
+    retryable: bool
+    request_id: str | None = None
+
+
+AgentMessageBlock = Annotated[
+    AgentTextBlock
+    | AgentInputSummaryBlock
+    | AgentRecommendationBlock
+    | AgentPlanBlock
+    | AgentApprovalBlock
+    | AgentJobBlock
+    | AgentEvidenceBlock
+    | AgentErrorBlock,
+    Field(discriminator="type"),
+]
+
+
+class AgentThreadCreateRequest(ContractModel):
+    focus_job_ids: list[str] = Field(default_factory=list, max_length=20)
+
+
+class AgentThreadRecord(ContractModel):
+    thread_id: str = Field(min_length=1)
+    user_id: str = Field(min_length=1)
+    title: str = Field(min_length=1, max_length=200)
+    current_run_id: str = Field(min_length=1)
+    status: AgentThreadStatus
+    version: int = Field(ge=0)
+    created_at: datetime
+    updated_at: datetime
+
+
+class AgentThreadResponse(ContractModel):
+    thread_id: str = Field(min_length=1)
+    title: str = Field(min_length=1, max_length=200)
+    current_run_id: str = Field(min_length=1)
+    status: AgentThreadStatus
+    version: int = Field(ge=0)
+    created_at: datetime
+    updated_at: datetime
+
+
+class AgentThreadListResponse(ContractModel):
+    threads: list[AgentThreadResponse]
+    next_cursor: str | None = None
+
+
+class AgentTurnCreateRequest(ContractModel):
+    message: str = Field(min_length=1, max_length=4000)
+    input_bundle_id: str | None = None
+    focus_job_ids: list[str] = Field(default_factory=list, max_length=20)
+
+
+class AgentTurnRecord(ContractModel):
+    turn_id: str = Field(min_length=1)
+    thread_id: str = Field(min_length=1)
+    run_id: str = Field(min_length=1)
+    user_id: str = Field(min_length=1)
+    idempotency_key: str = Field(min_length=1, max_length=200)
+    request_hash: str = Field(min_length=1)
+    status: AgentTurnStatus
+    attempt: int = Field(ge=0)
+    lease_owner: str | None
+    lease_expires_at: datetime | None
+    error_code: str | None
+    created_at: datetime
+    updated_at: datetime
+    started_at: datetime | None
+    completed_at: datetime | None
+
+
+class AgentTurnResponse(ContractModel):
+    turn_id: str = Field(min_length=1)
+    thread_id: str = Field(min_length=1)
+    run_id: str = Field(min_length=1)
+    status: AgentTurnStatus
+    attempt: int = Field(ge=0)
+    error_code: str | None
+    created_at: datetime
+    updated_at: datetime
+    started_at: datetime | None
+    completed_at: datetime | None
+
+
+class AgentApprovalRequest(ContractModel):
+    decision: AgentApprovalDecision
+    plan_hash: str = Field(min_length=1)
+
+
+class AgentMessageRecord(ContractModel):
+    message_id: str = Field(min_length=1)
+    thread_id: str = Field(min_length=1)
+    run_id: str = Field(min_length=1)
+    user_id: str = Field(min_length=1)
+    role: AgentMessageRole
+    blocks: list[AgentMessageBlock] = Field(min_length=1, max_length=20)
+    created_at: datetime
+
+
+class AgentMessageResponse(ContractModel):
+    message_id: str = Field(min_length=1)
+    thread_id: str = Field(min_length=1)
+    run_id: str = Field(min_length=1)
+    role: AgentMessageRole
+    blocks: list[AgentMessageBlock] = Field(min_length=1, max_length=20)
+    created_at: datetime
+
+
+class AgentMessageListResponse(ContractModel):
+    messages: list[AgentMessageResponse]
+    next_cursor: str | None = None
+
+
+class AgentInputBundleRecord(ContractModel):
+    bundle_id: str = Field(min_length=1)
+    thread_id: str = Field(min_length=1)
+    user_id: str = Field(min_length=1)
+    status: AgentInputBundleStatus
+    expires_at: datetime
+    created_at: datetime
+
+
+class AgentInputFileRecord(ContractModel):
+    file_id: str = Field(min_length=1)
+    bundle_id: str = Field(min_length=1)
+    user_id: str = Field(min_length=1)
+    field: str = Field(min_length=1)
+    filename: str = Field(min_length=1)
+    storage_key: str = Field(min_length=1)
+    checksum: str = Field(min_length=1)
+    content_type: str | None
+    size_bytes: int = Field(ge=0)
+    created_at: datetime
+
+
+class AgentInputBundleResponse(ContractModel):
+    bundle_id: str = Field(min_length=1)
+    thread_id: str = Field(min_length=1)
+    status: AgentInputBundleStatus
+    expires_at: datetime
+    created_at: datetime
+    files: list[AgentInputFileResponse] = Field(default_factory=list, max_length=6)
+
+
+class AgentStreamEvent(ContractModel):
+    event_id: str = Field(min_length=1)
+    event_type: Literal["turn.updated", "message.created"]
+    data: AgentTurnResponse | AgentMessageResponse
 
 
 class VerifierCheck(ContractModel):
@@ -306,3 +567,6 @@ class EvalDiffReport(ContractModel):
     newly_passed: list[str]
     newly_skipped: list[str]
     metric_deltas: dict[str, float | None]
+
+
+AgentDecision.model_rebuild()
