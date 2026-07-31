@@ -78,7 +78,8 @@ TypeScript + Vite build passed
 沿用 Gate A/B 的专用测试库变量，不要对生产库运行：
 
 ```bash
-export OMICS_PRISM_TEST_DATABASE_URL='postgresql://migration_admin:<admin-password>@<host>:<port>/<test_db>'
+export OMICS_PRISM_MIGRATION_DATABASE_URL='postgresql://migration_admin:<admin-password>@<host>:<port>/<test_db>'
+export OMICS_PRISM_TEST_DATABASE_URL="$OMICS_PRISM_MIGRATION_DATABASE_URL"
 export OMICS_PRISM_TEST_APP_DATABASE_URL='postgresql://omics_app:<runtime-password>@<host>:<port>/<test_db>'
 export OMICS_PRISM_APP_DB_PASSWORD='<runtime-password>'
 
