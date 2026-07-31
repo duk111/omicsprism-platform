@@ -4,6 +4,7 @@ import os
 from uuid import uuid4
 
 import pytest
+from fastapi import Request, Response
 
 
 ADMIN_DSN = os.getenv("OMICS_PRISM_TEST_DATABASE_URL")
@@ -12,13 +13,17 @@ APP_PASSWORD = os.getenv("OMICS_PRISM_APP_DB_PASSWORD")
 HAS_TEST_DATABASE = bool(ADMIN_DSN and APP_DSN and APP_PASSWORD)
 
 
+def _session(request: Request, response: Response) -> str:
+    return request.cookies.get("omicsprism_session") or "anonymous"
+
+
 @pytest.mark.skipif(
     not HAS_TEST_DATABASE,
     reason="需要专用 PostgreSQL 测试库和 OMICS_PRISM_TEST_* 环境变量",
 )
 def test_postgres_agent_http_enqueue_is_atomic_idempotent_and_ownership_bound() -> None:
     import psycopg
-    from fastapi import FastAPI, Request, Response
+    from fastapi import FastAPI
     from fastapi.testclient import TestClient
 
     from backend.app.agent.api import create_agent_router
@@ -39,9 +44,6 @@ def test_postgres_agent_http_enqueue_is_atomic_idempotent_and_ownership_bound() 
         def get_for_user(self, job_id: str, owner_id: str):
             raise LookupError(job_id)
 
-    def session(request: Request, response: Response) -> str:
-        return request.cookies.get("omicsprism_session") or "anonymous"
-
     context = AgentApiContext(
         product_store=PostgresAgentProductStore(APP_DSN),
         state_store=PostgresStateStore(APP_DSN),
@@ -51,15 +53,15 @@ def test_postgres_agent_http_enqueue_is_atomic_idempotent_and_ownership_bound() 
         files=None,
     )
     app = FastAPI()
-    app.include_router(create_agent_router(context=context, session_dependency=session))
+    app.include_router(create_agent_router(context=context, session_dependency=_session))
     client = TestClient(app)
+    client.cookies.set("omicsprism_session", user_id)
     thread_id = None
     run_id = None
     turn_id = None
     try:
         created = client.post(
             "/api/agent/threads",
-            cookies={"omicsprism_session": user_id},
             json={"focus_job_ids": []},
         )
         assert created.status_code == 201
@@ -68,32 +70,27 @@ def test_postgres_agent_http_enqueue_is_atomic_idempotent_and_ownership_bound() 
         path = f"/api/agent/threads/{thread_id}/turns"
         first = client.post(
             path,
-            cookies={"omicsprism_session": user_id},
             headers={"Idempotency-Key": f"key-{suffix}"},
             json={"message": "analyze"},
         )
         replay = client.post(
             path,
-            cookies={"omicsprism_session": user_id},
             headers={"Idempotency-Key": f"key-{suffix}"},
             json={"message": "analyze"},
         )
         assert first.status_code == replay.status_code == 202
         assert first.json()["turn_id"] == replay.json()["turn_id"]
         turn_id = first.json()["turn_id"]
-        assert client.get(
-            f"/api/agent/threads/{thread_id}",
-            cookies={"omicsprism_session": other_user_id},
-        ).status_code == 404
+        client.cookies.set("omicsprism_session", other_user_id)
+        assert client.get(f"/api/agent/threads/{thread_id}").status_code == 404
+        client.cookies.set("omicsprism_session", user_id)
         assert client.post(
             path,
-            cookies={"omicsprism_session": user_id},
             headers={"Idempotency-Key": f"key-{suffix}"},
             json={"message": "changed"},
         ).status_code == 409
         assert client.post(
             path,
-            cookies={"omicsprism_session": user_id},
             headers={"Idempotency-Key": f"active-{suffix}"},
             json={"message": "second active turn"},
         ).status_code == 409
