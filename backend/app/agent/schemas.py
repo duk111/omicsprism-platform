@@ -375,6 +375,27 @@ class AgentThreadResponse(ContractModel):
     updated_at: datetime
 
 
+class AgentRunResponse(ContractModel):
+    run_id: str = Field(min_length=1)
+    thread_id: str = Field(min_length=1)
+    active_profile: ActiveProfile
+    state: AgentState
+    step_no: int = Field(ge=0)
+    plan_id: str | None
+    plan_hash: str | None
+    pending_approval_id: str | None
+    focus: RunFocus
+    model_calls: int = Field(ge=0)
+    tool_calls: int = Field(ge=0)
+    status: RunStatus
+    version: int = Field(ge=0)
+
+
+class AgentThreadDetailResponse(ContractModel):
+    thread: AgentThreadResponse
+    run: AgentRunResponse
+
+
 class AgentThreadListResponse(ContractModel):
     threads: list[AgentThreadResponse]
     next_cursor: str | None = None
@@ -415,6 +436,11 @@ class AgentTurnResponse(ContractModel):
     updated_at: datetime
     started_at: datetime | None
     completed_at: datetime | None
+
+
+class AgentTurnListResponse(ContractModel):
+    turns: list[AgentTurnResponse]
+    next_cursor: str | None = None
 
 
 class AgentApprovalRequest(ContractModel):

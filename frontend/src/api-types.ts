@@ -1,374 +1,477 @@
-// Auto-generated from FastAPI /openapi.json. Run `npm run generate-api-types` to refresh.
-// Backend: backend/app/main.py Pydantic models
+// Auto-generated from FastAPI /openapi.json; run `npm run generate-api-types` to refresh
+// Source: FastAPI application export
+
+export type ActiveProfile = "analysis" | "interpretation";
+
+export interface AgentApprovalBlock {
+  type?: "approval";
+  approval_id: string;
+  plan_hash: string;
+  status: ApprovalStatus;
+  expires_at: string;
+}
+
+export type AgentApprovalDecision = "approve" | "reject";
+
+export interface AgentApprovalRequest {
+  decision: AgentApprovalDecision;
+  plan_hash: string;
+}
+
+export interface AgentErrorBlock {
+  type?: "error";
+  code: string;
+  user_message: string;
+  retryable: boolean;
+  request_id?: string | null;
+}
+
+export interface AgentEvidenceBlock {
+  type?: "evidence";
+  claims: GroundedClaim[];
+}
+
+export interface AgentInputBundleResponse {
+  bundle_id: string;
+  thread_id: string;
+  status: AgentInputBundleStatus;
+  expires_at: string;
+  created_at: string;
+  files?: AgentInputFileResponse[];
+}
+
+export type AgentInputBundleStatus = "active" | "consumed" | "expired";
+
+export interface AgentInputFileResponse {
+  file_id: string;
+  field: string;
+  filename: string;
+  checksum: string;
+  content_type?: string | null;
+  size_bytes: number;
+  created_at: string;
+}
+
+export interface AgentInputSummaryBlock {
+  type?: "input_summary";
+  bundle_id: string;
+  files: AgentInputFileResponse[];
+}
+
+export interface AgentJobBlock {
+  type?: "job";
+  job_id: string;
+  status: JobStatus;
+  progress: number;
+  progress_url: string;
+  results_url?: string | null;
+}
+
+export interface AgentMessageListResponse {
+  messages: AgentMessageResponse[];
+  next_cursor?: string | null;
+}
+
+export interface AgentMessageResponse {
+  message_id: string;
+  thread_id: string;
+  run_id: string;
+  role: AgentMessageRole;
+  blocks: (AgentTextBlock | AgentInputSummaryBlock | AgentRecommendationBlock | AgentPlanBlock | AgentApprovalBlock | AgentJobBlock | AgentEvidenceBlock | AgentErrorBlock)[];
+  created_at: string;
+}
+
+export type AgentMessageRole = "user" | "assistant";
+
+export interface AgentPlanBlock {
+  type?: "plan";
+  plan_id: string;
+  plan_hash: string;
+  analysis_type: AnalysisType;
+  requested_params: { [key: string]: string | number | boolean | null };
+  effective_params: { [key: string]: string | number | boolean | null };
+  contrasts: Record<string, unknown>[];
+  warnings?: string[];
+  expires_at: string;
+}
+
+export interface AgentRecommendationBlock {
+  type?: "recommendation";
+  recommendations: AgentRecommendationItem[];
+}
+
+export interface AgentRecommendationItem {
+  analysis_type: AnalysisType;
+  display_label: string;
+  reasons?: string[];
+}
+
+export interface AgentRunResponse {
+  run_id: string;
+  thread_id: string;
+  active_profile: ActiveProfile;
+  state: AgentState;
+  step_no: number;
+  plan_id: string | null;
+  plan_hash: string | null;
+  pending_approval_id: string | null;
+  focus: RunFocus;
+  model_calls: number;
+  tool_calls: number;
+  status: RunStatus;
+  version: number;
+}
+
+export type AgentState = "COLLECT_INTENT" | "CHECK_INPUTS" | "PROPOSE_PLAN" | "WAIT_PLAN_CONFIRMATION" | "PREFLIGHT" | "WAIT_EXECUTION_CONFIRMATION" | "SUBMIT_JOBS" | "MONITOR_JOBS" | "ANSWER_WITH_EVIDENCE" | "AWAIT_FOLLOWUP" | "DONE" | "NEED_USER_INPUT" | "PREFLIGHT_BLOCKED" | "JOB_FAILED";
+
+export interface AgentStreamEvent {
+  event_id: string;
+  event_type: "turn.updated" | "message.created";
+  data: AgentTurnResponse | AgentMessageResponse;
+}
+
+export interface AgentTextBlock {
+  type?: "text";
+  text: string;
+}
+
+export interface AgentThreadCreateRequest {
+  focus_job_ids?: string[];
+}
+
+export interface AgentThreadDetailResponse {
+  thread: AgentThreadResponse;
+  run: AgentRunResponse;
+}
+
+export interface AgentThreadListResponse {
+  threads: AgentThreadResponse[];
+  next_cursor?: string | null;
+}
+
+export interface AgentThreadResponse {
+  thread_id: string;
+  title: string;
+  current_run_id: string;
+  status: AgentThreadStatus;
+  version: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export type AgentThreadStatus = "active" | "archived";
+
+export interface AgentTurnCreateRequest {
+  message: string;
+  input_bundle_id?: string | null;
+  focus_job_ids?: string[];
+}
+
+export interface AgentTurnListResponse {
+  turns: AgentTurnResponse[];
+  next_cursor?: string | null;
+}
+
+export interface AgentTurnResponse {
+  turn_id: string;
+  thread_id: string;
+  run_id: string;
+  status: AgentTurnStatus;
+  attempt: number;
+  error_code: string | null;
+  created_at: string;
+  updated_at: string;
+  started_at: string | null;
+  completed_at: string | null;
+}
+
+export type AgentTurnStatus = "queued" | "running" | "completed" | "failed";
 
 export type AnalysisType = "differential" | "correlation" | "dem";
 
-export type JobStatus = "queued" | "running" | "succeeded" | "failed" | "cancelled";
-
-export interface ResultFileInfo {
-  name: string;
-  path: string;
-  size_bytes: number;
-  download_url: string;
-}
-
-export interface ReportLinks {
-  summary: string | null;
-  interactive: string | null;
-}
-
-export type ApiErrorCategory =
-  | "input_error"
-  | "permission_error"
-  | "resource_error"
-  | "analysis_failed"
-  | "system_error";
-
 export interface ApiErrorDetail {
-  category: ApiErrorCategory;
+  category: ErrorCategory;
   code: string;
   message: string;
   user_message: string;
-  suggestions: string[];
-  technical_detail: string | null;
-  context: Record<string, unknown>;
+  suggestions?: string[];
+  technical_detail?: string | null;
+  context?: Record<string, unknown>;
 }
 
-export interface ProjectResponse {
-  id: string;
-  owner_id: string;
-  owner_label: string | null;
-  name: string;
-  description: string | null;
-  is_demo: boolean;
-  created_at: string;
-  updated_at: string;
-  job_count: number;
-  queued_jobs: number;
-  running_jobs: number;
-  succeeded_jobs: number;
-  failed_jobs: number;
-  cancelled_jobs: number;
-  latest_job_at: string | null;
+export type ApprovalStatus = "pending" | "approved" | "rejected" | "expired";
+
+export interface Body_create_input_bundle_api_agent_threads__thread_id__input_bundles_post {
+  files: string[];
+  fields: string[];
 }
 
-export interface ProjectListResponse {
-  projects: ProjectResponse[];
+export interface Body_create_job_api_jobs_post {
+  analysis_type: string;
+  counts?: string | null;
+  metadata?: string | null;
+  metabs?: string | null;
+  transcriptome?: string | null;
+  metabolome?: string | null;
+  group?: string | null;
+  compare_field?: string | null;
+  tested_levels?: string | null;
+  reference_level?: string | null;
+  padj_cutoff?: number | null;
+  log2fc_cutoff?: number | null;
+  min_total_count?: number | null;
+  min_replicates?: number | null;
+  same_fields?: string | null;
+  normalize?: boolean | null;
+  filter_low_expression?: boolean | null;
+  method?: string | null;
+  fdr_cutoff?: number | null;
+  enable_modules?: boolean | null;
+  vip_cutoff?: number | null;
+  pseudocount?: number | null;
+  max_missing_fraction?: number | null;
+  impute_method?: string | null;
+  log_transform?: boolean | null;
+  trans_log2?: boolean | null;
+  metab_log2?: boolean | null;
+  n_orthogonal_components?: number | null;
 }
 
-export interface JobResponse {
-  id: string;
-  project_id: string | null;
-  project_name: string;
-  analysis_type: AnalysisType;
-  status: JobStatus;
-  is_demo: boolean;
-  created_at: string;
-  updated_at: string;
-  owner_type: "user" | "project";
-  owner_id: string;
-  owner_label: string | null;
-  progress: number;
-  progress_step: string;
-  error: string | null;
-  error_info: ApiErrorDetail | null;
-  result_files: ResultFileInfo[];
-  report_links: ReportLinks;
-  params: Record<string, string | number | boolean | null>;
-  started_at: string | null;
-  completed_at: string | null;
-  estimated_total_seconds: number | null;
-  estimated_remaining_seconds: number | null;
-  estimated_range_min_seconds: number | null;
-  estimated_range_max_seconds: number | null;
-  elapsed_seconds: number | null;
-  estimated_range_label: string | null;
+export interface Body_preflight_job_api_jobs_preflight_post {
+  analysis_type: string;
+  counts?: string | null;
+  metadata?: string | null;
+  metabs?: string | null;
+  transcriptome?: string | null;
+  metabolome?: string | null;
+  group?: string | null;
+  compare_field?: string | null;
+  tested_levels?: string | null;
+  reference_level?: string | null;
+  padj_cutoff?: number | null;
+  log2fc_cutoff?: number | null;
+  min_total_count?: number | null;
+  min_replicates?: number | null;
+  same_fields?: string | null;
+  normalize?: boolean | null;
+  filter_low_expression?: boolean | null;
+  method?: string | null;
+  fdr_cutoff?: number | null;
+  enable_modules?: boolean | null;
+  vip_cutoff?: number | null;
+  pseudocount?: number | null;
+  max_missing_fraction?: number | null;
+  impute_method?: string | null;
+  log_transform?: boolean | null;
+  trans_log2?: boolean | null;
+  metab_log2?: boolean | null;
+  n_orthogonal_components?: number | null;
 }
 
-export interface JobProgressResponse {
-  job_id: string;
-  project_id: string | null;
-  status: JobStatus;
-  is_demo: boolean;
-  progress: number;
-  progress_step: string;
-  error: string | null;
-  error_info: ApiErrorDetail | null;
-  recent_log_name: string | null;
-  recent_log_excerpt: string | null;
-  started_at: string | null;
-  completed_at: string | null;
-  estimated_total_seconds: number | null;
-  estimated_remaining_seconds: number | null;
-  estimated_range_min_seconds: number | null;
-  estimated_range_max_seconds: number | null;
-  elapsed_seconds: number | null;
-  estimated_range_label: string | null;
+export interface Citation {
+  artifact: string;
+  checksum: string;
+  row_ids: number[];
 }
 
-export interface JobListResponse {
-  jobs: JobResponse[];
+export type ErrorCategory = "input_error" | "permission_error" | "resource_error" | "analysis_failed" | "system_error";
+
+export interface FigureDataResponse {
+  figure_id: string;
+  title: string;
+  chart_type: string;
+  interactive_page_id?: string | null;
+  static_files?: { [key: string]: string | null };
+  plotly_spec?: Record<string, unknown>;
+  default_state?: Record<string, unknown>;
+  available_states?: Record<string, unknown>;
+  style?: Record<string, unknown>;
+  tree_data?: Record<string, unknown> | null;
+  upset_data?: Record<string, unknown> | null;
+  ridge_data?: Record<string, unknown> | null;
+  bar_data?: unknown[] | null;
+  circos_data?: Record<string, unknown> | null;
 }
 
-export interface AuditEventRecord {
-  id: string;
-  event_type: string;
-  action: string;
-  job_id: string | null;
-  user_id: string | null;
-  project_id: string | null;
-  request_id: string | null;
-  status_from: string | null;
-  status_to: string | null;
-  entity_type: string | null;
-  entity_id: string | null;
-  message: string | null;
-  metadata: Record<string, unknown>;
-  created_at: string;
+export type FileArtifactKind = "input" | "output" | "report" | "image" | "log" | "figure" | "temp";
+
+export interface GroundedClaim {
+  text: string;
+  citation: Citation;
 }
 
-export interface MetricsResponse {
-  generated_at: string;
-  total_jobs: number;
-  queued_jobs: number;
-  running_jobs: number;
-  succeeded_jobs: number;
-  failed_jobs: number;
-  cancelled_jobs: number;
-  failure_rate: number;
-  average_duration_seconds: number | null;
-  queue_length: number;
-  storage_usage_bytes: number;
-  audit_event_count: number;
+export interface HTTPValidationError {
+  detail?: ValidationError[];
 }
 
-export interface QuotaScopeUsage {
-  active_jobs: number;
-  active_limit: number | null;
-  storage_used_bytes: number;
-  storage_limit_bytes: number | null;
-  storage_available_bytes: number | null;
-}
-
-export interface QuotaUsageResponse {
-  user: QuotaScopeUsage;
-  project: QuotaScopeUsage | null;
-  can_submit: boolean;
-  reasons: string[];
-}
-
-export interface JobControlResponse {
-  job: JobResponse;
-  message: string;
-}
-
-export interface UploadedFileInfo {
-  field: string;
+export interface ImageInfo {
+  kind?: FileArtifactKind;
+  field?: string | null;
   filename: string;
-  content_type: string | null;
-  size_bytes: number;
   path: string;
+  storage_key: string;
+  checksum?: string | null;
+  content_type?: string | null;
+  size_bytes: number;
+  created_at: string;
+  name: string;
+  thumbnail_url: string;
+  full_url: string;
+  interactive_url?: string | null;
 }
 
 export interface JobFilesResponse {
   job_id: string;
   inputs: UploadedFileInfo[];
   result_files: ResultFileInfo[];
-  report_links: ReportLinks;
+  report_links?: ReportLinks;
+}
+
+export interface JobListResponse {
+  jobs: JobResponse[];
 }
 
 export interface JobLogResponse {
   job_id: string;
-  log_name: string | null;
-  content: string;
+  log_name?: string | null;
+  content?: string;
 }
 
-export interface ImageInfo {
-  name: string;
-  path: string;
-  thumbnail_url: string;
-  full_url: string;
-  interactive_url: string | null;
-}
+export type JobOwnerType = "user" | "project";
 
-export interface SummaryMetric {
-  key: string;
-  label: string;
-  value: string | number | null;
-  unit: string | null;
-}
-
-export interface SummaryFigure {
-  name: string;
-  path: string;
-  url: string;
-}
-
-export interface SummaryRuntime {
-  started_at: string | null;
-  completed_at: string | null;
-  elapsed_seconds: number | null;
-}
-
-export interface SummaryInputFile {
-  field: string | null;
-  filename: string;
-  checksum: string | null;
-  content_type: string | null;
-  size_bytes: number;
-  storage_key: string;
-}
-
-export interface ResultSummaryResponse {
+export interface JobProgressResponse {
+  started_at?: string | null;
+  completed_at?: string | null;
+  estimated_total_seconds?: number | null;
+  estimated_remaining_seconds?: number | null;
+  estimated_range_min_seconds?: number | null;
+  estimated_range_max_seconds?: number | null;
+  elapsed_seconds?: number | null;
+  estimated_range_label?: string | null;
   job_id: string;
-  project_id: string | null;
-  analysis_type: AnalysisType;
-  generated_at: string;
-  headline: string;
-  interpretation: string[];
-  metrics: SummaryMetric[];
-  top_items: Array<Record<string, string | number | null>>;
-  module_associations: Array<Record<string, string | number | null>>;
-  main_figures: SummaryFigure[];
-  parameters: Record<string, string | number | boolean | null>;
-  input_files: SummaryInputFile[];
-  runtime: SummaryRuntime;
-  software_versions: Record<string, string>;
-  warnings: string[];
-  exports: Record<string, string>;
+  project_id?: string | null;
+  status: JobStatus;
+  is_demo?: boolean;
+  progress?: number;
+  progress_step?: string;
+  error?: string | null;
+  error_info?: ApiErrorDetail | null;
+  recent_log_name?: string | null;
+  recent_log_excerpt?: string | null;
 }
 
-export interface PreflightIssue {
-  code:
-    | "invalid_analysis_type"
-    | "missing_required_field"
-    | "missing_required_columns"
-    | "empty_file"
-    | "invalid_csv"
-    | "matrix_schema_invalid"
-    | "group_schema_invalid"
-    | "empty_column"
-    | "duplicate_feature_id"
-    | "duplicate_sample_id"
-    | "sample_mismatch"
-    | "sample_order_mismatch"
-    | "non_numeric_value"
-    | "inconsistent_row_length";
-  field: string | null;
-  severity: "error" | "warning";
-  message: string;
-  context: Record<string, unknown>;
-  suggestions: string[];
+export interface JobResponse {
+  started_at?: string | null;
+  completed_at?: string | null;
+  estimated_total_seconds?: number | null;
+  estimated_remaining_seconds?: number | null;
+  estimated_range_min_seconds?: number | null;
+  estimated_range_max_seconds?: number | null;
+  elapsed_seconds?: number | null;
+  estimated_range_label?: string | null;
+  id: string;
+  project_id?: string | null;
+  project_name: string;
+  analysis_type: AnalysisType;
+  status: JobStatus;
+  is_demo?: boolean;
+  created_at: string;
+  updated_at: string;
+  owner_type?: JobOwnerType;
+  owner_id?: string;
+  owner_label?: string | null;
+  progress?: number;
+  progress_step?: string;
+  error?: string | null;
+  result_files?: ResultFileInfo[];
+  report_links?: ReportLinks;
+  params?: { [key: string]: string | number | boolean | null };
+  attempt?: number;
+  max_retries?: number;
+  error_info?: ApiErrorDetail | null;
 }
+
+export type JobStatus = "queued" | "running" | "succeeded" | "failed" | "cancelled";
 
 export interface PreflightFileSummary {
   field: string;
   filename: string;
-  rows: number;
-  columns: number;
-  sample_names: string[];
-  sample_ids: string[];
-  feature_ids: string[];
-  duplicate_ids: string[];
-  empty_columns: string[];
-  required_columns: string[];
-  non_numeric_cells: number;
-  row_length_issues: number;
+  rows?: number;
+  columns?: number;
+  sample_names?: string[];
+  sample_ids?: string[];
+  feature_ids?: string[];
+  duplicate_ids?: string[];
+  empty_columns?: string[];
+  required_columns?: string[];
+  non_numeric_cells?: number;
+  row_length_issues?: number;
 }
+
+export interface PreflightIssue {
+  code: PreflightIssueCode;
+  field?: string | null;
+  severity?: "error" | "warning";
+  message: string;
+  context?: Record<string, unknown>;
+  suggestions?: string[];
+}
+
+export type PreflightIssueCode = "invalid_analysis_type" | "missing_required_field" | "missing_required_columns" | "empty_file" | "invalid_csv" | "matrix_schema_invalid" | "group_schema_invalid" | "empty_column" | "duplicate_feature_id" | "duplicate_sample_id" | "sample_mismatch" | "sample_order_mismatch" | "non_numeric_value" | "inconsistent_row_length";
 
 export interface PreflightResponse {
   analysis_type: AnalysisType;
   ok: boolean;
   can_submit: boolean;
-  normalized_params: Record<string, string | number | boolean | null>;
-  files: PreflightFileSummary[];
-  errors: PreflightIssue[];
-  warnings: PreflightIssue[];
+  normalized_params?: { [key: string]: string | number | boolean | null };
+  files?: PreflightFileSummary[];
+  errors?: PreflightIssue[];
+  warnings?: PreflightIssue[];
 }
 
-export interface AnalysisGuideFile {
-  field: string;
-  label: string;
-  description: string;
-  template: string;
-  example_filename: string;
+export interface ReportLinks {
+  summary?: string | null;
+  interactive?: string | null;
 }
 
-export interface AnalysisGuideParameter {
+export interface ResultFileInfo {
+  kind?: FileArtifactKind;
+  field?: string | null;
+  filename: string;
+  path: string;
+  storage_key: string;
+  checksum?: string | null;
+  content_type?: string | null;
+  size_bytes: number;
+  created_at: string;
   name: string;
-  label: string;
-  description: string;
-  example: string | null;
+  download_url: string;
 }
 
-export interface AnalysisGuideResponse {
-  analysis_type: AnalysisType;
-  title: string;
-  summary: string;
-  notes: string[];
-  required_files: AnalysisGuideFile[];
-  parameters: AnalysisGuideParameter[];
-  demo_notes: string[];
+export interface RunFocus {
+  in_scope_job_ids: string[];
+  resolved_entities: { [key: string]: string };
+  last_citation: Citation | null;
 }
 
-export interface DemoJobRequest {
-  analysis_type: AnalysisType;
+export type RunStatus = "running" | "suspended" | "completed" | "failed" | "cancelled";
+
+export interface UploadedFileInfo {
+  kind?: FileArtifactKind;
+  field: string;
+  filename: string;
+  path: string;
+  storage_key: string;
+  checksum?: string | null;
+  content_type?: string | null;
+  size_bytes: number;
+  created_at: string;
 }
 
-export type FigureControlValue =
-  | string
-  | number
-  | boolean
-  | string[]
-  | number[]
-  | Record<string, string | number | boolean | null>
-  | null;
-
-export interface FigureSpec {
-  schemaVersion: string;
-  figureId: string;
-  title: string;
-  chartType: string;
-  interactiveMode: "full" | "partial";
-  sourceStaticImagePaths: {
-    png: string | null;
-    svg: string | null;
-    pdf: string | null;
-  };
-  dataSourceTablePath: string | null;
-  encoding: Record<string, unknown>;
-  xEncoding: Record<string, unknown> | null;
-  yEncoding: Record<string, unknown> | null;
-  colorEncoding: Record<string, unknown> | null;
-  sizeEncoding: Record<string, unknown> | null;
-  labels: Record<string, string | null>;
-  axisRange: Record<string, unknown>;
-  legendOrder: string[];
-  palette: {
-    categorical: string[];
-    continuous: string[];
-    single: Record<string, string>;
-    active: string;
-  };
-  thresholds: Array<Record<string, unknown>>;
-  sorting: Record<string, unknown>;
-  facetLayout: Record<string, unknown>;
-  defaultControls: Record<string, FigureControlValue>;
-  controls: Record<string, FigureControlValue>;
-  allowedControls: Array<Record<string, unknown>>;
-  statistics: Record<string, unknown>;
-  annotations: Array<Record<string, unknown>>;
-  provenance: Record<string, unknown>;
-}
-
-export interface FigureManifestResponse {
-  job_id: string;
-  figures: Array<{
-    figureId: string;
-    title: string;
-    chartType: string;
-    interactiveMode: "full" | "partial";
-    specPath: string;
-    thumbnailUrl: string;
-  }>;
+export interface ValidationError {
+  loc: (string | number)[];
+  msg: string;
+  type: string;
+  input?: unknown;
+  ctx?: Record<string, unknown>;
 }

@@ -23,6 +23,7 @@ from .settings import AppSettings
 
 
 CSV_MAX_BYTES = 50 * 1024 * 1024
+AGENT_BUNDLE_MAX_BYTES = 150 * 1024 * 1024
 
 
 @dataclass(frozen=True)
@@ -312,6 +313,72 @@ class FileStorageService:
             size_bytes=size,
             created_at=datetime.now(timezone.utc),
         )
+
+    async def save_staged_upload(self, bundle_id: str, field: str, upload: UploadFile) -> UploadedFileInfo:
+        """保存审批前输入；调用方只能向用户返回脱敏后的文件 DTO。"""
+        original_filename = _safe_filename(upload.filename, f"{field}.csv")
+        if Path(original_filename).suffix.lower() != ".csv":
+            raise HTTPException(status_code=400, detail=f"{field} must be a CSV file")
+
+        relative_path = f"agent-inputs/{bundle_id}/{field}.csv"
+        workspace_path = self.workspace_root / relative_path
+        workspace_path.parent.mkdir(parents=True, exist_ok=True)
+        await upload.seek(0)
+        hasher = hashlib.sha256()
+        size = 0
+        too_large = False
+        with workspace_path.open("wb") as handle:
+            while chunk := await upload.read(1024 * 1024):
+                size += len(chunk)
+                if size > CSV_MAX_BYTES:
+                    too_large = True
+                    break
+                hasher.update(chunk)
+                handle.write(chunk)
+        if too_large:
+            workspace_path.unlink(missing_ok=True)
+            raise HTTPException(status_code=413, detail=f"{field} exceeds 50 MB limit")
+        if size == 0:
+            workspace_path.unlink(missing_ok=True)
+            raise HTTPException(status_code=400, detail=f"{field} file is empty")
+
+        checksum = "sha256:" + hasher.hexdigest()
+        content_type = upload.content_type or "text/csv"
+        storage_key = relative_path
+        if self.storage_prefix:
+            storage_key = f"{self.storage_prefix}/{relative_path}"
+        self.backend.put_file(
+            workspace_path,
+            storage_key,
+            content_type=content_type,
+            metadata={
+                "checksum": checksum,
+                "created_at": datetime.now(timezone.utc).isoformat(),
+                "kind": FileArtifactKind.INPUT.value,
+                "field": field,
+                "filename": original_filename,
+                "bundle_id": bundle_id,
+            },
+        )
+        return UploadedFileInfo(
+            kind=FileArtifactKind.INPUT,
+            field=field,
+            filename=original_filename,
+            path=f"{field}.csv",
+            storage_key=storage_key,
+            checksum=checksum,
+            content_type=content_type,
+            size_bytes=size,
+            created_at=datetime.now(timezone.utc),
+        )
+
+    def delete_staged_upload(self, storage_key: str) -> None:
+        prefix = "agent-inputs/"
+        if self.storage_prefix:
+            prefix = f"{self.storage_prefix}/{prefix}"
+        if not storage_key.startswith(prefix):
+            raise ValueError("storage key is not an agent staged input")
+        self.backend.delete(storage_key)
 
     def materialize_inputs(self, job: JobRecord) -> dict[str, Path]:
         return {item.field: self.ensure_local_copy(job.id, item) for item in job.inputs}

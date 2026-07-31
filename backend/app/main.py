@@ -17,6 +17,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 
+from .agent.api import create_agent_router
+from .agent.bootstrap import create_agent_api_context
 from .bootstrap import create_context
 from .errors import (
     ApiErrorDetail,
@@ -59,6 +61,11 @@ JOB_STORE = CONTEXT.job_store
 PREFLIGHT = PreflightService()
 JOB_RUNNER = CONTEXT.job_runner
 JOB_EXECUTOR = CONTEXT.job_executor
+AGENT_API_CONTEXT = create_agent_api_context(
+    SETTINGS,
+    files=FILES,
+    job_store=JOB_STORE,
+)
 LOG = logging.getLogger("omicsprism.platform.api")
 
 SESSION_COOKIE = "omicsprism_session"
@@ -119,6 +126,12 @@ def get_session_id(request: Request, response: Response) -> str:
             path="/",
         )
     return session_id
+
+
+app.include_router(create_agent_router(
+    context=AGENT_API_CONTEXT,
+    session_dependency=get_session_id,
+))
 
 
 def require_job_access(job_id: str, session_id: str) -> JobRecord:

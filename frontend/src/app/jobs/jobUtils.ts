@@ -46,7 +46,7 @@ export function dateMs(value: string | null) {
 }
 
 export function durationSeconds(job: JobResponse) {
-  if (job.elapsed_seconds !== null) return job.elapsed_seconds;
+  if (job.elapsed_seconds != null) return job.elapsed_seconds;
   if (job.started_at && job.status === "running") return Math.max(0, Math.round((Date.now() - dateMs(job.started_at)) / 1000));
   if (job.started_at && job.completed_at) return Math.max(0, Math.round((dateMs(job.completed_at) - dateMs(job.started_at)) / 1000));
   return 0;

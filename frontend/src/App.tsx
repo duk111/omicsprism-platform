@@ -1162,8 +1162,8 @@ function ResultsPage({ jobId, onBack, onProgress }: { jobId: string; onBack: () 
         </div>
 
         <div className="row-actions">
-          {files?.report_links.summary && <a className="primary" href={assetUrl(files.report_links.summary)}>Summary report</a>}
-          {files?.report_links.interactive && <a className="secondary" href={assetUrl(files.report_links.interactive)}>Interactive report</a>}
+          {files?.report_links?.summary && <a className="primary" href={assetUrl(files.report_links.summary)}>Summary report</a>}
+          {files?.report_links?.interactive && <a className="secondary" href={assetUrl(files.report_links.interactive)}>Interactive report</a>}
         </div>
 
         {isCorrelation ? (

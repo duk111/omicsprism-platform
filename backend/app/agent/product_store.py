@@ -13,6 +13,7 @@ from .schemas import (
     AgentMessageBlock,
     AgentMessageRecord,
     AgentMessageRole,
+    RunFocus,
     AgentThreadRecord,
     AgentTurnRecord,
     AgentTurnStatus,
@@ -44,6 +45,9 @@ class AgentProductStore(Protocol):
     def get_thread(self, *, thread_id: str, user_id: str) -> AgentThreadRecord:
         ...
 
+    def list_threads(self, *, user_id: str, limit: int = 100) -> list[AgentThreadRecord]:
+        ...
+
     def append_message(self, message: AgentMessageRecord) -> None:
         ...
 
@@ -51,6 +55,11 @@ class AgentProductStore(Protocol):
         ...
 
     def create_turn(self, turn: AgentTurnRecord) -> AgentTurnRecord:
+        ...
+
+    def enqueue_turn(self, *, message: AgentMessageRecord | None, turn: AgentTurnRecord,
+                     focus: RunFocus | None = None,
+                     expected_run_version: int | None = None) -> tuple[AgentTurnRecord, bool]:
         ...
 
     def get_turn(self, *, turn_id: str, user_id: str) -> AgentTurnRecord:
@@ -70,6 +79,10 @@ class AgentProductStore(Protocol):
         ...
 
     def save_input_bundle(self, bundle: AgentInputBundleRecord) -> None:
+        ...
+
+    def save_input_bundle_with_files(self, *, bundle: AgentInputBundleRecord,
+                                     files: list[AgentInputFileRecord]) -> None:
         ...
 
     def get_input_bundle(self, *, bundle_id: str, user_id: str) -> AgentInputBundleRecord:
@@ -108,6 +121,16 @@ class InMemoryAgentProductStore:
             raise AgentResourceNotFound(thread_id)
         return AgentThreadRecord.model_validate(deepcopy(payload))
 
+    def list_threads(self, *, user_id: str, limit: int = 100) -> list[AgentThreadRecord]:
+        bounded = max(1, min(limit, 100))
+        records = [
+            AgentThreadRecord.model_validate(deepcopy(payload))
+            for payload in self._threads.values()
+            if payload["user_id"] == user_id
+        ]
+        records.sort(key=lambda item: (item.updated_at, item.thread_id), reverse=True)
+        return records[:bounded]
+
     def append_message(self, message: AgentMessageRecord) -> None:
         self.get_thread(thread_id=message.thread_id, user_id=message.user_id)
         if message.message_id in self._messages:
@@ -126,7 +149,17 @@ class InMemoryAgentProductStore:
         return records[-bounded:]
 
     def create_turn(self, turn: AgentTurnRecord) -> AgentTurnRecord:
+        return self.enqueue_turn(message=None, turn=turn)[0]
+
+    def enqueue_turn(self, *, message: AgentMessageRecord | None, turn: AgentTurnRecord,
+                     focus: RunFocus | None = None,
+                     expected_run_version: int | None = None) -> tuple[AgentTurnRecord, bool]:
         self.get_thread(thread_id=turn.thread_id, user_id=turn.user_id)
+        if message is not None:
+            if (message.thread_id, message.run_id, message.user_id) != (
+                turn.thread_id, turn.run_id, turn.user_id,
+            ):
+                raise ValueError("turn message does not match turn ownership")
         key = (turn.user_id, turn.idempotency_key)
         existing_id = self._turn_keys.get(key)
         if existing_id is not None:
@@ -137,7 +170,9 @@ class InMemoryAgentProductStore:
                 or existing.run_id != turn.run_id
             ):
                 raise IdempotencyConflict(turn.idempotency_key)
-            return existing
+            return existing, False
+        if message is not None and message.message_id in self._messages:
+            raise ValueError("agent message id already exists")
         if any(
             payload["thread_id"] == turn.thread_id
             and payload["user_id"] == turn.user_id
@@ -149,7 +184,9 @@ class InMemoryAgentProductStore:
             raise ValueError("agent turn id already exists")
         self._turns[turn.turn_id] = turn.model_dump(mode="json")
         self._turn_keys[key] = turn.turn_id
-        return turn.model_copy(deep=True)
+        if message is not None:
+            self._messages[message.message_id] = message.model_dump(mode="json")
+        return turn.model_copy(deep=True), True
 
     def get_turn(self, *, turn_id: str, user_id: str) -> AgentTurnRecord:
         payload = self._turns.get(turn_id)
@@ -229,6 +266,22 @@ class InMemoryAgentProductStore:
             raise AgentResourceNotFound(bundle.bundle_id)
         self._bundles[bundle.bundle_id] = bundle.model_dump(mode="json")
 
+    def save_input_bundle_with_files(self, *, bundle: AgentInputBundleRecord,
+                                     files: list[AgentInputFileRecord]) -> None:
+        self.get_thread(thread_id=bundle.thread_id, user_id=bundle.user_id)
+        if len(files) > 6 or any(
+            (item.bundle_id, item.user_id) != (bundle.bundle_id, bundle.user_id)
+            for item in files
+        ):
+            raise ValueError("input files do not match bundle ownership")
+        if len({item.field for item in files}) != len(files):
+            raise ValueError("input bundle fields must be unique")
+        if any(item.file_id in self._files for item in files):
+            raise ValueError("agent input file id already exists")
+        self._bundles[bundle.bundle_id] = bundle.model_dump(mode="json")
+        for item in files:
+            self._files[item.file_id] = item.model_dump(mode="json")
+
     def get_input_bundle(self, *, bundle_id: str, user_id: str) -> AgentInputBundleRecord:
         payload = self._bundles.get(bundle_id)
         if payload is None or payload["user_id"] != user_id:
@@ -301,6 +354,19 @@ class PostgresAgentProductStore:
             raise AgentResourceNotFound(thread_id)
         return _thread_from_row(row)
 
+    def list_threads(self, *, user_id: str, limit: int = 100) -> list[AgentThreadRecord]:
+        bounded = max(1, min(limit, 100))
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                select thread_id, user_id, title, current_run_id, status, version, created_at, updated_at
+                from agent_threads where user_id = %s
+                order by updated_at desc, thread_id desc limit %s
+                """,
+                (user_id, bounded),
+            ).fetchall()
+        return [_thread_from_row(row) for row in rows]
+
     def append_message(self, message: AgentMessageRecord) -> None:
         self.get_thread(thread_id=message.thread_id, user_id=message.user_id)
         Jsonb = _jsonb_type()
@@ -338,9 +404,61 @@ class PostgresAgentProductStore:
         return [_message_from_row(row) for row in reversed(rows)]
 
     def create_turn(self, turn: AgentTurnRecord) -> AgentTurnRecord:
-        self.get_thread(thread_id=turn.thread_id, user_id=turn.user_id)
+        return self.enqueue_turn(message=None, turn=turn)[0]
+
+    def enqueue_turn(self, *, message: AgentMessageRecord | None, turn: AgentTurnRecord,
+                     focus: RunFocus | None = None,
+                     expected_run_version: int | None = None) -> tuple[AgentTurnRecord, bool]:
+        Jsonb = _jsonb_type()
         try:
             with self._connect() as conn:
+                thread_row = conn.execute(
+                    """
+                    select current_run_id from agent_threads
+                    where thread_id = %s and user_id = %s
+                    for update
+                    """,
+                    (turn.thread_id, turn.user_id),
+                ).fetchone()
+                if thread_row is None or thread_row[0] != turn.run_id:
+                    raise AgentResourceNotFound(turn.thread_id)
+                existing_row = conn.execute(
+                    """
+                    select turn_id, thread_id, run_id, user_id, idempotency_key, request_hash,
+                           status, attempt, lease_owner, lease_expires_at, error_code,
+                           created_at, updated_at, started_at, completed_at
+                    from agent_turns where user_id = %s and idempotency_key = %s
+                    """,
+                    (turn.user_id, turn.idempotency_key),
+                ).fetchone()
+                if existing_row is not None:
+                    existing = _turn_from_row(existing_row)
+                    if (
+                        existing.request_hash != turn.request_hash
+                        or existing.thread_id != turn.thread_id
+                        or existing.run_id != turn.run_id
+                    ):
+                        raise IdempotencyConflict(turn.idempotency_key)
+                    return existing, False
+                if focus is not None:
+                    if expected_run_version is None:
+                        raise ValueError("expected run version is required when focus changes")
+                    updated = conn.execute(
+                        """
+                        update agent_runs set focus = %s, version = version + 1, updated_at = now()
+                        where run_id = %s and user_id = %s and thread_id = %s and version = %s
+                        returning run_id
+                        """,
+                        (
+                            Jsonb(focus.model_dump(mode="json")),
+                            turn.run_id,
+                            turn.user_id,
+                            turn.thread_id,
+                            expected_run_version,
+                        ),
+                    ).fetchone()
+                    if updated is None:
+                        raise StateConflict(f"expected version {expected_run_version}")
                 row = conn.execute(
                     """
                     insert into agent_turns (
@@ -353,31 +471,52 @@ class PostgresAgentProductStore:
                     """,
                     _turn_values(turn),
                 ).fetchone()
-                if row is not None:
-                    return turn.model_copy(deep=True)
-                existing_row = conn.execute(
-                    """
-                    select turn_id, thread_id, run_id, user_id, idempotency_key, request_hash,
-                           status, attempt, lease_owner, lease_expires_at, error_code,
-                           created_at, updated_at, started_at, completed_at
-                    from agent_turns where user_id = %s and idempotency_key = %s
-                    """,
-                    (turn.user_id, turn.idempotency_key),
-                ).fetchone()
+                if row is None:
+                    existing_row = conn.execute(
+                        """
+                        select turn_id, thread_id, run_id, user_id, idempotency_key, request_hash,
+                               status, attempt, lease_owner, lease_expires_at, error_code,
+                               created_at, updated_at, started_at, completed_at
+                        from agent_turns where user_id = %s and idempotency_key = %s
+                        """,
+                        (turn.user_id, turn.idempotency_key),
+                    ).fetchone()
+                    if existing_row is None:
+                        raise RuntimeError("turn insert returned no record")
+                    existing = _turn_from_row(existing_row)
+                    if (
+                        existing.request_hash != turn.request_hash
+                        or existing.thread_id != turn.thread_id
+                        or existing.run_id != turn.run_id
+                    ):
+                        raise IdempotencyConflict(turn.idempotency_key)
+                    return existing, False
+                if message is not None:
+                    if (message.thread_id, message.run_id, message.user_id) != (
+                        turn.thread_id, turn.run_id, turn.user_id,
+                    ):
+                        raise ValueError("turn message does not match turn ownership")
+                    conn.execute(
+                        """
+                        insert into agent_messages (
+                            message_id, thread_id, run_id, user_id, role, blocks, created_at
+                        ) values (%s, %s, %s, %s, %s, %s, %s)
+                        """,
+                        (
+                            message.message_id,
+                            message.thread_id,
+                            message.run_id,
+                            message.user_id,
+                            message.role.value,
+                            Jsonb([block.model_dump(mode="json") for block in message.blocks]),
+                            message.created_at,
+                        ),
+                    )
+                return turn.model_copy(deep=True), True
         except Exception as exc:
             if _constraint_name(exc) == "agent_turns_one_active_per_thread_idx":
                 raise ActiveTurnConflict(turn.thread_id) from exc
             raise
-        if existing_row is None:
-            raise RuntimeError("idempotent turn insert returned no record")
-        existing = _turn_from_row(existing_row)
-        if (
-            existing.request_hash != turn.request_hash
-            or existing.thread_id != turn.thread_id
-            or existing.run_id != turn.run_id
-        ):
-            raise IdempotencyConflict(turn.idempotency_key)
-        return existing
 
     def get_turn(self, *, turn_id: str, user_id: str) -> AgentTurnRecord:
         with self._connect() as conn:
@@ -617,6 +756,59 @@ class PostgresAgentProductStore:
             ).fetchone()
         if row is None:
             raise AgentResourceNotFound(bundle.bundle_id)
+
+    def save_input_bundle_with_files(self, *, bundle: AgentInputBundleRecord,
+                                     files: list[AgentInputFileRecord]) -> None:
+        if len(files) > 6 or any(
+            (item.bundle_id, item.user_id) != (bundle.bundle_id, bundle.user_id)
+            for item in files
+        ):
+            raise ValueError("input files do not match bundle ownership")
+        if len({item.field for item in files}) != len(files):
+            raise ValueError("input bundle fields must be unique")
+        with self._connect() as conn:
+            owned = conn.execute(
+                "select thread_id from agent_threads where thread_id = %s and user_id = %s",
+                (bundle.thread_id, bundle.user_id),
+            ).fetchone()
+            if owned is None:
+                raise AgentResourceNotFound(bundle.thread_id)
+            conn.execute(
+                """
+                insert into agent_input_bundles (
+                    bundle_id, thread_id, user_id, status, expires_at, created_at
+                ) values (%s, %s, %s, %s, %s, %s)
+                """,
+                (
+                    bundle.bundle_id,
+                    bundle.thread_id,
+                    bundle.user_id,
+                    bundle.status.value,
+                    bundle.expires_at,
+                    bundle.created_at,
+                ),
+            )
+            for item in files:
+                conn.execute(
+                    """
+                    insert into agent_input_files (
+                        file_id, bundle_id, user_id, field, filename, storage_key,
+                        checksum, content_type, size_bytes, created_at
+                    ) values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    """,
+                    (
+                        item.file_id,
+                        item.bundle_id,
+                        item.user_id,
+                        item.field,
+                        item.filename,
+                        item.storage_key,
+                        item.checksum,
+                        item.content_type,
+                        item.size_bytes,
+                        item.created_at,
+                    ),
+                )
 
     def get_input_bundle(self, *, bundle_id: str, user_id: str) -> AgentInputBundleRecord:
         with self._connect() as conn:

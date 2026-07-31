@@ -28,6 +28,9 @@ class ApprovalGate(Protocol):
                now: datetime | None = None) -> None:
         ...
 
+    def get_owned(self, *, approval_id: str, user_id: str) -> ApprovalRecord:
+        ...
+
 
 class ApprovalNotFound(LookupError):
     pass
@@ -106,6 +109,9 @@ class InMemoryApprovalGate:
             raise ApprovalExpired(approval_id)
         record.status = ApprovalStatus.REJECTED
         self._records[approval_id] = record.model_dump(mode="json")
+
+    def get_owned(self, *, approval_id: str, user_id: str) -> ApprovalRecord:
+        return self._owned_record(approval_id, user_id)
 
     def _owned_record(self, approval_id: str, user_id: str) -> ApprovalRecord:
         payload = self._records.get(approval_id)
@@ -188,6 +194,12 @@ class JsonApprovalGate:
             raise ApprovalExpired(approval_id)
         record.status = ApprovalStatus.REJECTED
         self._save(record)
+
+    def get_owned(self, *, approval_id: str, user_id: str) -> ApprovalRecord:
+        record = self._get(approval_id)
+        if record.user_id != user_id:
+            raise ApprovalNotFound(approval_id)
+        return record
 
     def _get(self, approval_id: str) -> ApprovalRecord:
         path = self._path(approval_id)
@@ -288,6 +300,10 @@ class PostgresApprovalGate:
                 "update agent_approvals set status = 'rejected', updated_at = now() where approval_id = %s and user_id = %s",
                 (approval_id, user_id),
             )
+
+    def get_owned(self, *, approval_id: str, user_id: str) -> ApprovalRecord:
+        with self._connect() as conn:
+            return self._get_owned(conn, approval_id, user_id)
 
     @staticmethod
     def _get_owned(conn, approval_id: str, user_id: str) -> ApprovalRecord:
