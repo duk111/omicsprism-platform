@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { lazy, Suspense, useEffect, useMemo, useRef, useState } from "react";
 import { BrowserRouter, Navigate, Route, Routes, useLocation, useNavigate, useParams } from "react-router-dom";
 import type { AnalysisType, ImageInfo, JobFilesResponse, JobResponse, JobStatus } from "./api-types";
 import { apiFetch, apiFetchJson, ApiRequestError, assetUrl, publicUrl } from "./api";
@@ -6,8 +6,10 @@ import { formatSeconds } from "./app/jobs/progress";
 import { ANALYSIS_LABELS, STATUS_LABELS, formatDateTime } from "./app/jobs/jobUtils";
 import { useJobProgressSubscription } from "./app/jobs/useJobProgressSubscription";
 import { loadExample } from "./app/examples";
-import FigureViewer from "./viewer/FigureViewer";
 import "./App.css";
+
+const CopilotPage = lazy(() => import("./copilot/CopilotPage"));
+const FigureViewer = lazy(() => import("./viewer/FigureViewer"));
 
 type AnalysisTab = "home" | "new" | "jobs" | "download" | "tutorial" | "contact";
 
@@ -71,6 +73,7 @@ function AppRoutes() {
   useEffect(() => {
     if (location.pathname.includes("/results")) document.title = "Results | OmicsPrism";
     else if (/^\/jobs\/[^/]+$/.test(location.pathname)) document.title = "Running | OmicsPrism";
+    else if (location.pathname === "/copilot") document.title = "Copilot | OmicsPrism";
     else document.title = "OmicsPrism";
   }, [location.pathname]);
 
@@ -86,6 +89,7 @@ function AppRoutes() {
         <button className="brand" type="button" onClick={() => navigate("/")}>OmicsPrism</button>
         <nav className="topnav">
           <button type="button" className={location.pathname === "/home" ? "active-nav" : ""} onClick={() => navigate("/home")}>Home</button>
+          <button type="button" className={location.pathname === "/copilot" ? "active-nav" : ""} onClick={() => navigate("/copilot")}>Copilot</button>
           <button type="button" className={location.pathname === "/new" ? "active-nav" : ""} onClick={() => navigate("/new")}>New Analysis</button>
           <button type="button" className={location.pathname === "/jobs" || location.pathname.startsWith("/jobs/") ? "active-nav" : ""} onClick={() => navigate("/jobs")}>My Jobs</button>
           <button type="button" className={location.pathname === "/download" ? "active-nav" : ""} onClick={() => navigate("/download")}>Download</button>
@@ -102,6 +106,7 @@ function AppRoutes() {
         <Route path="/jobs" element={<AnalysisPage tab="jobs" onSelectType={openAnalysis} onProgress={openProgress} />} />
         <Route path="/jobs/:jobId" element={<JobProgressRoute />} />
         <Route path="/jobs/:jobId/results" element={<JobResultsRoute />} />
+        <Route path="/copilot" element={<Suspense fallback={<main className="page"><p>Opening Copilot...</p></main>}><CopilotPage /></Suspense>} />
         <Route path="/download" element={<AnalysisPage tab="download" onSelectType={openAnalysis} onProgress={openProgress} />} />
         <Route path="/help/tutorial" element={<AnalysisPage tab="tutorial" onSelectType={openAnalysis} onProgress={openProgress} />} />
         <Route path="/help/contact" element={<AnalysisPage tab="contact" onSelectType={openAnalysis} onProgress={openProgress} />} />
@@ -1009,6 +1014,7 @@ function ProgressPage({
         </section>
         <div className="row-actions">
           <button className="secondary" type="button" onClick={onBack}>Back</button>
+          <a className="secondary" href={publicUrl(`/copilot?job_id=${encodeURIComponent(jobId)}`)}>Ask Copilot</a>
           {status === "queued" || status === "running" ? (
             <button className="secondary danger-action" type="button" onClick={cancelJob}>Cancel</button>
           ) : null}
@@ -1155,6 +1161,7 @@ function ResultsPage({ jobId, onBack, onProgress }: { jobId: string; onBack: () 
             <h1>{resultsTitle}</h1>
           </div>
           <div className="row-actions compact-actions">
+            <a className="secondary" href={publicUrl(`/copilot?job_id=${encodeURIComponent(jobId)}`)}>Ask Copilot</a>
             {archiveUrl && <a className="primary" href={archiveUrl}>Download ZIP</a>}
             <button className="secondary" type="button" onClick={onProgress}>Log</button>
             <button className="secondary" type="button" onClick={onBack}>Back</button>
@@ -1255,7 +1262,7 @@ function ResultsPage({ jobId, onBack, onProgress }: { jobId: string; onBack: () 
           </>
         )}
 
-        {selectedImage && <FigureViewer image={selectedImage} onClose={() => setSelectedImage(null)} />}
+        {selectedImage && <Suspense fallback={null}><FigureViewer image={selectedImage} onClose={() => setSelectedImage(null)} /></Suspense>}
       </section>
     </main>
   );

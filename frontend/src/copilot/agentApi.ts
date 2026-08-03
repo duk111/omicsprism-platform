@@ -1,0 +1,46 @@
+import { apiFetch, apiFetchJson, apiUrl } from "../api";
+import type {
+  AgentApprovalDecision,
+  AgentInputBundleResponse,
+  AgentMessageListResponse,
+  AgentThreadDetailResponse,
+  AgentThreadListResponse,
+  AgentThreadResponse,
+  AgentTurnListResponse,
+  AgentTurnResponse,
+} from "../api-types";
+
+const root = "/api/agent/threads";
+
+function json(method: string, body: unknown): RequestInit {
+  return { method, headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) };
+}
+
+export const agentApi = {
+  listThreads: () => apiFetchJson(root) as Promise<AgentThreadListResponse>,
+  createThread: (focusJobIds: string[] = []) =>
+    apiFetchJson(root, json("POST", { focus_job_ids: focusJobIds })) as Promise<AgentThreadResponse>,
+  getThread: (threadId: string) =>
+    apiFetchJson(`${root}/${encodeURIComponent(threadId)}`) as Promise<AgentThreadDetailResponse>,
+  listMessages: (threadId: string, after?: string) =>
+    apiFetchJson(`${root}/${encodeURIComponent(threadId)}/messages${after ? `?after=${encodeURIComponent(after)}` : ""}`) as Promise<AgentMessageListResponse>,
+  listTurns: (threadId: string, after?: string) =>
+    apiFetchJson(`${root}/${encodeURIComponent(threadId)}/turns${after ? `?after=${encodeURIComponent(after)}` : ""}`) as Promise<AgentTurnListResponse>,
+  createTurn: (threadId: string, message: string, inputBundleId: string | null, focusJobIds: string[]) =>
+    apiFetchJson(`${root}/${encodeURIComponent(threadId)}/turns`, {
+      ...json("POST", { message, input_bundle_id: inputBundleId, focus_job_ids: focusJobIds }),
+      headers: { "Content-Type": "application/json", "Idempotency-Key": crypto.randomUUID() },
+    }) as Promise<AgentTurnResponse>,
+  uploadBundle: async (threadId: string, attachments: { file: File; field: string }[]) => {
+    const body = new FormData();
+    attachments.forEach(({ file, field }) => { body.append("files", file); body.append("fields", field); });
+    return apiFetchJson(`${root}/${encodeURIComponent(threadId)}/input-bundles`, { method: "POST", body }) as Promise<AgentInputBundleResponse>;
+  },
+  decideApproval: (threadId: string, approvalId: string, decision: AgentApprovalDecision, planHash: string) =>
+    apiFetchJson(`${root}/${encodeURIComponent(threadId)}/approvals/${encodeURIComponent(approvalId)}`, json("POST", {
+      decision,
+      plan_hash: planHash,
+    })),
+  streamUrl: (threadId: string) => apiUrl(`${root}/${encodeURIComponent(threadId)}/stream`),
+  ping: () => apiFetch("/health"),
+};

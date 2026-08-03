@@ -1,14 +1,15 @@
-import React from "react";
+import React, { lazy, Suspense } from "react";
 import ReactDOM from "react-dom/client";
 import App from "./App";
 import { publicRelativePath } from "./api";
-import { InteractiveRouter } from "./interactive/InteractiveRouter";
 import "./index.css";
+
+const InteractiveRouter = lazy(() => import("./interactive/InteractiveRouter").then(module => ({ default: module.InteractiveRouter })));
 
 function Root() {
   const path = publicRelativePath().toLowerCase();
   if (path.startsWith("/interactive/")) {
-    return <InteractiveRouter />;
+    return <Suspense fallback={null}><InteractiveRouter /></Suspense>;
   }
   return <App />;
 }

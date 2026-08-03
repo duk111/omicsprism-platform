@@ -1268,6 +1268,37 @@ button:disabled,
 /* ================================================================== */
 
 @media (max-width: 700px) {
+  .topbar {
+    min-height: 58px;
+    padding: 0 10px;
+    align-items: center;
+    flex-direction: row;
+    gap: 8px;
+    overflow: hidden;
+  }
+
+  .brand {
+    flex: none;
+    font-size: 0.82rem;
+  }
+
+  .topnav {
+    flex: 1;
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    scrollbar-width: none;
+  }
+
+  .topnav::-webkit-scrollbar { display: none; }
+
+  .topnav > button,
+  .help-trigger {
+    flex: none;
+    min-height: 58px;
+    padding: 0 10px;
+    font-size: 0.76rem;
+  }
+
   .field-row {
     grid-template-columns: 1fr;
   }
@@ -1355,4 +1386,17 @@ button:disabled,
     padding: 0;
     border-bottom: 0;
   }
+}
+
+@media (max-width: 700px) {
+  .topbar {
+    min-height: 58px;
+    padding: 0 10px;
+    align-items: center;
+    flex-direction: row;
+    gap: 8px;
+    overflow: hidden;
+  }
+
+  .topnav { flex-wrap: nowrap; }
 }

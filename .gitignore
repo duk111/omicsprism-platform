@@ -13,6 +13,8 @@ frontend/dist/
 frontend/dist-check-*/
 frontend/.vite/
 frontend/*.tsbuildinfo
+frontend/test-results/
+frontend/playwright-report/
 frontend/vite.config.d.ts
 frontend/vite.config.js
 frontend/vite-dev.log
