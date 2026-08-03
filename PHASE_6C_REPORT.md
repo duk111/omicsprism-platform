@@ -1,6 +1,6 @@
 # Phase 6 Gate C 报告：HTTP/SSE 契约
 
-> 状态：实现完成，等待服务器 PostgreSQL 验证与人工红线审阅；**Gate C 尚未关闭，不得进入 Gate D**。
+> 状态：**已完成并关闭**。2026-08-03，服务器 PostgreSQL 验证、完整回归、前端生产构建和人工红线审阅均通过；契约已切换到 Gate D。
 > 基线：Phase 6 Gate A/B 已完成并通过人工审阅；本 Gate 未新增 migration、业务工具、模型能力或前端 `/copilot` 页面。
 
 ## 1. 本 Gate 做了什么
@@ -42,8 +42,8 @@
 - [x] SSE 只输出 `AgentStreamEvent` 的 `turn.updated`/`message.created`；DTO 不含 raw event、`user_id`、Cookie、DSN、路径、storage key、request hash、lease owner。
 - [x] OpenAPI 已生成 TypeScript agent DTO/discriminated union；现有前端生产构建通过。
 - [x] Phase 5 unit replay 为 25/25，确定性安全指标零回归。
-- [ ] 服务器真实 PostgreSQL Gate C 测试通过并记录原始输出。
-- [ ] R3/R4/R6、原子入队与 SSE 脱敏由人工审阅通过。
+- [x] 服务器真实 PostgreSQL Gate C 测试通过并记录原始输出。
+- [x] R3/R4/R6、原子入队与 SSE 脱敏由人工审阅通过。
 
 ## 4. 本地验证证据
 
@@ -73,7 +73,34 @@ npm run build --prefix frontend
 TypeScript + Vite build passed
 ```
 
-## 5. 服务器验证命令
+## 5. 服务器验证证据
+
+2026-08-03，在 Python 3.10 和专用 PostgreSQL 测试库上复验：
+
+```text
+python3 -m pytest \
+  backend/tests/test_phase6c_api.py \
+  backend/tests/test_phase6c_db_api.py \
+  -q -rs
+10 passed, 1 warning in 6.13s
+
+python3 -m pytest backend/tests -q -rs
+144 passed, 1 warning in 25.56s
+
+npm ci --prefix frontend
+added 336 packages, and audited 337 packages
+
+npm run build --prefix frontend
+76 modules transformed
+dist/assets/index-CtasNlRx.js  10,009.77 kB (gzip 3,038.36 kB)
+built in 24.16s
+```
+
+唯一 Python warning 是既有 FastAPI `TestClient` 对 `httpx` 的弃用提示，不影响本 Gate 行为验证。首次服务器测试暴露了 Python 3.10 对局部延迟注解 dependency 的兼容问题；提交 `92cbd21` 将测试 dependency 提到模块级，并改用客户端持久 Cookie，复验后 PostgreSQL 用例通过。
+
+人工结论：`Phase 6 Gate C R3/R4/R6/atomic enqueue/SSE 人工审阅通过`。
+
+## 6. 可复现验证命令
 
 沿用 Gate A/B 的专用测试库变量，不要对生产库运行：
 
@@ -107,9 +134,10 @@ npm run build --prefix frontend
 4. R6：`AgentApiContext`、`api.py`、`main.py` 不实例化或调用 vLLM；agent 未配置只影响 `/api/agent/*`。
 5. SSE：只出现公开 `AgentTurnResponse` / `AgentMessageResponse`，无 raw trace、身份、凭据、路径或 storage key。
 
-## 6. 已知缺口
+## 7. 已知缺口
 
 - 当前 SSE 为 1 秒轮询投影，不做 token 流；符合 Phase 6 范围，实时推送优化留到 Roadmap。
 - thread/messages/turns 每次最多恢复最近 100 条；演示规模足够，更长历史的 opaque cursor 留到后续产品迭代。
-- 本地无法执行真实 PostgreSQL 测试；Gate C 必须等待服务器输出与人工审阅，不以 skip 视为通过。
 - `/copilot` React UI、组件、Playwright 和截图属于 Gate D，本 Gate 未开始。
+- `npm audit` 报告 7 个依赖漏洞（1 low、1 moderate、5 high），尚未逐项确认可达性；Gate D 关闭前必须审计，不能直接运行可能引入 breaking changes 的 `npm audit fix --force`。
+- 当前生产入口 chunk 约 10 MB（gzip 约 3 MB）；不阻塞 HTTP/SSE 契约，但会影响页面加载，列为 Gate D 的拆包与真实设备验收项。
