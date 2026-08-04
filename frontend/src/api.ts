@@ -12,8 +12,8 @@ export class ApiRequestError extends Error {
   }
 }
 
-const API_BASE_PATH = normalizeBasePath(import.meta.env.VITE_API_BASE_PATH || "/api");
 const PUBLIC_BASE_PATH = normalizeBasePath(import.meta.env.BASE_URL || import.meta.env.VITE_PUBLIC_BASE_PATH || "/");
+const API_BASE_PATH = normalizeBasePath(import.meta.env.VITE_API_BASE_PATH || `${PUBLIC_BASE_PATH}/api`);
 
 export function publicUrl(path: string): string {
   const cleanPath = path.startsWith("/") ? path : `/${path}`;

@@ -390,6 +390,7 @@ application paths:
 /omicsprism/gma                  GMA form
 /omicsprism/jobs/:jobId          Job progress
 /omicsprism/jobs/:jobId/results  Results
+/omicsprism/copilot              Copilot conversation workspace
 /omicsprism/download             Example downloads
 /omicsprism/help/tutorial        Tutorial
 /omicsprism/help/contact         Contact

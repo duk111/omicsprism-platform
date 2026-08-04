@@ -50,14 +50,24 @@ exit 0
 
 ## 4. 服务器验收
 
-服务器需要在拉取本 Gate 提交后执行：
+Gate D 只更新云服务器 nginx 提供的静态前端；算力服务器不安装或启动 Vite，不部署 `frontend/dist`。在云服务器拉取本 Gate 提交后执行：
 
 ```bash
 git pull origin master
 npm ci --prefix frontend
-npm run build --prefix frontend
+VITE_PUBLIC_BASE_PATH=/omicsprism/ \
+VITE_API_BASE_PATH=/omicsprism/api \
+  npm run build --prefix frontend
 npm audit --prefix frontend --omit=dev
+
+rm -rf /www/nginx/nginx_html/html/omicsprism/*
+cp -a frontend/dist/. /www/nginx/nginx_html/html/omicsprism/
+
+docker exec nginx-all nginx -t
+docker exec nginx-all nginx -s reload
 ```
+
+浏览器只从 `http://111.170.173.174:8092/omicsprism/copilot` 进入。Gate E 才把云 nginx 的 `/omicsprism/api/agent/*` 单独反代到算力服务器 Agent API；普通 `/omicsprism/api/*` 继续指向云服务器 API。算力服务器只运行 Agent API、agent worker 与 vLLM。
 
 人工审阅重点：
 
