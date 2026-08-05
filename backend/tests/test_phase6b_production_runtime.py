@@ -160,22 +160,6 @@ def _analysis_decision() -> AgentDecision:
     )
 
 
-def _more_data_decision() -> AgentDecision:
-    return AgentDecision(
-        action=AgentAction.REQUEST_MORE_DATA,
-        reasoning_summary="Uploaded inputs are required",
-        feasibility=Feasibility(
-            verdict=FeasibilityVerdict.NOT_ANSWERABLE,
-            reasons=[],
-            missing_information=["counts CSV", "metadata CSV"],
-        ),
-        analysis_recommendations=[],
-        requires_approval=False,
-        requested_params={},
-        grounded_answer=None,
-    )
-
-
 def _answer_decision(*, params=None, answer=None) -> AgentDecision:
     return AgentDecision(
         action=AgentAction.ANSWER,
@@ -195,7 +179,7 @@ def test_analysis_without_uploaded_inputs_requests_data_without_side_effects() -
     approvals = InMemoryApprovalGate()
     jobs = _Jobs()
     executor = _Executor()
-    model = _RecordingModel([_more_data_decision()])
+    model = _RecordingModel([])
     coordinator = ProductionRunCoordinator(
         state_store=state_store,
         plan_store=plans,
@@ -222,7 +206,8 @@ def test_analysis_without_uploaded_inputs_requests_data_without_side_effects() -
     assert result.state.plan_id is None
     assert result.state.pending_approval_id is None
     assert [block.type for block in result.blocks] == ["text"]
-    assert "counts CSV" in result.blocks[0].text
+    assert "CSV" in result.blocks[0].text
+    assert model.contexts == []
     assert jobs.saved == []
     assert executor.enqueued == []
 

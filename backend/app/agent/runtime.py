@@ -144,11 +144,27 @@ class ProductionRunCoordinator:
             if state.state is AgentState.CHECK_INPUTS:
                 executor = self._executor(ActiveProfile.ANALYSIS)
                 inspected = call_tool(executor, ToolName.INSPECT_UPLOADED_INPUTS)
+                available_input_roles = [str(row.get("field")) for row in inspected.rows]
+                role_set = set(available_input_roles)
+                has_supported_inputs = any(
+                    all(rule.name in role_set for rule in spec.input_rules if rule.required)
+                    for analysis_type in self.context_builder.analysis_specs.analysis_types()
+                    for spec in [self.context_builder.analysis_specs.get(analysis_type)]
+                )
+                if not has_supported_inputs:
+                    state.state = AgentState.NEED_USER_INPUT
+                    blocks.append(AgentTextBlock(
+                        text=(
+                            "请先上传实际 CSV 文件并为每个文件指定角色。"
+                            "系统仅根据已上传文件判断分析可行性，消息中的文件描述不会作为输入。"
+                        ),
+                    ))
+                    break
                 context = self.context_builder.build(
                     state=state,
                     active_profile=ActiveProfile.ANALYSIS,
                     user_message=user_message,
-                    available_input_roles=[str(row.get("field")) for row in inspected.rows],
+                    available_input_roles=available_input_roles,
                 )
                 decision = call_model(context)
                 self.validator.validate(state, decision)
