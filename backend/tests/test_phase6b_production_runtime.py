@@ -160,6 +160,22 @@ def _analysis_decision() -> AgentDecision:
     )
 
 
+def _more_data_decision() -> AgentDecision:
+    return AgentDecision(
+        action=AgentAction.REQUEST_MORE_DATA,
+        reasoning_summary="Uploaded inputs are required",
+        feasibility=Feasibility(
+            verdict=FeasibilityVerdict.NOT_ANSWERABLE,
+            reasons=[],
+            missing_information=["counts CSV", "metadata CSV"],
+        ),
+        analysis_recommendations=[],
+        requires_approval=False,
+        requested_params={},
+        grounded_answer=None,
+    )
+
+
 def _answer_decision(*, params=None, answer=None) -> AgentDecision:
     return AgentDecision(
         action=AgentAction.ANSWER,
@@ -170,6 +186,45 @@ def _answer_decision(*, params=None, answer=None) -> AgentDecision:
         requested_params=params or {},
         grounded_answer=answer,
     )
+
+
+def test_analysis_without_uploaded_inputs_requests_data_without_side_effects() -> None:
+    state_store = InMemoryStateStore()
+    state_store.save(_state(), expected_version=0)
+    plans = InMemoryPlanStore()
+    approvals = InMemoryApprovalGate()
+    jobs = _Jobs()
+    executor = _Executor()
+    model = _RecordingModel([_more_data_decision()])
+    coordinator = ProductionRunCoordinator(
+        state_store=state_store,
+        plan_store=plans,
+        approval_gate=approvals,
+        event_store=InMemoryAgentEventStore(),
+        model=model,
+        tool_runtime=AgentToolRuntime(
+            user_id="user-1",
+            inputs={},
+            plans=plans,
+            job_store=jobs,
+            files=_Files(),
+            executor=executor,
+            approval_gate=approvals,
+        ),
+    )
+
+    result = coordinator.execute_turn(
+        turn=_turn(),
+        user_message="I have counts and metadata and want differential analysis",
+    )
+
+    assert result.state.state is AgentState.NEED_USER_INPUT
+    assert result.state.plan_id is None
+    assert result.state.pending_approval_id is None
+    assert [block.type for block in result.blocks] == ["text"]
+    assert "counts CSV" in result.blocks[0].text
+    assert jobs.saved == []
+    assert executor.enqueued == []
 
 
 def test_production_analysis_requires_structured_approval_then_submits_once() -> None:

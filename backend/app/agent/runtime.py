@@ -152,6 +152,16 @@ class ProductionRunCoordinator:
                 )
                 decision = call_model(context)
                 self.validator.validate(state, decision)
+                if decision.action is AgentAction.REQUEST_MORE_DATA:
+                    state.state = AgentState.NEED_USER_INPUT
+                    missing = decision.feasibility.missing_information if decision.feasibility else []
+                    detail = "；".join(missing)
+                    message = "请上传实际 CSV 文件并在发送前指定文件角色。"
+                    if detail:
+                        message += f"仍需补充：{detail}。"
+                    message += "仅在消息中描述文件不等同于上传数据。"
+                    blocks.append(AgentTextBlock(text=message))
+                    break
                 if not decision.analysis_recommendations:
                     raise ValueError("analysis decision has no recommendation")
                 analysis_type = decision.analysis_recommendations[0]

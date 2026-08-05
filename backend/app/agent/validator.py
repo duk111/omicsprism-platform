@@ -12,12 +12,18 @@ class DecisionValidator:
         if decision.grounded_answer is not None and decision.action is not AgentAction.ANSWER:
             raise InvalidDecision("grounded answer is only valid for ANSWER")
         if state.state is AgentState.CHECK_INPUTS:
-            if decision.action is not AgentAction.PROPOSE_PLAN:
-                raise InvalidDecision("CHECK_INPUTS requires PROPOSE_PLAN")
-            if decision.feasibility is None:
-                raise InvalidDecision("PROPOSE_PLAN requires feasibility")
-            if decision.feasibility.verdict is FeasibilityVerdict.NOT_ANSWERABLE:
-                raise InvalidDecision("not answerable cannot proceed to proposal")
+            if decision.action is AgentAction.REQUEST_MORE_DATA:
+                if decision.feasibility is None or decision.feasibility.verdict is not FeasibilityVerdict.NOT_ANSWERABLE:
+                    raise InvalidDecision("REQUEST_MORE_DATA requires a not-answerable feasibility result")
+                if decision.analysis_recommendations or decision.requested_params or decision.requires_approval:
+                    raise InvalidDecision("REQUEST_MORE_DATA cannot recommend, parameterize, or request approval")
+            elif decision.action is AgentAction.PROPOSE_PLAN:
+                if decision.feasibility is None:
+                    raise InvalidDecision("PROPOSE_PLAN requires feasibility")
+                if decision.feasibility.verdict is FeasibilityVerdict.NOT_ANSWERABLE:
+                    raise InvalidDecision("not answerable cannot proceed to proposal")
+            else:
+                raise InvalidDecision("CHECK_INPUTS requires PROPOSE_PLAN or REQUEST_MORE_DATA")
         elif state.state is AgentState.WAIT_PLAN_CONFIRMATION:
             if decision.action is not AgentAction.REQUEST_APPROVAL:
                 raise InvalidDecision("WAIT_PLAN_CONFIRMATION requires REQUEST_APPROVAL")

@@ -85,7 +85,12 @@ class AgentWorker:
                 processed = self.processor.process(turn)
             except Exception as exc:
                 code, user_message, retryable = _classify_error(exc)
-                LOGGER.warning("agent turn failed", extra={"turn_id": turn.turn_id, "error_code": code})
+                LOGGER.warning(
+                    "agent turn failed: code=%s error_type=%s",
+                    code,
+                    type(exc).__name__,
+                    extra={"turn_id": turn.turn_id, "error_code": code},
+                )
                 self._fail(turn, code, user_message, retryable)
                 return True
             if isinstance(processed, AgentTurnExecutionResult):
