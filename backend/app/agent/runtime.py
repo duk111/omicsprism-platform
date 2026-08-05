@@ -18,6 +18,7 @@ from .policy import ProfilePolicyGuard
 from .router import RuleRouter
 from .schemas import (
     AgentAction,
+    AgentAdvisoryBlock,
     AgentApprovalBlock,
     AgentEvent,
     AgentEvidenceBlock,
@@ -31,8 +32,10 @@ from .schemas import (
     AgentTurnExecutionResult,
     AgentTurnRecord,
     ActiveProfile,
+    AdvisoryCategory,
     ApprovalStatus,
     PlanRecord,
+    RouteIntent,
     RouteTargetProfile,
     RunState,
     RunStatus,
@@ -99,6 +102,9 @@ class ProductionRunCoordinator:
         turn_model_calls = 0
         turn_tool_calls = 0
         pending_events: list[AgentEvent] = []
+        advisory_category = AdvisoryCategory.GENERAL_BIOLOGY
+        advisory_input_roles: list[str] = []
+        advisory_needs_inputs = False
 
         def call_model(context):
             nonlocal turn_model_calls
@@ -131,7 +137,15 @@ class ProductionRunCoordinator:
                 }))
                 if route.target_profile is RouteTargetProfile.ANALYSIS:
                     state.active_profile = ActiveProfile.ANALYSIS
-                    state.state = AgentState.CHECK_INPUTS
+                    if route.intent in {RouteIntent.DESCRIBE_ONLY, RouteIntent.UNCLEAR}:
+                        advisory_category = (
+                            AdvisoryCategory.ANALYSIS_GUIDANCE
+                            if route.intent is RouteIntent.DESCRIBE_ONLY
+                            else AdvisoryCategory.GENERAL_BIOLOGY
+                        )
+                        state.state = AgentState.ADVISE
+                    else:
+                        state.state = AgentState.CHECK_INPUTS
                     continue
                 if route.target_profile is RouteTargetProfile.INTERPRETATION:
                     state.active_profile = ActiveProfile.INTERPRETATION
@@ -139,6 +153,22 @@ class ProductionRunCoordinator:
                     continue
                 state.state = AgentState.NEED_USER_INPUT
                 blocks.append(AgentTextBlock(text="请说明要运行分析，或指定一个已有结果进行解读。"))
+                break
+
+            if state.state is AgentState.ADVISE:
+                context = self.context_builder.build(
+                    state=state,
+                    active_profile=ActiveProfile.ANALYSIS,
+                    user_message=user_message,
+                    available_input_roles=advisory_input_roles,
+                )
+                decision = call_model(context)
+                self.validator.validate(state, decision)
+                blocks.append(AgentAdvisoryBlock(
+                    category=advisory_category,
+                    text=decision.advisory_answer or "当前无法生成咨询回答。",
+                ))
+                state.state = AgentState.NEED_USER_INPUT if advisory_needs_inputs else AgentState.AWAIT_FOLLOWUP
                 break
 
             if state.state is AgentState.CHECK_INPUTS:
@@ -152,14 +182,11 @@ class ProductionRunCoordinator:
                     for spec in [self.context_builder.analysis_specs.get(analysis_type)]
                 )
                 if not has_supported_inputs:
-                    state.state = AgentState.NEED_USER_INPUT
-                    blocks.append(AgentTextBlock(
-                        text=(
-                            "请先上传实际 CSV 文件并为每个文件指定角色。"
-                            "系统仅根据已上传文件判断分析可行性，消息中的文件描述不会作为输入。"
-                        ),
-                    ))
-                    break
+                    advisory_category = AdvisoryCategory.ANALYSIS_GUIDANCE
+                    advisory_input_roles = available_input_roles
+                    advisory_needs_inputs = True
+                    state.state = AgentState.ADVISE
+                    continue
                 context = self.context_builder.build(
                     state=state,
                     active_profile=ActiveProfile.ANALYSIS,

@@ -15,6 +15,28 @@ describe("MessageBlocks", () => {
     expect(container.querySelector("img")).toBeNull();
   });
 
+  it("renders bounded biological advice as labeled plain text", () => {
+    const { container } = render(<MessageBlocks message={message([{
+      type: "advisory",
+      category: "general_biology",
+      text: "ABA supports drought responses. <script>alert(1)</script>",
+    }])} approvalBusy={null} onApproval={vi.fn()} onRetry={vi.fn()} />);
+
+    expect(screen.getByRole("region", { name: "Biological knowledge" })).toBeVisible();
+    expect(screen.getByText("ABA supports drought responses. <script>alert(1)</script>")).toBeVisible();
+    expect(container.querySelector("script")).toBeNull();
+  });
+
+  it("distinguishes analysis guidance from biological knowledge", () => {
+    render(<MessageBlocks message={message([{
+      type: "advisory",
+      category: "analysis_guidance",
+      text: "Upload counts and metadata before execution.",
+    }])} approvalBusy={null} onApproval={vi.fn()} onRetry={vi.fn()} />);
+
+    expect(screen.getByRole("region", { name: "Analysis guidance" })).toBeVisible();
+  });
+
   it("submits an explicit approval decision with the bound hash", async () => {
     const approve = vi.fn();
     render(<MessageBlocks message={message([{ type: "approval", approval_id: "approval-1", plan_hash: "sha256:bound", status: "pending", expires_at: "2026-08-03T01:00:00Z" }])} approvalBusy={null} onApproval={approve} onRetry={vi.fn()} />);

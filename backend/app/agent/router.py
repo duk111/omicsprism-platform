@@ -21,7 +21,10 @@ class RuleRouter:
             return RouteDecision(intent=RouteIntent.UNCLEAR, target_profile=RouteTargetProfile.ASK_USER, reason="empty message")
 
         rerun_terms = ("重跑", "重新运行", "rerun", "re-run", "重新分析")
-        analysis_terms = ("差异", "差异分析", "differential", "deg", "分析", "运行", "比较", "contrast")
+        analysis_terms = (
+            "差异", "差异分析", "differential", "deg", "分析", "运行", "比较", "contrast",
+            "analysis", "analyze", "analyse", "execute",
+        )
         describe_terms = ("描述", "概览", "describe", "metadata", "元数据", "样本信息", "我有", "转录组", "代谢组")
         interpret_terms = ("结果", "解释", "解读", "火山图", "富集", "evidence", "interpret")
         continuation_terms = ("继续", "下一步", "好的", "可以", "continue")
@@ -29,7 +32,7 @@ class RuleRouter:
         if any(term in text for term in rerun_terms):
             return RouteDecision(intent=RouteIntent.RERUN, target_profile=RouteTargetProfile.ANALYSIS, reason="rerun intent")
         if any(term in text for term in describe_terms) and not any(term in text for term in analysis_terms):
-            return RouteDecision(intent=RouteIntent.DESCRIBE_ONLY, target_profile=RouteTargetProfile.ASK_USER, reason="description is not analysis")
+            return RouteDecision(intent=RouteIntent.DESCRIBE_ONLY, target_profile=RouteTargetProfile.ANALYSIS, reason="analysis consultation")
         if any(term in text for term in analysis_terms):
             return RouteDecision(intent=RouteIntent.ANALYZE, target_profile=RouteTargetProfile.ANALYSIS, reason="analysis intent")
         if any(term in text for term in interpret_terms):
@@ -40,4 +43,4 @@ class RuleRouter:
             target = RouteTargetProfile(state.active_profile.value)
             intent = RouteIntent.ANALYZE if state.active_profile is ActiveProfile.ANALYSIS else RouteIntent.INTERPRET
             return RouteDecision(intent=intent, target_profile=target, reason="continue current profile")
-        return RouteDecision(intent=RouteIntent.UNCLEAR, target_profile=RouteTargetProfile.ASK_USER, reason="intent unclear")
+        return RouteDecision(intent=RouteIntent.UNCLEAR, target_profile=RouteTargetProfile.ANALYSIS, reason="bounded biology consultation")

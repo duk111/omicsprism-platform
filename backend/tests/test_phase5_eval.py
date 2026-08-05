@@ -186,7 +186,8 @@ def test_vllm_adapter_sends_only_minimal_context_and_validates_response() -> Non
     assert captured["body"]["response_format"]["type"] == "json_schema"
     assert captured["body"]["response_format"]["json_schema"]["strict"] is True
     assert captured["body"]["chat_template_kwargs"] == {"enable_thinking": False}
-    assert captured["body"]["max_tokens"] == 512
+    assert captured["body"]["max_tokens"] == 768
+    assert "Do not provide diagnosis" in captured["body"]["messages"][0]["content"]
     assert result.analysis_recommendations[0].value == "differential"
 
 

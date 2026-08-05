@@ -34,6 +34,11 @@ class ActiveProfile(str, Enum):
     INTERPRETATION = "interpretation"
 
 
+class AdvisoryCategory(str, Enum):
+    GENERAL_BIOLOGY = "general_biology"
+    ANALYSIS_GUIDANCE = "analysis_guidance"
+
+
 class AgentAction(str, Enum):
     PROPOSE_PLAN = "propose_plan"
     REQUEST_MORE_DATA = "request_more_data"
@@ -51,6 +56,7 @@ class FeasibilityVerdict(str, Enum):
 
 class AgentState(str, Enum):
     COLLECT_INTENT = "COLLECT_INTENT"
+    ADVISE = "ADVISE"
     CHECK_INPUTS = "CHECK_INPUTS"
     PROPOSE_PLAN = "PROPOSE_PLAN"
     WAIT_PLAN_CONFIRMATION = "WAIT_PLAN_CONFIRMATION"
@@ -153,6 +159,7 @@ class AgentDecision(ContractModel):
     requires_approval: bool
     requested_params: dict[str, AgentParamValue] = Field(max_length=32)
     grounded_answer: GroundedAnswer | None = None
+    advisory_answer: str | None = Field(default=None, min_length=1, max_length=1200)
 
 
 class AnalysisCapability(ContractModel):
@@ -261,6 +268,12 @@ class AgentTextBlock(ContractModel):
     text: str = Field(min_length=1, max_length=4000)
 
 
+class AgentAdvisoryBlock(ContractModel):
+    type: Literal["advisory"] = "advisory"
+    category: AdvisoryCategory
+    text: str = Field(min_length=1, max_length=1200)
+
+
 class AgentInputFileResponse(ContractModel):
     file_id: str = Field(min_length=1)
     field: str = Field(min_length=1)
@@ -332,6 +345,7 @@ class AgentErrorBlock(ContractModel):
 
 AgentMessageBlock = Annotated[
     AgentTextBlock
+    | AgentAdvisoryBlock
     | AgentInputSummaryBlock
     | AgentRecommendationBlock
     | AgentPlanBlock

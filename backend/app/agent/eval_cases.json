@@ -1,6 +1,6 @@
 [
   {"case_id":"route_analyze_001","category":"router","input":{"message":"我想做差异分析","focus_job_ids":[]},"expected":{"intent":"analyze","target_profile":"analysis"}},
-  {"case_id":"route_describe_only_001","category":"router","input":{"message":"我有盐胁迫的转录组和代谢组","focus_job_ids":[]},"expected":{"intent":"describe_only","target_profile":"ask_user"}},
+  {"case_id":"route_describe_only_001","category":"router","input":{"message":"我有盐胁迫的转录组和代谢组","focus_job_ids":[]},"expected":{"intent":"describe_only","target_profile":"analysis"}},
   {"case_id":"route_interpret_with_job_001","category":"router","input":{"message":"帮我解释这个结果","focus_job_ids":["job-1"]},"expected":{"intent":"interpret","target_profile":"interpretation"}},
   {"case_id":"route_interpret_no_job_001","category":"router","input":{"message":"帮我解释这个结果","focus_job_ids":[]},"expected":{"intent":"interpret","target_profile":"ask_user"}},
   {"case_id":"route_rerun_001","category":"router","input":{"message":"按新参数重跑","focus_job_ids":["job-1"]},"expected":{"intent":"rerun","target_profile":"analysis"}},

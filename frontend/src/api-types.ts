@@ -3,6 +3,14 @@
 
 export type ActiveProfile = "analysis" | "interpretation";
 
+export type AdvisoryCategory = "general_biology" | "analysis_guidance";
+
+export interface AgentAdvisoryBlock {
+  type?: "advisory";
+  category: AdvisoryCategory;
+  text: string;
+}
+
 export interface AgentApprovalBlock {
   type?: "approval";
   approval_id: string;
@@ -77,7 +85,7 @@ export interface AgentMessageResponse {
   thread_id: string;
   run_id: string;
   role: AgentMessageRole;
-  blocks: (AgentTextBlock | AgentInputSummaryBlock | AgentRecommendationBlock | AgentPlanBlock | AgentApprovalBlock | AgentJobBlock | AgentEvidenceBlock | AgentErrorBlock)[];
+  blocks: (AgentTextBlock | AgentAdvisoryBlock | AgentInputSummaryBlock | AgentRecommendationBlock | AgentPlanBlock | AgentApprovalBlock | AgentJobBlock | AgentEvidenceBlock | AgentErrorBlock)[];
   created_at: string;
 }
 
@@ -122,7 +130,7 @@ export interface AgentRunResponse {
   version: number;
 }
 
-export type AgentState = "COLLECT_INTENT" | "CHECK_INPUTS" | "PROPOSE_PLAN" | "WAIT_PLAN_CONFIRMATION" | "PREFLIGHT" | "WAIT_EXECUTION_CONFIRMATION" | "SUBMIT_JOBS" | "MONITOR_JOBS" | "ANSWER_WITH_EVIDENCE" | "AWAIT_FOLLOWUP" | "DONE" | "NEED_USER_INPUT" | "PREFLIGHT_BLOCKED" | "JOB_FAILED";
+export type AgentState = "COLLECT_INTENT" | "ADVISE" | "CHECK_INPUTS" | "PROPOSE_PLAN" | "WAIT_PLAN_CONFIRMATION" | "PREFLIGHT" | "WAIT_EXECUTION_CONFIRMATION" | "SUBMIT_JOBS" | "MONITOR_JOBS" | "ANSWER_WITH_EVIDENCE" | "AWAIT_FOLLOWUP" | "DONE" | "NEED_USER_INPUT" | "PREFLIGHT_BLOCKED" | "JOB_FAILED";
 
 export interface AgentStreamEvent {
   event_id: string;

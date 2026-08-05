@@ -1,4 +1,4 @@
-import { AlertTriangle, Check, ExternalLink, FileText, FlaskConical, Quote, X } from "lucide-react";
+import { AlertTriangle, BookOpen, Check, ExternalLink, FileText, FlaskConical, Lightbulb, Quote, X } from "lucide-react";
 import type { AgentMessageResponse, AgentApprovalDecision } from "../api-types";
 
 type Block = AgentMessageResponse["blocks"][number];
@@ -27,6 +27,17 @@ function BlockView({ block, approvalBusy, onApproval, onRetry }: {
 }) {
   switch (block.type) {
     case "text": return <p className="copilot-text">{block.text}</p>;
+    case "advisory": {
+      const generalBiology = block.category === "general_biology";
+      const Icon = generalBiology ? BookOpen : Lightbulb;
+      const label = generalBiology ? "Biological knowledge" : "Analysis guidance";
+      return (
+        <section className={`advisory-block advisory-${block.category}`} aria-label={label}>
+          <h3><Icon size={16} /> {label}</h3>
+          <p>{block.text}</p>
+        </section>
+      );
+    }
     case "input_summary": return (
       <section className="message-section" aria-label="Uploaded inputs">
         <h3><FileText size={16} /> Input bundle</h3>

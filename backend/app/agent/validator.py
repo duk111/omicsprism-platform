@@ -11,7 +11,20 @@ class DecisionValidator:
     def validate(self, state: RunState, decision: AgentDecision) -> None:
         if decision.grounded_answer is not None and decision.action is not AgentAction.ANSWER:
             raise InvalidDecision("grounded answer is only valid for ANSWER")
-        if state.state is AgentState.CHECK_INPUTS:
+        if decision.advisory_answer is not None and state.state is not AgentState.ADVISE:
+            raise InvalidDecision("advisory answer is only valid in ADVISE")
+        if state.state is AgentState.ADVISE:
+            if decision.action is not AgentAction.ANSWER or not decision.advisory_answer:
+                raise InvalidDecision("ADVISE requires an advisory ANSWER")
+            if (
+                decision.grounded_answer is not None
+                or decision.feasibility is not None
+                or decision.analysis_recommendations
+                or decision.requested_params
+                or decision.requires_approval
+            ):
+                raise InvalidDecision("ADVISE cannot produce evidence, plans, parameters, or approval")
+        elif state.state is AgentState.CHECK_INPUTS:
             if decision.action is AgentAction.REQUEST_MORE_DATA:
                 if decision.feasibility is None or decision.feasibility.verdict is not FeasibilityVerdict.NOT_ANSWERABLE:
                     raise InvalidDecision("REQUEST_MORE_DATA requires a not-answerable feasibility result")

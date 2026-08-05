@@ -405,7 +405,7 @@ def test_openapi_exposes_agent_contract_without_api_model_dependency() -> None:
     assert "user_id" not in request_properties
     generated = Path("frontend/src/api-types.ts").read_text(encoding="utf-8")
     assert "export interface AgentStreamEvent" in generated
-    assert "blocks: (AgentTextBlock | AgentInputSummaryBlock" in generated
+    assert "blocks: (AgentTextBlock | AgentAdvisoryBlock | AgentInputSummaryBlock" in generated
     for relative in ("backend/app/main.py", "backend/app/agent/api.py", "backend/app/agent/bootstrap.py"):
         assert "VllmModelAdapter(" not in Path(relative).read_text(encoding="utf-8")
 

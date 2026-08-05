@@ -82,3 +82,34 @@ docker exec nginx-all nginx -s reload
 - 生产依赖 React Router 6 的 2 个 moderate advisory 尚未升级；应用为纯客户端 BrowserRouter，不使用 SSR hydration，升级到 7.x 需要单独兼容评估。
 - Playwright 当前为 mock-contract 流程；真实 PostgreSQL + Redis/MinIO + vLLM + worker 的端到端演示属于 Gate E。
 - SSE 仍按 Gate C 约定每秒轮询投影，不做 token 级流式输出。
+
+## 6. 生产修正：受限生物学咨询
+
+生产联调发现，无上传文件的消息在进入分析 profile 后只能静态索要 CSV，用户无法询问一般生物学知识或分析设计。现已补充 `ADVISE` 状态与 `advisory` typed block，边界如下：
+
+- 一般生物学、生物信息学、实验设计与 OmicsPrism 分析方法问题可调用 vLLM；咨询上下文的工具白名单为空，不调用业务工具，也不生成 plan、approval、job 或 enqueue。
+- 明确要求执行分析但没有真实上传数据时，系统先按上传记录检查输入，再给出分析建议；用户在消息中声称“文件已上传”不能替代真实 input bundle。
+- 涉及用户实际数据的判断仍必须基于真实上传文件；涉及已有结果的结论仍必须通过 interpretation profile、evidence adapter 与 citation。
+- 咨询回答使用受限纯文本字段，前端只按 React 文本节点渲染；不得伪造引用，不提供诊断、治疗或医学结论。
+- `DecisionValidator` 强制咨询态只能返回 `ANSWER + advisory_answer`，拒绝 feasibility、recommendation、参数、审批和 grounded evidence。
+
+本地回归证据：
+
+```text
+.venv/Scripts/python -m pytest backend/tests -q -rs
+133 passed, 6 skipped
+
+.venv/Scripts/python -m scripts.run_agent_eval --assembly unit
+25 passed / 25 total
+
+npm test --prefix frontend
+8 passed
+
+npm run build --prefix frontend
+build passed; CopilotPage 24.81 kB (gzip 7.67 kB)
+
+.venv/Scripts/python -m compileall -q backend/app backend/agent_worker.py scripts
+exit 0
+```
+
+Gate D 仍未关闭。服务器更新后需要用真实 Qwen3 vLLM 人工复验：一般生物学咨询、无文件分析建议、伪造上传/绕过审批提示、真实上传后生成计划，以及模型停止时原手工业务可用。
