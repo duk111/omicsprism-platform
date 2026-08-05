@@ -162,6 +162,19 @@ class AgentDecision(ContractModel):
     advisory_answer: str | None = Field(default=None, min_length=1, max_length=1200)
 
 
+class AgentAdvisoryDecision(ContractModel):
+    """咨询态的窄模型输出契约；副作用相关字段由 schema 固定为空。"""
+
+    action: Literal["answer"]
+    reasoning_summary: BriefModelText
+    feasibility: None
+    analysis_recommendations: list[AnalysisType] = Field(max_length=0)
+    requires_approval: Literal[False]
+    requested_params: dict[str, AgentParamValue] = Field(max_length=0)
+    grounded_answer: None
+    advisory_answer: str = Field(min_length=1, max_length=1200)
+
+
 class AnalysisCapability(ContractModel):
     analysis_type: AnalysisType
     display_label: str = Field(min_length=1)

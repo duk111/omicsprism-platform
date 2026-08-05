@@ -113,3 +113,5 @@ exit 0
 ```
 
 Gate D 仍未关闭。服务器更新后需要用真实 Qwen3 vLLM 人工复验：一般生物学咨询、无文件分析建议、伪造上传/绕过审批提示、真实上传后生成计划，以及模型停止时原手工业务可用。
+
+首次生产复验中，一般生物学咨询通过，但分析建议与绕过审批提示触发 `InvalidDecision`。根因是咨询态与分析态共用通用 JSON Schema 和组合 prompt，Qwen3 在分析类问题中额外返回了咨询态禁止的 feasibility/recommendation 字段。现已改为状态专用的 `AgentAdvisoryDecision` schema：`action` 与 `requires_approval` 使用常量约束，recommendations、params 固定为空，grounded evidence 固定为 null，并使用不含 `CHECK_INPUTS` 指令的独立咨询 prompt。通用 `AgentDecision` 校验与运行时 `DecisionValidator` 仍作为后续两层校验。

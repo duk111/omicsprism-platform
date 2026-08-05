@@ -187,8 +187,56 @@ def test_vllm_adapter_sends_only_minimal_context_and_validates_response() -> Non
     assert captured["body"]["response_format"]["json_schema"]["strict"] is True
     assert captured["body"]["chat_template_kwargs"] == {"enable_thinking": False}
     assert captured["body"]["max_tokens"] == 768
-    assert "Do not provide diagnosis" in captured["body"]["messages"][0]["content"]
     assert result.analysis_recommendations[0].value == "differential"
+
+
+def test_vllm_adapter_uses_state_specific_schema_for_advisory_answers() -> None:
+    captured = {}
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        captured["body"] = json.loads(request.content)
+        decision = {
+            "action": "answer",
+            "reasoning_summary": "analysis guidance",
+            "feasibility": None,
+            "analysis_recommendations": [],
+            "requires_approval": False,
+            "requested_params": {},
+            "grounded_answer": None,
+            "advisory_answer": "Upload counts and metadata before differential analysis.",
+        }
+        return httpx.Response(200, json={
+            "choices": [{"message": {"content": json.dumps(decision)}}],
+        })
+
+    adapter = VllmModelAdapter(
+        base_url="http://model-host:8000",
+        model="Qwen3-14B-AWQ",
+        client=httpx.Client(transport=httpx.MockTransport(handle)),
+    )
+    context = ModelContext(
+        user_message="What inputs do I need for differential analysis?",
+        active_profile=ActiveProfile.ANALYSIS,
+        state=AgentState.ADVISE,
+        in_scope_job_ids=[],
+        available_input_roles=[],
+        analysis_capabilities=[],
+        available_tools=[],
+    )
+
+    result = adapter.decide(context)
+
+    body = captured["body"]
+    schema = body["response_format"]["json_schema"]["schema"]
+    properties = schema["properties"]
+    assert properties["action"]["const"] == "answer"
+    assert properties["requires_approval"]["const"] is False
+    assert properties["analysis_recommendations"]["maxItems"] == 0
+    assert properties["requested_params"]["maxProperties"] == 0
+    assert set(schema["required"]) == set(properties)
+    assert "When state is CHECK_INPUTS" not in body["messages"][0]["content"]
+    assert "Do not provide diagnosis" in body["messages"][0]["content"]
+    assert result.advisory_answer.startswith("Upload counts")
 
 
 def test_live_recommendation_receives_structured_registry_requirements() -> None:
