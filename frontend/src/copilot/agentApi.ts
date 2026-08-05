@@ -1,4 +1,5 @@
 import { apiFetch, apiFetchJson, apiUrl } from "../api";
+import { createClientId } from "../clientId";
 import type {
   AgentApprovalDecision,
   AgentInputBundleResponse,
@@ -29,7 +30,7 @@ export const agentApi = {
   createTurn: (threadId: string, message: string, inputBundleId: string | null, focusJobIds: string[]) =>
     apiFetchJson(`${root}/${encodeURIComponent(threadId)}/turns`, {
       ...json("POST", { message, input_bundle_id: inputBundleId, focus_job_ids: focusJobIds }),
-      headers: { "Content-Type": "application/json", "Idempotency-Key": crypto.randomUUID() },
+      headers: { "Content-Type": "application/json", "Idempotency-Key": createClientId() },
     }) as Promise<AgentTurnResponse>,
   uploadBundle: async (threadId: string, attachments: { file: File; field: string }[]) => {
     const body = new FormData();

@@ -3,6 +3,7 @@ import { AlertCircle, Bot, ChevronDown, FilePlus2, Menu, MessageSquarePlus, Pape
 import { useSearchParams } from "react-router-dom";
 import type { AgentMessageResponse, AgentRunResponse, AgentStreamEvent, AgentThreadResponse, AgentTurnResponse } from "../api-types";
 import { ApiRequestError } from "../api";
+import { createClientId } from "../clientId";
 import { agentApi } from "./agentApi";
 import { MessageBlocks } from "./MessageBlocks";
 import "./copilot.css";
@@ -113,7 +114,7 @@ export default function CopilotPage() {
 
   function addFiles(list: FileList | null) {
     if (!list) return;
-    const next = Array.from(list).filter(file => file.name.toLowerCase().endsWith(".csv")).slice(0, 6 - attachments.length).map(file => ({ id: crypto.randomUUID(), file, field: guessField(file.name) }));
+    const next = Array.from(list).filter(file => file.name.toLowerCase().endsWith(".csv")).slice(0, 6 - attachments.length).map(file => ({ id: createClientId(), file, field: guessField(file.name) }));
     if (next.length !== list.length) setNotice("Only CSV files are accepted, with at most six files per bundle.");
     setAttachments(current => [...current, ...next]);
   }
