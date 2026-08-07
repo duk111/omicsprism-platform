@@ -130,7 +130,16 @@ class ProductionRunCoordinator:
                 raise CoordinatorBudgetExceeded("agent turn time budget exceeded")
             transitions += 1
 
-            if state.state in {AgentState.COLLECT_INTENT, AgentState.NEED_USER_INPUT, AgentState.AWAIT_FOLLOWUP}:
+            # 终止/阻塞状态仍允许用户在同一会话继续提问或修正输入。
+            # 只有等待审批的状态不能被普通消息绕过；审批继续走专门的 resume turn。
+            if state.state in {
+                AgentState.COLLECT_INTENT,
+                AgentState.NEED_USER_INPUT,
+                AgentState.AWAIT_FOLLOWUP,
+                AgentState.DONE,
+                AgentState.JOB_FAILED,
+                AgentState.PREFLIGHT_BLOCKED,
+            }:
                 route = self.router.route(user_message, state)
                 pending_events.append(self._event(state, "route.decided", {
                     "intent": route.intent.value,

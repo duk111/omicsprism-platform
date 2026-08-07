@@ -288,6 +288,28 @@ def test_capability_question_is_answered_deterministically_without_model_or_tool
     assert model.contexts == []
 
 
+def test_followup_after_preflight_block_is_routed_instead_of_empty_response() -> None:
+    state_store = InMemoryStateStore()
+    state_store.save(_state(state=AgentState.PREFLIGHT_BLOCKED), expected_version=0)
+    model = _RecordingModel([])
+    coordinator = ProductionRunCoordinator(
+        state_store=state_store,
+        plan_store=InMemoryPlanStore(),
+        approval_gate=InMemoryApprovalGate(),
+        event_store=InMemoryAgentEventStore(),
+        model=model,
+        tool_runtime=AgentToolRuntime(user_id="user-1", inputs={}),
+    )
+
+    result = coordinator.execute_turn(turn=_turn("blocked-followup"), user_message="你能做什么？")
+
+    assert result.state.state is AgentState.AWAIT_FOLLOWUP
+    assert [block.type for block in result.blocks] == ["advisory"]
+    assert result.blocks[0].text
+    assert result.state.model_calls == 0
+    assert model.contexts == []
+
+
 def test_attached_inputs_with_unclear_message_are_summarized_without_plan_or_model() -> None:
     state_store = InMemoryStateStore()
     state_store.save(_state(state=AgentState.COLLECT_INTENT), expected_version=0)
