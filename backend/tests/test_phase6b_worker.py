@@ -21,6 +21,7 @@ from backend.app.agent.schemas import (
     RunState,
     RunStatus,
 )
+from backend.app.agent.validator import InvalidDecision
 
 
 def _store(now: datetime) -> InMemoryAgentProductStore:
@@ -141,6 +142,7 @@ def test_worker_slot_prevents_two_in_process_workers_from_claiming_concurrently(
         (httpx.ConnectError("connection refused"), "model_unavailable", True),
         (httpx.ReadTimeout("read timed out"), "model_timeout", True),
         (ModelBoundaryError("bad schema"), "invalid_model_response", True),
+        (InvalidDecision("wrong action"), "model_decision_conflict", True),
         (
             httpx.HTTPStatusError(
                 "service unavailable",
@@ -183,6 +185,8 @@ def test_model_transport_and_boundary_failures_have_stable_error_codes(
     assert block.type == "error"
     assert block.code == expected_code
     assert block.retryable is retryable
+    if isinstance(error, (ModelBoundaryError, InvalidDecision)):
+        assert "未创建任务" in block.user_message
 
 
 def test_execution_result_uses_atomic_checkpoint_commit() -> None:

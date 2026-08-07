@@ -115,3 +115,48 @@ exit 0
 Gate D 仍未关闭。服务器更新后需要用真实 Qwen3 vLLM 人工复验：一般生物学咨询、无文件分析建议、伪造上传/绕过审批提示、真实上传后生成计划，以及模型停止时原手工业务可用。
 
 首次生产复验中，一般生物学咨询通过，但分析建议与绕过审批提示触发 `InvalidDecision`。根因是咨询态与分析态共用通用 JSON Schema 和组合 prompt，Qwen3 在分析类问题中额外返回了咨询态禁止的 feasibility/recommendation 字段。现已改为状态专用的 `AgentAdvisoryDecision` schema：`action` 与 `requires_approval` 使用常量约束，recommendations、params 固定为空，grounded evidence 固定为 null，并使用不含 `CHECK_INPUTS` 指令的独立咨询 prompt。通用 `AgentDecision` 校验与运行时 `DecisionValidator` 仍作为后续两层校验。
+
+## 7. 生产修正：输入规划容错与可操作错误
+
+第二轮生产复验发现两类可用性问题：能力询问“你能做什么”可能触发 `ModelBoundaryError`；真实上传后，模型在输入检查阶段返回与状态不一致的通用决策，触发 `InvalidDecision`。原前端把二者统一显示为“未通过安全校验”，用户无法判断文件是否保留、是否创建了任务以及下一步应补充什么。
+
+本轮在不放松 R1-R6 的前提下完成以下修正：
+
+- 能力询问改为确定性帮助路由，零模型调用、零工具调用，直接说明 DEG、DEM、GMA、结果解读和审批边界。
+- 含附件但目标含糊的消息只调用一次 `inspect_uploaded_inputs`，告知已收到的文件角色和可支持分析；不生成计划，不创建 job。
+- 输入检查上下文新增有界摘要，只包含 role、最多 40 个列名、行数、dtype，以及裁剪后的 metadata/group 水平与计数；原始矩阵、完整 CSV、文件名和路径仍不进入模型上下文。
+- `CHECK_INPUTS` 使用状态专用的 discriminated union，只允许 `propose_plan` 或 `request_more_data`。模型必须使用摘要中真实存在的列名和值；二水平分组会优先识别 control、ctrl、ck、wt、mock、untreated 等参考水平，不明确时必须提出具体澄清问题。
+- vLLM 首次输出不满足当前状态 schema 时，使用同一安全上下文自动修复一次；第二次仍失败才返回模型边界错误，不无限重试。
+- `ModelBoundaryError`、决策冲突、预检失败和基础设施异常分别映射为不同用户错误。模型两次结构化失败时明确说明文件已保留且未创建任务；预检失败展示最多三条具体原因；数据库连接超时不再伪装成“安全校验失败”。
+- 前端 Retry 恢复最近一次用户原始文本，不再发送脱离上下文的 `Please retry the last step.`。
+
+红线保持不变：模型仍无数据库、shell、凭据或原始路径句柄；解读只能走 evidence adapter；审批前 job 创建数恒为 0；修复重试不能绕过 profile 白名单、输入真实性、contrast 或审批校验。
+
+本地回归证据：
+
+```text
+.venv/Scripts/python -m pytest backend/tests -q -rs
+140 passed, 6 skipped
+
+.venv/Scripts/python -m scripts.run_agent_eval --assembly unit
+25 passed / 25 total; all gate metrics passed
+
+npm test --prefix frontend
+8 passed
+
+npm run build --prefix frontend
+build passed; CopilotPage 24.96 kB
+
+.venv/Scripts/python -m compileall -q backend/app backend/agent_worker.py scripts
+exit 0
+```
+
+生产复验重点：
+
+1. “你能做什么”立即返回帮助说明，agent worker 日志不产生 vLLM POST。
+2. 上传 counts 与 metadata 后只说“给你传了两个文件”，系统总结文件角色与可支持分析，不生成 job。
+3. 再说“分析一下”：分组唯一时生成使用真实列名/水平的待审批计划；分组含糊时询问具体列或 reference/test 水平。
+4. 文件角色选错时显示具体 preflight 原因，不生成计划或 job。
+5. 首次模型结构不合法时允许出现两次 vLLM POST；若第二次修复成功，用户不应看到错误。两次均失败时，错误必须说明文件保留且未创建任务。
+
+同一时段日志中的 PostgreSQL `ConnectionTimeout` 是独立基础设施故障：连接恢复后 worker 可继续处理。它不应归类为模型安全校验问题；生产仍需结合数据库公网端口、网络质量和连接超时监控单独排查。

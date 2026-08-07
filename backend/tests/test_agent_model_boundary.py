@@ -55,6 +55,7 @@ def test_model_receives_only_serializable_context_and_returns_validated_decision
         "in_scope_job_ids": ["job-1"],
         "conversation_summary": None,
         "available_input_roles": [],
+        "input_summaries": [],
         "analysis_capabilities": [],
         "available_tools": ["get_jobs_status", "query_result_evidence"],
         "evidence": None,

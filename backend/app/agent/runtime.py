@@ -10,7 +10,7 @@ from uuid import uuid4
 from ..models import JobStatus
 from .approvals import ApprovalGate, ApprovalMismatch, InMemoryApprovalGate
 from .audit import AgentEventStore, InMemoryAgentEventStore
-from .context import MinimalContextBuilder
+from .context import MinimalContextBuilder, build_input_summaries
 from .grounding import GroundedAnswerPipeline
 from .model import ModelAdapter
 from .plans import PlanStore, compute_plan_hash
@@ -104,6 +104,7 @@ class ProductionRunCoordinator:
         pending_events: list[AgentEvent] = []
         advisory_category = AdvisoryCategory.GENERAL_BIOLOGY
         advisory_input_roles: list[str] = []
+        advisory_input_summaries = []
         advisory_needs_inputs = False
 
         def call_model(context):
@@ -137,6 +138,28 @@ class ProductionRunCoordinator:
                 }))
                 if route.target_profile is RouteTargetProfile.ANALYSIS:
                     state.active_profile = ActiveProfile.ANALYSIS
+                    if route.intent is RouteIntent.HELP:
+                        blocks.append(AgentAdvisoryBlock(
+                            category=AdvisoryCategory.ANALYSIS_GUIDANCE,
+                            text=_CAPABILITY_HELP,
+                        ))
+                        state.state = AgentState.AWAIT_FOLLOWUP
+                        break
+                    if (
+                        route.intent in {RouteIntent.DESCRIBE_ONLY, RouteIntent.UNCLEAR}
+                        and self.tool_runtime.inputs
+                    ):
+                        inspected = call_tool(
+                            self._executor(ActiveProfile.ANALYSIS),
+                            ToolName.INSPECT_UPLOADED_INPUTS,
+                        )
+                        roles = [str(row.get("field")) for row in inspected.rows]
+                        blocks.append(AgentAdvisoryBlock(
+                            category=AdvisoryCategory.ANALYSIS_GUIDANCE,
+                            text=_input_receipt_text(roles, self.context_builder),
+                        ))
+                        state.state = AgentState.AWAIT_FOLLOWUP
+                        break
                     if route.intent in {RouteIntent.DESCRIBE_ONLY, RouteIntent.UNCLEAR}:
                         advisory_category = (
                             AdvisoryCategory.ANALYSIS_GUIDANCE
@@ -161,6 +184,7 @@ class ProductionRunCoordinator:
                     active_profile=ActiveProfile.ANALYSIS,
                     user_message=user_message,
                     available_input_roles=advisory_input_roles,
+                    input_summaries=advisory_input_summaries,
                 )
                 decision = call_model(context)
                 self.validator.validate(state, decision)
@@ -175,6 +199,7 @@ class ProductionRunCoordinator:
                 executor = self._executor(ActiveProfile.ANALYSIS)
                 inspected = call_tool(executor, ToolName.INSPECT_UPLOADED_INPUTS)
                 available_input_roles = [str(row.get("field")) for row in inspected.rows]
+                input_summaries = build_input_summaries(inspected.rows)
                 role_set = set(available_input_roles)
                 has_supported_inputs = any(
                     all(rule.name in role_set for rule in spec.input_rules if rule.required)
@@ -184,6 +209,7 @@ class ProductionRunCoordinator:
                 if not has_supported_inputs:
                     advisory_category = AdvisoryCategory.ANALYSIS_GUIDANCE
                     advisory_input_roles = available_input_roles
+                    advisory_input_summaries = input_summaries
                     advisory_needs_inputs = True
                     state.state = AgentState.ADVISE
                     continue
@@ -192,6 +218,7 @@ class ProductionRunCoordinator:
                     active_profile=ActiveProfile.ANALYSIS,
                     user_message=user_message,
                     available_input_roles=available_input_roles,
+                    input_summaries=input_summaries,
                 )
                 decision = call_model(context)
                 self.validator.validate(state, decision)
@@ -199,10 +226,9 @@ class ProductionRunCoordinator:
                     state.state = AgentState.NEED_USER_INPUT
                     missing = decision.feasibility.missing_information if decision.feasibility else []
                     detail = "；".join(missing)
-                    message = "请上传实际 CSV 文件并在发送前指定文件角色。"
+                    message = "已识别上传文件，但生成分析计划前还需要补充信息。"
                     if detail:
-                        message += f"仍需补充：{detail}。"
-                    message += "仅在消息中描述文件不等同于上传数据。"
+                        message += f"请补充：{detail}"
                     blocks.append(AgentTextBlock(text=message))
                     break
                 if not decision.analysis_recommendations:
@@ -222,7 +248,17 @@ class ProductionRunCoordinator:
                 )
                 if not preflight.ok or not preflight.rows:
                     state.state = AgentState.PREFLIGHT_BLOCKED
-                    blocks.append(AgentTextBlock(text="输入预检未通过，请根据提示修正输入或参数。"))
+                    errors = (
+                        [_issue_text(item) for item in list(preflight.rows[0].get("errors") or [])]
+                        if preflight.rows else []
+                    )
+                    detail = "；".join(errors[:3])
+                    message = "输入预检未通过。"
+                    if detail:
+                        message += f"{detail}"
+                    else:
+                        message += "请检查文件角色、样本名、分组列和比较参数。"
+                    blocks.append(AgentTextBlock(text=message))
                     break
                 row = preflight.rows[0]
                 plan = PlanRecord(
@@ -548,10 +584,40 @@ def _is_explicit_approval(user_message: str) -> bool:
     return any(term in text for term in ("批准", "同意执行", "approve", "confirm execution"))
 
 
+def _input_receipt_text(roles: list[str], context_builder: MinimalContextBuilder) -> str:
+    role_set = set(roles)
+    supported = [
+        context_builder.analysis_specs.get(analysis_type).display_label
+        for analysis_type in context_builder.analysis_specs.analysis_types()
+        for spec in [context_builder.analysis_specs.get(analysis_type)]
+        if all(rule.name in role_set for rule in spec.input_rules if rule.required)
+    ]
+    role_text = "、".join(sorted(role_set)) or "无"
+    if supported:
+        return (
+            f"已收到文件角色：{role_text}。当前组合可用于 {'、'.join(supported)}。"
+            "如需生成分析计划，请说明分析目标；差异分析还需要确认比较列、实验组和对照组。"
+        )
+    return (
+        f"已收到文件角色：{role_text}，但尚未形成完整分析输入组合。"
+        "DEG 需要 counts + metadata，DEM 需要 metabs + metadata，"
+        "GMA 需要 transcriptome + metabolome + group。"
+    )
+
+
 def _issue_text(item: Any) -> str:
     if isinstance(item, dict):
         return str(item.get("message") or item.get("code") or "preflight warning")
     return str(item)
+
+
+_CAPABILITY_HELP = (
+    "我可以回答生物学和生物信息学问题，协助准备并运行三类分析："
+    "差异表达 DEG（counts + metadata）、差异代谢 DEM（metabs + metadata）和"
+    "转录组-代谢组关联 GMA（transcriptome + metabolome + group）。"
+    "我也可以进行结果解读：读取你拥有的已完成任务结果，并提供可核验的结果行引用。"
+    "实际分析会先检查文件和参数、展示计划，并且只有你明确批准后才创建任务。"
+)
 
 
 def _job_blocks(job_ids: list[str], *, status: JobStatus, progress: int) -> list[AgentJobBlock]:

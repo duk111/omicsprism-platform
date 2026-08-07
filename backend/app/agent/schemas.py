@@ -16,6 +16,7 @@ class ContractModel(BaseModel):
 
 
 class RouteIntent(str, Enum):
+    HELP = "help"
     ANALYZE = "analyze"
     INTERPRET = "interpret"
     RERUN = "rerun"
@@ -175,10 +176,68 @@ class AgentAdvisoryDecision(ContractModel):
     advisory_answer: str = Field(min_length=1, max_length=1200)
 
 
+class AnswerableFeasibility(ContractModel):
+    verdict: Literal["answerable", "answerable_with_caveats"]
+    reasons: list[BriefModelText] = Field(max_length=3)
+    missing_information: list[BriefModelText] = Field(max_length=0)
+
+
+class NotAnswerableFeasibility(ContractModel):
+    verdict: Literal["not_answerable"]
+    reasons: list[BriefModelText] = Field(max_length=3)
+    missing_information: list[BriefModelText] = Field(min_length=1, max_length=3)
+
+
+class AgentAnalysisPlanDecision(ContractModel):
+    action: Literal["propose_plan"]
+    reasoning_summary: BriefModelText
+    feasibility: AnswerableFeasibility
+    analysis_recommendations: list[AnalysisType] = Field(min_length=1, max_length=3)
+    requires_approval: Literal[True]
+    requested_params: dict[str, AgentParamValue] = Field(max_length=32)
+    grounded_answer: None
+    advisory_answer: None
+
+
+class AgentAnalysisClarificationDecision(ContractModel):
+    action: Literal["request_more_data"]
+    reasoning_summary: BriefModelText
+    feasibility: NotAnswerableFeasibility
+    analysis_recommendations: list[AnalysisType] = Field(max_length=0)
+    requires_approval: Literal[False]
+    requested_params: dict[str, AgentParamValue] = Field(max_length=0)
+    grounded_answer: None
+    advisory_answer: None
+
+
+AgentAnalysisDecision = Annotated[
+    AgentAnalysisPlanDecision | AgentAnalysisClarificationDecision,
+    Field(discriminator="action"),
+]
+
+
 class AnalysisCapability(ContractModel):
     analysis_type: AnalysisType
     display_label: str = Field(min_length=1)
     required_inputs: list[str]
+
+
+class InputValueCount(ContractModel):
+    value: str = Field(max_length=200)
+    count: int = Field(ge=0)
+
+
+class InputGroupLevels(ContractModel):
+    column: str = Field(min_length=1, max_length=200)
+    values: list[InputValueCount] = Field(max_length=12)
+
+
+class InputInspectionSummary(ContractModel):
+    field: str = Field(min_length=1, max_length=50)
+    columns: list[str] = Field(max_length=40)
+    row_count: int = Field(ge=0)
+    dtype: str | None = Field(default=None, max_length=30)
+    group_levels: list[InputGroupLevels] = Field(default_factory=list, max_length=20)
 
 
 class ModelContext(ContractModel):
@@ -190,6 +249,7 @@ class ModelContext(ContractModel):
     in_scope_job_ids: list[str] = Field(max_length=20)
     conversation_summary: str | None = Field(default=None, max_length=4000)
     available_input_roles: list[str] = Field(default_factory=list, max_length=20)
+    input_summaries: list[InputInspectionSummary] = Field(default_factory=list, max_length=6)
     analysis_capabilities: list[AnalysisCapability] = Field(default_factory=list, max_length=3)
     available_tools: list[ToolName] = Field(max_length=6)
     evidence: ToolResult | None = None

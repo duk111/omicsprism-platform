@@ -37,6 +37,7 @@ from .app.agent.tools import (
     ExistingJobInputSource,
     StagedBundleInputSource,
 )
+from .app.agent.validator import InvalidDecision
 from .app.job_execution import RedisJobExecutor, RedisJobQueue
 from .app.job_store import JobStorageService, PostgresJobRepository
 from .app.settings import AppSettings, load_settings
@@ -86,9 +87,10 @@ class AgentWorker:
             except Exception as exc:
                 code, user_message, retryable = _classify_error(exc)
                 LOGGER.warning(
-                    "agent turn failed: code=%s error_type=%s",
+                    "agent turn failed: code=%s error_type=%s detail=%s",
                     code,
                     type(exc).__name__,
+                    str(exc),
                     extra={"turn_id": turn.turn_id, "error_code": code},
                 )
                 self._fail(turn, code, user_message, retryable)
@@ -327,8 +329,22 @@ def _classify_error(exc: Exception) -> tuple[str, str, bool]:
         return "model_request_rejected", "Copilot 模型拒绝了本次请求，请联系管理员。", False
     if isinstance(exc, httpx.RequestError):
         return "model_unavailable", "Copilot 模型暂时不可用，请稍后重试。", True
-    if isinstance(exc, (ModelBoundaryError, ValueError)):
-        return "invalid_model_response", "Copilot 返回内容未通过安全校验，请重试。", True
+    if isinstance(exc, ModelBoundaryError):
+        return (
+            "invalid_model_response",
+            "模型两次都未能生成当前步骤需要的结构化结果。上传文件仍然保留，且未创建任务；"
+            "请明确分析目标、比较列和实验组/对照组后重试。",
+            True,
+        )
+    if isinstance(exc, InvalidDecision):
+        return (
+            "model_decision_conflict",
+            "模型给出的计划与当前输入或审批状态不一致，因此系统未创建任务。"
+            "上传文件仍然保留；请补充具体分析目标或比较条件。",
+            True,
+        )
+    if isinstance(exc, ValueError):
+        return "agent_decision_invalid", "当前请求缺少可安全执行的信息，且未创建任务。请补充分析目标或参数。", True
     if isinstance(exc, StateConflict):
         return "state_conflict", "对话状态已更新，请刷新后重试。", True
     if isinstance(exc, CoordinatorBudgetExceeded):

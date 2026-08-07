@@ -21,6 +21,7 @@ class RuleRouter:
             return RouteDecision(intent=RouteIntent.UNCLEAR, target_profile=RouteTargetProfile.ASK_USER, reason="empty message")
 
         rerun_terms = ("重跑", "重新运行", "rerun", "re-run", "重新分析")
+        help_terms = ("你能做什么", "能做什么", "怎么使用", "使用帮助", "what can you do", "capabilities")
         analysis_terms = (
             "差异", "差异分析", "differential", "deg", "分析", "运行", "比较", "contrast",
             "analysis", "analyze", "analyse", "execute",
@@ -29,6 +30,8 @@ class RuleRouter:
         interpret_terms = ("结果", "解释", "解读", "火山图", "富集", "evidence", "interpret")
         continuation_terms = ("继续", "下一步", "好的", "可以", "continue")
 
+        if any(term in text for term in help_terms):
+            return RouteDecision(intent=RouteIntent.HELP, target_profile=RouteTargetProfile.ANALYSIS, reason="capability help")
         if any(term in text for term in rerun_terms):
             return RouteDecision(intent=RouteIntent.RERUN, target_profile=RouteTargetProfile.ANALYSIS, reason="rerun intent")
         if any(term in text for term in describe_terms) and not any(term in text for term in analysis_terms):

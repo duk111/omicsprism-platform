@@ -264,6 +264,65 @@ def test_general_biology_question_returns_advisory_without_tools_or_writes() -> 
     assert executor.enqueued == []
 
 
+def test_capability_question_is_answered_deterministically_without_model_or_tools() -> None:
+    state_store = InMemoryStateStore()
+    state_store.save(_state(state=AgentState.COLLECT_INTENT), expected_version=0)
+    model = _RecordingModel([])
+    coordinator = ProductionRunCoordinator(
+        state_store=state_store,
+        plan_store=InMemoryPlanStore(),
+        approval_gate=InMemoryApprovalGate(),
+        event_store=InMemoryAgentEventStore(),
+        model=model,
+        tool_runtime=AgentToolRuntime(user_id="user-1", inputs={}),
+    )
+
+    result = coordinator.execute_turn(turn=_turn(), user_message="你能做什么？")
+
+    assert result.state.state is AgentState.AWAIT_FOLLOWUP
+    assert [block.type for block in result.blocks] == ["advisory"]
+    assert "差异表达" in result.blocks[0].text
+    assert "结果解读" in result.blocks[0].text
+    assert result.state.model_calls == 0
+    assert result.state.tool_calls == 0
+    assert model.contexts == []
+
+
+def test_attached_inputs_with_unclear_message_are_summarized_without_plan_or_model() -> None:
+    state_store = InMemoryStateStore()
+    state_store.save(_state(state=AgentState.COLLECT_INTENT), expected_version=0)
+    model = _RecordingModel([])
+    coordinator = ProductionRunCoordinator(
+        state_store=state_store,
+        plan_store=InMemoryPlanStore(),
+        approval_gate=InMemoryApprovalGate(),
+        event_store=InMemoryAgentEventStore(),
+        model=model,
+        tool_runtime=AgentToolRuntime(
+            user_id="user-1",
+            inputs={
+                "counts": AgentInputFile("raw_count.csv", b"gene,s1,s2\ng1,1,2\n"),
+                "metadata": AgentInputFile(
+                    "metadata.csv",
+                    b"sample_id,treatment\ns1,control\ns2,salt\n",
+                ),
+            },
+        ),
+    )
+
+    result = coordinator.execute_turn(turn=_turn(), user_message="给你传了两个文件")
+
+    assert result.state.state is AgentState.AWAIT_FOLLOWUP
+    assert [block.type for block in result.blocks] == ["advisory"]
+    assert "counts" in result.blocks[0].text
+    assert "metadata" in result.blocks[0].text
+    assert "DEG" in result.blocks[0].text
+    assert result.state.model_calls == 0
+    assert result.state.tool_calls == 1
+    assert result.state.plan_id is None
+    assert model.contexts == []
+
+
 def test_claimed_upload_and_execution_injection_cannot_bypass_input_gate() -> None:
     state_store = InMemoryStateStore()
     state_store.save(_state(state=AgentState.COLLECT_INTENT), expected_version=0)
@@ -344,6 +403,14 @@ def test_production_analysis_requires_structured_approval_then_submits_once() ->
     assert executor.enqueued == []
     assert "database_url" not in model.contexts[0].model_dump_json()
     assert "counts.csv" not in model.contexts[0].model_dump_json()
+    metadata_summary = next(
+        item for item in model.contexts[0].input_summaries
+        if item.field == "metadata"
+    )
+    assert metadata_summary.columns == ["sample_id", "treatment", "batch"]
+    treatment = next(item for item in metadata_summary.group_levels if item.column == "treatment")
+    assert [(item.value, item.count) for item in treatment.values] == [("control", 2), ("salt", 2)]
+    assert "s1,control" not in model.contexts[0].model_dump_json()
 
     approvals.resume(
         approval_id=proposed.state.pending_approval_id,
@@ -362,6 +429,49 @@ def test_production_analysis_requires_structured_approval_then_submits_once() ->
     assert len(jobs.saved) == 1
     assert len(executor.enqueued) == 1
     assert replay.state.focus.in_scope_job_ids == submitted.state.focus.in_scope_job_ids
+
+
+def test_wrong_file_roles_return_specific_preflight_errors_without_plan() -> None:
+    state_store = InMemoryStateStore()
+    state_store.save(_state(), expected_version=0)
+    jobs = _Jobs()
+    executor = _Executor()
+    model = _RecordingModel([_analysis_decision()])
+    coordinator = ProductionRunCoordinator(
+        state_store=state_store,
+        plan_store=InMemoryPlanStore(),
+        approval_gate=InMemoryApprovalGate(),
+        event_store=InMemoryAgentEventStore(),
+        model=model,
+        tool_runtime=AgentToolRuntime(
+            user_id="user-1",
+            inputs={
+                "counts": AgentInputFile(
+                    "metadata.csv",
+                    b"sample_id,treatment\ns1,control\ns2,salt\n",
+                ),
+                "metadata": AgentInputFile(
+                    "counts.csv",
+                    b"gene,s1,s2\ng1,10,20\n",
+                ),
+            },
+            job_store=jobs,
+            files=_Files(),
+            executor=executor,
+        ),
+    )
+
+    result = coordinator.execute_turn(
+        turn=_turn("wrong-roles"),
+        user_message="按 treatment 比较 salt 和 control",
+    )
+
+    assert result.state.state is AgentState.PREFLIGHT_BLOCKED
+    assert result.state.plan_id is None
+    assert [block.type for block in result.blocks] == ["recommendation", "text"]
+    assert "sample_id" in result.blocks[-1].text
+    assert jobs.saved == []
+    assert executor.enqueued == []
 
 
 def test_model_budget_is_enforced_before_calling_the_model() -> None:

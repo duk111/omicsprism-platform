@@ -16,6 +16,7 @@ from backend.app.agent.eval import (
 from backend.app.agent.model import VllmModelAdapter
 from backend.app.agent.schemas import (
     ActiveProfile,
+    AgentAction,
     AgentState,
     EvalAssemblyName,
     EvalCaseStatus,
@@ -158,6 +159,8 @@ def test_vllm_adapter_sends_only_minimal_context_and_validates_response() -> Non
             "analysis_recommendations": ["differential"],
             "requires_approval": True,
             "requested_params": {},
+            "grounded_answer": None,
+            "advisory_answer": None,
         }
         return httpx.Response(200, json={
             "choices": [{"message": {"content": json.dumps(decision)}}],
@@ -239,6 +242,119 @@ def test_vllm_adapter_uses_state_specific_schema_for_advisory_answers() -> None:
     assert result.advisory_answer.startswith("Upload counts")
 
 
+def test_vllm_adapter_uses_state_specific_schema_for_input_decisions() -> None:
+    captured = {}
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        captured["body"] = json.loads(request.content)
+        decision = {
+            "action": "request_more_data",
+            "reasoning_summary": "contrast is ambiguous",
+            "feasibility": {
+                "verdict": "not_answerable",
+                "reasons": ["multiple grouping choices"],
+                "missing_information": ["Choose the comparison column and levels."],
+            },
+            "analysis_recommendations": [],
+            "requires_approval": False,
+            "requested_params": {},
+            "grounded_answer": None,
+            "advisory_answer": None,
+        }
+        return httpx.Response(200, json={
+            "choices": [{"message": {"content": json.dumps(decision)}}],
+        })
+
+    adapter = VllmModelAdapter(
+        base_url="http://model-host:8000",
+        model="Qwen3-14B-AWQ",
+        client=httpx.Client(transport=httpx.MockTransport(handle)),
+    )
+    context = ModelContext(
+        user_message="分析一下",
+        active_profile=ActiveProfile.ANALYSIS,
+        state=AgentState.CHECK_INPUTS,
+        in_scope_job_ids=[],
+        available_input_roles=["counts", "metadata"],
+        available_tools=[ToolName.INSPECT_UPLOADED_INPUTS, ToolName.RUN_PREFLIGHT],
+    )
+
+    result = adapter.decide(context)
+
+    schema = captured["body"]["response_format"]["json_schema"]["schema"]
+    assert "oneOf" in schema
+    branches = [
+        schema["$defs"][branch["$ref"].rsplit("/", 1)[-1]]
+        for branch in schema["oneOf"]
+    ]
+    assert {branch["properties"]["action"]["const"] for branch in branches} == {
+        "propose_plan", "request_more_data",
+    }
+    assert result.action is AgentAction.REQUEST_MORE_DATA
+
+
+def test_vllm_adapter_repairs_invalid_state_decision_once() -> None:
+    requests = []
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        requests.append(body)
+        if len(requests) == 1:
+            decision = {
+                "action": "request_more_data",
+                "reasoning_summary": "need a contrast",
+                "feasibility": {
+                    "verdict": "answerable",
+                    "reasons": ["inputs exist"],
+                    "missing_information": ["contrast"],
+                },
+                "analysis_recommendations": ["differential"],
+                "requires_approval": False,
+                "requested_params": {},
+                "grounded_answer": None,
+                "advisory_answer": None,
+            }
+        else:
+            decision = {
+                "action": "request_more_data",
+                "reasoning_summary": "need a contrast",
+                "feasibility": {
+                    "verdict": "not_answerable",
+                    "reasons": ["contrast is missing"],
+                    "missing_information": ["Choose the comparison column and levels."],
+                },
+                "analysis_recommendations": [],
+                "requires_approval": False,
+                "requested_params": {},
+                "grounded_answer": None,
+                "advisory_answer": None,
+            }
+        return httpx.Response(200, json={
+            "choices": [{"message": {"content": json.dumps(decision)}}],
+        })
+
+    adapter = VllmModelAdapter(
+        base_url="http://model-host:8000",
+        model="Qwen3-14B-AWQ",
+        client=httpx.Client(transport=httpx.MockTransport(handle)),
+    )
+    context = ModelContext(
+        user_message="分析一下",
+        active_profile=ActiveProfile.ANALYSIS,
+        state=AgentState.CHECK_INPUTS,
+        in_scope_job_ids=[],
+        available_input_roles=["counts", "metadata"],
+        available_tools=[ToolName.INSPECT_UPLOADED_INPUTS, ToolName.RUN_PREFLIGHT],
+    )
+
+    result = adapter.decide(context)
+
+    assert result.action is AgentAction.REQUEST_MORE_DATA
+    assert result.feasibility.verdict.value == "not_answerable"
+    assert len(requests) == 2
+    assert requests[1]["messages"][-1]["content"].startswith("Correct the previous")
+
+
 def test_live_recommendation_receives_structured_registry_requirements() -> None:
     captured = {}
 
@@ -255,6 +371,8 @@ def test_live_recommendation_receives_structured_registry_requirements() -> None
             "analysis_recommendations": ["differential"],
             "requires_approval": True,
             "requested_params": {},
+            "grounded_answer": None,
+            "advisory_answer": None,
         }
         return httpx.Response(200, json={
             "choices": [{"message": {"content": json.dumps(decision)}}],
