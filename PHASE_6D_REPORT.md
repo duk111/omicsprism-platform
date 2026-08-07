@@ -162,3 +162,9 @@ exit 0
 同一时段日志中的 PostgreSQL `ConnectionTimeout` 是独立基础设施故障：连接恢复后 worker 可继续处理。它不应归类为模型安全校验问题；生产仍需结合数据库公网端口、网络质量和连接超时监控单独排查。
 
 后续复验又发现：预检失败后状态为 `PREFLIGHT_BLOCKED`，同一会话的下一条普通消息未重新进入 router，曾产生空 assistant blocks。现已允许 `PREFLIGHT_BLOCKED`、`DONE`、`JOB_FAILED` 在新消息到达时重新路由；等待审批状态仍只能通过审批 resume 流程推进。新增回归测试确保预检失败后继续提问会得到正常回答，而不是空白消息。
+
+真实大文件复验进一步确认，笼统“输入预检未通过”并非用户 counts/metadata 必然有误，而是预检工具把完整 feature/sample ID 列表放入单行 ToolResult；大矩阵超过 32 KB 后通用裁剪器会移除整行，运行时因看不到 contrast 和 errors 而误判失败。现已把预检文件信息改为有界摘要，只保留行列数、sample/feature/duplicate/empty-column 数量及最多 10 个诊断样例，实际 errors、warnings、effective params 和 contrasts 保持完整。5000 feature 回归用例确认结果不再被裁剪且可以提交。
+
+同时修正附件能力判断：包含“这个/这些数据或文件能做什么”的请求走输入描述，不再被全局“你能做什么”帮助规则抢占；部分 GMA 输入（如 transcriptome + group）由确定性能力表直接说明缺少 metabolome，不再调用模型把它误说成 DEG 输入。
+
+本轮验证：后端 `144 passed, 6 skipped`；unit golden eval `25/25`，全部安全与准确率门禁通过。

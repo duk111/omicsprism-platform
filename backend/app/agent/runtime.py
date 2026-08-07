@@ -216,6 +216,13 @@ class ProductionRunCoordinator:
                     for spec in [self.context_builder.analysis_specs.get(analysis_type)]
                 )
                 if not has_supported_inputs:
+                    if available_input_roles:
+                        blocks.append(AgentAdvisoryBlock(
+                            category=AdvisoryCategory.ANALYSIS_GUIDANCE,
+                            text=_input_receipt_text(available_input_roles, self.context_builder),
+                        ))
+                        state.state = AgentState.NEED_USER_INPUT
+                        break
                     advisory_category = AdvisoryCategory.ANALYSIS_GUIDANCE
                     advisory_input_roles = available_input_roles
                     advisory_input_summaries = input_summaries

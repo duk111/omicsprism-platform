@@ -29,7 +29,14 @@ class RuleRouter:
         describe_terms = ("描述", "概览", "describe", "metadata", "元数据", "样本信息", "我有", "转录组", "代谢组")
         interpret_terms = ("结果", "解释", "解读", "火山图", "富集", "evidence", "interpret")
         continuation_terms = ("继续", "下一步", "好的", "可以", "continue")
+        attached_capability_terms = (
+            "这个数据能做什么", "这些数据能做什么", "这两个数据能做什么",
+            "这个文件能做什么", "这些文件能做什么", "这两个文件能做什么",
+            "what can this data do", "what can these files do",
+        )
 
+        if any(term in text for term in attached_capability_terms):
+            return RouteDecision(intent=RouteIntent.DESCRIBE_ONLY, target_profile=RouteTargetProfile.ANALYSIS, reason="describe uploaded inputs")
         if any(term in text for term in help_terms):
             return RouteDecision(intent=RouteIntent.HELP, target_profile=RouteTargetProfile.ANALYSIS, reason="capability help")
         if any(term in text for term in rerun_terms):

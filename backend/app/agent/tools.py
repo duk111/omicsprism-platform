@@ -300,7 +300,9 @@ class AgentToolRuntime:
             "requested_params": requested_params,
             "effective_params": effective_params,
             "contrasts": contrasts,
-            "files": [item.model_dump(mode="json") for item in response.files],
+            # 完整 feature/sample ID 列表在真实组学矩阵中可达数万项，不能进入
+            # 32 KB 工具结果。这里只保留诊断所需的有界摘要和总数。
+            "files": [_bounded_preflight_file(item) for item in response.files],
             "errors": errors,
             "warnings": warnings,
         }
@@ -624,6 +626,24 @@ def _inspect_input(field: str, item: AgentInputFile) -> dict[str, Any]:
             group_replicates[header] = counts
         row["group_replicates"] = group_replicates
     return row
+
+
+def _bounded_preflight_file(item: Any) -> dict[str, Any]:
+    return {
+        "field": item.field,
+        "filename": item.filename,
+        "rows": item.rows,
+        "columns": item.columns,
+        "sample_count": len(item.sample_ids or item.sample_names),
+        "feature_count": len(item.feature_ids),
+        "duplicate_count": len(item.duplicate_ids),
+        "duplicate_ids": list(item.duplicate_ids[:10]),
+        "empty_column_count": len(item.empty_columns),
+        "empty_columns": list(item.empty_columns[:10]),
+        "required_columns": list(item.required_columns[:10]),
+        "non_numeric_cells": item.non_numeric_cells,
+        "row_length_issues": item.row_length_issues,
+    }
 
 
 def _sort_value(value: str | None) -> tuple[int, object]:

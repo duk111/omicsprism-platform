@@ -345,6 +345,71 @@ def test_attached_inputs_with_unclear_message_are_summarized_without_plan_or_mod
     assert model.contexts == []
 
 
+def test_attached_capability_question_reports_missing_gma_role_without_model() -> None:
+    state_store = InMemoryStateStore()
+    state_store.save(_state(state=AgentState.COLLECT_INTENT), expected_version=0)
+    model = _RecordingModel([])
+    coordinator = ProductionRunCoordinator(
+        state_store=state_store,
+        plan_store=InMemoryPlanStore(),
+        approval_gate=InMemoryApprovalGate(),
+        event_store=InMemoryAgentEventStore(),
+        model=model,
+        tool_runtime=AgentToolRuntime(
+            user_id="user-1",
+            inputs={
+                "transcriptome": AgentInputFile("DEAT.csv", b"gene,s1,s2\ng1,1,2\n"),
+                "group": AgentInputFile("group.csv", b"sample_id,group\ns1,a\ns2,b\n"),
+            },
+        ),
+    )
+
+    result = coordinator.execute_turn(
+        turn=_turn("attached-capability"),
+        user_message="这两个数据能做什么",
+    )
+
+    assert result.state.state is AgentState.AWAIT_FOLLOWUP
+    assert [block.type for block in result.blocks] == ["advisory"]
+    assert "transcriptome" in result.blocks[0].text
+    assert "group" in result.blocks[0].text
+    assert "metabolome" in result.blocks[0].text
+    assert result.state.model_calls == 0
+    assert model.contexts == []
+
+
+def test_partial_gma_inputs_are_not_reinterpreted_as_deg_by_model() -> None:
+    state_store = InMemoryStateStore()
+    state_store.save(_state(state=AgentState.COLLECT_INTENT), expected_version=0)
+    model = _RecordingModel([])
+    coordinator = ProductionRunCoordinator(
+        state_store=state_store,
+        plan_store=InMemoryPlanStore(),
+        approval_gate=InMemoryApprovalGate(),
+        event_store=InMemoryAgentEventStore(),
+        model=model,
+        tool_runtime=AgentToolRuntime(
+            user_id="user-1",
+            inputs={
+                "transcriptome": AgentInputFile("DEAT.csv", b"gene,s1,s2\ng1,1,2\n"),
+                "group": AgentInputFile("group.csv", b"sample_id,group\ns1,a\ns2,b\n"),
+            },
+        ),
+    )
+
+    result = coordinator.execute_turn(
+        turn=_turn("partial-gma"),
+        user_message="分析一下",
+    )
+
+    assert result.state.state is AgentState.NEED_USER_INPUT
+    assert [block.type for block in result.blocks] == ["advisory"]
+    assert "metabolome" in result.blocks[0].text
+    assert "DEG 需要 counts + metadata" in result.blocks[0].text
+    assert result.state.model_calls == 0
+    assert model.contexts == []
+
+
 def test_claimed_upload_and_execution_injection_cannot_bypass_input_gate() -> None:
     state_store = InMemoryStateStore()
     state_store.save(_state(state=AgentState.COLLECT_INTENT), expected_version=0)

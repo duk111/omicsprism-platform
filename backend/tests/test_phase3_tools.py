@@ -68,6 +68,40 @@ def test_configured_registry_returns_spec_and_real_preflight_result() -> None:
     assert metadata["group_replicates"]["treatment"] == {"control": 2, "salt": 2}
 
 
+def test_large_counts_preflight_keeps_result_within_tool_boundary() -> None:
+    rows = "".join(f"gene_{index},10,12,30,32\n" for index in range(5000))
+    runtime = AgentToolRuntime(
+        user_id="user-1",
+        inputs={
+            "counts": AgentInputFile(
+                "raw_count.csv",
+                ("gene,s1,s2,s3,s4\n" + rows).encode(),
+            ),
+            "metadata": AgentInputFile(
+                "metadata.csv",
+                b"sample_id,treatment\ns1,control\ns2,control\ns3,salt\ns4,salt\n",
+            ),
+        },
+    )
+
+    result = runtime.run_preflight(
+        AnalysisType.DIFFERENTIAL,
+        {
+            "compare_field": "treatment",
+            "tested_levels": "salt",
+            "reference_level": "control",
+            "min_replicates": 2,
+        },
+    )
+
+    assert result.ok
+    assert not result.truncated
+    assert result.rows[0]["contrasts"][0]["tested_level"] == "salt"
+    counts = next(item for item in result.rows[0]["files"] if item["field"] == "counts")
+    assert counts["feature_count"] == 5000
+    assert "feature_ids" not in counts
+
+
 class _FakeJobs:
     def __init__(self, source: JobRecord) -> None:
         self.jobs = {source.id: source}
