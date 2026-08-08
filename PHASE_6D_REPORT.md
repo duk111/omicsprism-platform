@@ -168,3 +168,5 @@ exit 0
 同时修正附件能力判断：包含“这个/这些数据或文件能做什么”的请求走输入描述，不再被全局“你能做什么”帮助规则抢占；部分 GMA 输入（如 transcriptome + group）由确定性能力表直接说明缺少 metabolome，不再调用模型把它误说成 DEG 输入。
 
 本轮验证：后端 `144 passed, 6 skipped`；unit golden eval `25/25`，全部安全与准确率门禁通过。
+
+大文件修正上线后，真实模型能够推荐 DEG，但在宽泛“分析一下”请求中可能返回空 contrast 参数。原实现仍把该不完整决策送入预检，因而正确但不友好地提示 `compare_field, tested_levels and reference_level are required`。现新增确定性 contrast 补全：仅当 metadata 中存在唯一、满足最小重复数且含 control/ctrl/CK/WT/mock/untreated 等明确参考水平的二水平分组时，使用真实列和值自动补齐；存在多个候选或参考语义不明确时，列出真实候选列、水平和计数，请用户明确实验组/对照组，不创建 plan 或 job。最新验证为后端 `146 passed, 6 skipped`，unit golden eval `25/25`。

@@ -3,11 +3,12 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 from hashlib import sha256
 import json
+import re
 from time import monotonic
 from typing import Any, Protocol
 from uuid import uuid4
 
-from ..models import JobStatus
+from ..models import AnalysisType, JobStatus
 from .approvals import ApprovalGate, ApprovalMismatch, InMemoryApprovalGate
 from .audit import AgentEventStore, InMemoryAgentEventStore
 from .context import MinimalContextBuilder, build_input_summaries
@@ -34,6 +35,7 @@ from .schemas import (
     ActiveProfile,
     AdvisoryCategory,
     ApprovalStatus,
+    InputInspectionSummary,
     PlanRecord,
     RouteIntent,
     RouteTargetProfile,
@@ -256,11 +258,20 @@ class ProductionRunCoordinator:
                     display_label=self.context_builder.analysis_specs.get(analysis_type).display_label,
                     reasons=reasons,
                 )]))
+                requested_params, contrast_question = _complete_contrast_params(
+                    analysis_type,
+                    decision.requested_params,
+                    input_summaries,
+                )
+                if contrast_question:
+                    state.state = AgentState.NEED_USER_INPUT
+                    blocks.append(AgentTextBlock(text=contrast_question))
+                    break
                 preflight = call_tool(
                     executor,
                     ToolName.RUN_PREFLIGHT,
                     analysis_type=analysis_type,
-                    params=decision.requested_params,
+                    params=requested_params,
                 )
                 if not preflight.ok or not preflight.rows:
                     state.state = AgentState.PREFLIGHT_BLOCKED
@@ -284,7 +295,7 @@ class ProductionRunCoordinator:
                     user_id=state.user_id,
                     analysis_type=analysis_type,
                     input_source=self.tool_runtime.input_source_ref,
-                    requested_params=dict(row.get("requested_params") or decision.requested_params),
+                    requested_params=dict(row.get("requested_params") or requested_params),
                     effective_params=dict(row.get("effective_params") or {}),
                     contrasts=list(row.get("contrasts") or []),
                     plan_hash="pending",
@@ -625,6 +636,92 @@ def _issue_text(item: Any) -> str:
     if isinstance(item, dict):
         return str(item.get("message") or item.get("code") or "preflight warning")
     return str(item)
+
+
+_REFERENCE_LEVEL_MARKERS = {
+    "control", "ctrl", "ck", "wt", "mock", "untreated",
+    "对照", "空白", "野生型", "未处理",
+}
+
+
+def _complete_contrast_params(
+    analysis_type: AnalysisType,
+    requested: dict[str, Any],
+    summaries: list[InputInspectionSummary],
+) -> tuple[dict[str, Any], str | None]:
+    """仅从真实 metadata 二水平分组补齐安全 contrast；歧义时请求用户确认。"""
+
+    params = dict(requested)
+    if analysis_type not in {AnalysisType.DIFFERENTIAL, AnalysisType.DEM}:
+        return params, None
+    required = ("compare_field", "tested_levels", "reference_level")
+    if all(str(params.get(name) or "").strip() for name in required):
+        return params, None
+
+    metadata = next((item for item in summaries if item.field == "metadata"), None)
+    groups = list(metadata.group_levels) if metadata is not None else []
+    min_replicates = _positive_int(params.get("min_replicates"), 2)
+    compare_field = str(params.get("compare_field") or "").strip()
+    tested = str(params.get("tested_levels") or "").strip()
+    reference = str(params.get("reference_level") or "").strip()
+
+    candidates = []
+    for group in groups:
+        values = [item for item in group.values if item.value.strip()]
+        if len(values) != 2 or any(item.count < min_replicates for item in values):
+            continue
+        observed = {item.value for item in values}
+        if compare_field and group.column != compare_field:
+            continue
+        if tested and tested not in observed:
+            continue
+        if reference and reference not in observed:
+            continue
+        refs = [item.value for item in values if _is_reference_level(item.value)]
+        if not reference and len(refs) != 1:
+            continue
+        inferred_reference = reference or refs[0]
+        remaining = [item.value for item in values if item.value != inferred_reference]
+        inferred_tested = tested or (remaining[0] if len(remaining) == 1 else "")
+        if not inferred_tested or inferred_tested == inferred_reference:
+            continue
+        candidates.append((group.column, inferred_tested, inferred_reference))
+
+    if len(candidates) == 1:
+        field, inferred_tested, inferred_reference = candidates[0]
+        if not str(params.get("compare_field") or "").strip():
+            params["compare_field"] = field
+        if not str(params.get("tested_levels") or "").strip():
+            params["tested_levels"] = inferred_tested
+        if not str(params.get("reference_level") or "").strip():
+            params["reference_level"] = inferred_reference
+        return params, None
+
+    label = "DEG" if analysis_type is AnalysisType.DIFFERENTIAL else "DEM"
+    options = []
+    for group in groups[:8]:
+        values = "、".join(f"{item.value}({item.count})" for item in group.values[:8] if item.value.strip())
+        if values:
+            options.append(f"{group.column}=[{values}]")
+    option_text = "；".join(options) or "未识别到可用的二水平分组列"
+    return params, (
+        f"当前输入支持 {label}，但生成可审批计划前需要确认比较设置。"
+        f"metadata 中识别到：{option_text}。"
+        "请回复比较列、实验组和对照组，例如：比较列=treatment，实验组=salt，对照组=control。"
+    )
+
+
+def _is_reference_level(value: str) -> bool:
+    lowered = value.strip().casefold()
+    tokens = {item for item in re.split(r"[^a-z0-9\u4e00-\u9fff]+", lowered) if item}
+    return lowered in _REFERENCE_LEVEL_MARKERS or bool(tokens & _REFERENCE_LEVEL_MARKERS)
+
+
+def _positive_int(value: Any, default: int) -> int:
+    try:
+        return max(1, int(value))
+    except (TypeError, ValueError):
+        return default
 
 
 _CAPABILITY_HELP = (

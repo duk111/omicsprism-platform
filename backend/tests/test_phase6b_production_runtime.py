@@ -138,7 +138,7 @@ def _source_job(now: datetime) -> JobRecord:
     )
 
 
-def _analysis_decision() -> AgentDecision:
+def _analysis_decision(*, params=None) -> AgentDecision:
     return AgentDecision(
         action=AgentAction.PROPOSE_PLAN,
         reasoning_summary="输入可进行差异分析",
@@ -149,7 +149,7 @@ def _analysis_decision() -> AgentDecision:
         ),
         analysis_recommendations=[AnalysisType.DIFFERENTIAL],
         requires_approval=True,
-        requested_params={
+        requested_params=params if params is not None else {
             "compare_field": "treatment",
             "tested_levels": "salt",
             "reference_level": "control",
@@ -516,6 +516,81 @@ def test_production_analysis_requires_structured_approval_then_submits_once() ->
     assert len(jobs.saved) == 1
     assert len(executor.enqueued) == 1
     assert replay.state.focus.in_scope_job_ids == submitted.state.focus.in_scope_job_ids
+
+
+def test_missing_model_contrast_is_inferred_from_unique_control_group() -> None:
+    state_store = InMemoryStateStore()
+    state_store.save(_state(), expected_version=0)
+    plans = InMemoryPlanStore()
+    approvals = InMemoryApprovalGate()
+    model = _RecordingModel([_analysis_decision(params={
+        "compare_field": "",
+        "tested_levels": "",
+        "reference_level": "",
+    })])
+    coordinator = ProductionRunCoordinator(
+        state_store=state_store,
+        plan_store=plans,
+        approval_gate=approvals,
+        event_store=InMemoryAgentEventStore(),
+        model=model,
+        tool_runtime=AgentToolRuntime(
+            user_id="user-1",
+            inputs={
+                "counts": AgentInputFile("counts.csv", b"gene,s1,s2,s3,s4\ng1,10,12,30,32\n"),
+                "metadata": AgentInputFile(
+                    "metadata.csv",
+                    b"sample_id,treatment\ns1,control\ns2,control\ns3,salt\ns4,salt\n",
+                ),
+            },
+            input_source_job_id="source-1",
+            plans=plans,
+            approval_gate=approvals,
+        ),
+    )
+
+    result = coordinator.execute_turn(turn=_turn("infer-contrast"), user_message="分析一下")
+
+    assert result.state.state is AgentState.WAIT_EXECUTION_CONFIRMATION
+    plan = plans.get(plan_id=result.state.plan_id or "", user_id="user-1")
+    assert plan.effective_params["compare_field"] == "treatment"
+    assert plan.effective_params["tested_levels"] == "salt"
+    assert plan.effective_params["reference_level"] == "control"
+    assert plan.contrasts[0]["tested_count"] == 2
+    assert plan.contrasts[0]["reference_count"] == 2
+
+
+def test_ambiguous_contrast_lists_real_metadata_choices_instead_of_preflight_error() -> None:
+    state_store = InMemoryStateStore()
+    state_store.save(_state(), expected_version=0)
+    plans = InMemoryPlanStore()
+    model = _RecordingModel([_analysis_decision(params={})])
+    coordinator = ProductionRunCoordinator(
+        state_store=state_store,
+        plan_store=plans,
+        approval_gate=InMemoryApprovalGate(),
+        event_store=InMemoryAgentEventStore(),
+        model=model,
+        tool_runtime=AgentToolRuntime(
+            user_id="user-1",
+            inputs={
+                "counts": AgentInputFile("counts.csv", b"gene,s1,s2,s3,s4\ng1,10,12,30,32\n"),
+                "metadata": AgentInputFile(
+                    "metadata.csv",
+                    b"sample_id,treatment,genotype\ns1,control,wt\ns2,control,wt\ns3,salt,mutant\ns4,salt,mutant\n",
+                ),
+            },
+        ),
+    )
+
+    result = coordinator.execute_turn(turn=_turn("ambiguous-contrast"), user_message="分析一下")
+
+    assert result.state.state is AgentState.NEED_USER_INPUT
+    assert [block.type for block in result.blocks] == ["recommendation", "text"]
+    assert "treatment=[control(2)、salt(2)]" in result.blocks[-1].text
+    assert "genotype=[wt(2)、mutant(2)]" in result.blocks[-1].text
+    assert "比较列" in result.blocks[-1].text
+    assert result.state.plan_id is None
 
 
 def test_wrong_file_roles_return_specific_preflight_errors_without_plan() -> None:
