@@ -5,12 +5,15 @@ from datetime import datetime, timedelta, timezone
 import httpx
 import pytest
 
-from backend.agent_worker import AgentWorker
+from backend.agent_worker import AgentWorker, _select_input_source
 from backend.app.agent.model import ModelBoundaryError, ModelUnavailableError
 from backend.app.agent.product_store import InMemoryAgentProductStore
 from backend.app.agent.schemas import (
     ActiveProfile,
     AgentEvent,
+    AgentInputSourceKind,
+    AgentMessageRecord,
+    AgentMessageRole,
     AgentState,
     AgentTextBlock,
     AgentThreadRecord,
@@ -252,3 +255,57 @@ def test_execution_result_uses_atomic_checkpoint_commit() -> None:
     assert len(store.commits) == 1
     assert store.commits[0]["expected_version"] == 0
     assert store.get_turn(turn_id="turn-1", user_id="user-1").status.value == "completed"
+
+
+def test_latest_bundle_replaces_rejected_plan_input_but_not_pending_plan_input() -> None:
+    now = datetime.now(timezone.utc)
+    state = RunState(
+        run_id="run-1",
+        user_id="user-1",
+        thread_id="thread-1",
+        active_profile=ActiveProfile.ANALYSIS,
+        state=AgentState.NEED_USER_INPUT,
+        plan_id="plan-old",
+        plan_hash="sha256:old",
+        pending_approval_id=None,
+        focus=RunFocus(in_scope_job_ids=[], resolved_entities={}, last_citation=None),
+        step_no=0,
+        model_calls=0,
+        tool_calls=0,
+        status=RunStatus.RUNNING,
+        version=1,
+    )
+    messages = [AgentMessageRecord(
+        message_id="user-new-bundle",
+        thread_id="thread-1",
+        run_id="run-1",
+        user_id="user-1",
+        role=AgentMessageRole.USER,
+        blocks=[{"type": "input_summary", "bundle_id": "bundle-new", "files": []}],
+        created_at=now,
+    )]
+
+    class _Plans:
+        def get(self, *, plan_id: str, user_id: str):
+            assert (plan_id, user_id) == ("plan-old", "user-1")
+            return type("StoredPlan", (), {
+                "input_source": {"kind": "staged_bundle", "source_id": "bundle-old"},
+            })()
+
+    latest = _select_input_source(
+        state=state,
+        messages=messages,
+        plan_store=_Plans(),
+        user_id="user-1",
+    )
+    assert latest.kind is AgentInputSourceKind.STAGED_BUNDLE
+    assert latest.source_id == "bundle-new"
+
+    state.pending_approval_id = "approval-old"
+    locked = _select_input_source(
+        state=state,
+        messages=messages,
+        plan_store=_Plans(),
+        user_id="user-1",
+    )
+    assert locked == {"kind": "staged_bundle", "source_id": "bundle-old"}

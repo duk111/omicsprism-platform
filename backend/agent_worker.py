@@ -182,11 +182,12 @@ class ProductionTurnProcessor:
         state = self.state_store.get(run_id=turn.run_id, user_id=turn.user_id)
         messages = self.product_store.list_messages(thread_id=turn.thread_id, user_id=turn.user_id)
         user_message = _latest_user_text(messages)
-        source_ref = None
-        if state.plan_id:
-            source_ref = self.plan_store.get(plan_id=state.plan_id, user_id=turn.user_id).input_source
-        elif state.active_profile is ActiveProfile.ANALYSIS:
-            source_ref = _latest_input_source(messages, state.focus.in_scope_job_ids)
+        source_ref = _select_input_source(
+            state=state,
+            messages=messages,
+            plan_store=self.plan_store,
+            user_id=turn.user_id,
+        )
 
         if source_ref is None:
             tool_runtime = AgentToolRuntime(
@@ -314,6 +315,18 @@ def _latest_input_source(messages, focus_job_ids):
     if focus_job_ids:
         from .app.agent.schemas import AgentInputSourceRef
         return AgentInputSourceRef(kind=AgentInputSourceKind.EXISTING_JOB, source_id=focus_job_ids[0])
+    return None
+
+
+def _select_input_source(*, state, messages, plan_store, user_id):
+    """待审批计划锁定原输入；其他对话优先采用用户最新显式上传。"""
+    if state.plan_id and state.pending_approval_id:
+        return plan_store.get(plan_id=state.plan_id, user_id=user_id).input_source
+    latest = _latest_input_source(messages, state.focus.in_scope_job_ids)
+    if latest is not None:
+        return latest
+    if state.plan_id:
+        return plan_store.get(plan_id=state.plan_id, user_id=user_id).input_source
     return None
 
 

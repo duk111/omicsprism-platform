@@ -593,6 +593,68 @@ def test_ambiguous_contrast_lists_real_metadata_choices_instead_of_preflight_err
     assert result.state.plan_id is None
 
 
+def test_rejected_plan_can_be_explained_without_model_or_tool_calls() -> None:
+    state_store = InMemoryStateStore()
+    state = _state(state=AgentState.NEED_USER_INPUT)
+    state.plan_id = "plan-explain"
+    state.plan_hash = "sha256:plan"
+    state.pending_approval_id = None
+    state_store.save(state, expected_version=0)
+    plans = InMemoryPlanStore()
+    plan = PlanRecord(
+        plan_id="plan-explain",
+        run_id="run-1",
+        thread_id="thread-1",
+        user_id="user-1",
+        analysis_type=AnalysisType.DIFFERENTIAL,
+        input_source={"kind": "staged_bundle", "source_id": "bundle-1"},
+        requested_params={"compare_field": "treatment"},
+        effective_params={
+            "compare_field": "treatment",
+            "tested_levels": "salt",
+            "reference_level": "control",
+            "padj_cutoff": 0.05,
+            "log2fc_cutoff": 1.0,
+            "min_total_count": 10,
+        },
+        contrasts=[{
+            "compare_field": "treatment",
+            "tested_level": "salt",
+            "reference_level": "control",
+            "tested_count": 55,
+            "reference_count": 56,
+        }],
+        plan_hash="sha256:plan",
+        approval_id="approval-rejected",
+    )
+    plans.save(plan)
+    model = _RecordingModel([])
+    coordinator = ProductionRunCoordinator(
+        state_store=state_store,
+        plan_store=plans,
+        approval_gate=InMemoryApprovalGate(),
+        event_store=InMemoryAgentEventStore(),
+        model=model,
+        tool_runtime=AgentToolRuntime(user_id="user-1", inputs={}),
+    )
+
+    result = coordinator.execute_turn(
+        turn=_turn("explain-plan"),
+        user_message="你给的这个plan是什么意思",
+    )
+
+    assert result.state.state is AgentState.AWAIT_FOLLOWUP
+    assert [block.type for block in result.blocks] == ["advisory"]
+    explanation = result.blocks[0].text
+    assert "treatment" in explanation
+    assert "salt（55 个样本）" in explanation
+    assert "control（56 个样本）" in explanation
+    assert "不会执行" in explanation
+    assert result.state.model_calls == 0
+    assert result.state.tool_calls == 0
+    assert model.contexts == []
+
+
 def test_wrong_file_roles_return_specific_preflight_errors_without_plan() -> None:
     state_store = InMemoryStateStore()
     state_store.save(_state(), expected_version=0)

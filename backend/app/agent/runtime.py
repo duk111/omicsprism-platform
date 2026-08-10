@@ -14,7 +14,7 @@ from .audit import AgentEventStore, InMemoryAgentEventStore
 from .context import MinimalContextBuilder, build_input_summaries
 from .grounding import GroundedAnswerPipeline
 from .model import ModelAdapter
-from .plans import PlanStore, compute_plan_hash
+from .plans import PlanNotFound, PlanStore, compute_plan_hash
 from .policy import ProfilePolicyGuard
 from .router import RuleRouter
 from .schemas import (
@@ -149,6 +149,13 @@ class ProductionRunCoordinator:
                 }))
                 if route.target_profile is RouteTargetProfile.ANALYSIS:
                     state.active_profile = ActiveProfile.ANALYSIS
+                    if route.intent is RouteIntent.EXPLAIN_PLAN:
+                        blocks.append(AgentAdvisoryBlock(
+                            category=AdvisoryCategory.ANALYSIS_GUIDANCE,
+                            text=self._explain_current_plan(state),
+                        ))
+                        state.state = AgentState.AWAIT_FOLLOWUP
+                        break
                     if route.intent is RouteIntent.HELP:
                         blocks.append(AgentAdvisoryBlock(
                             category=AdvisoryCategory.ANALYSIS_GUIDANCE,
@@ -449,6 +456,47 @@ class ProductionRunCoordinator:
             expected_version=expected_version,
             events=pending_events,
         )
+
+    def _explain_current_plan(self, state: RunState) -> str:
+        if not state.plan_id:
+            return "当前会话没有可解释的分析计划。请先上传数据并说明分析目标。"
+        try:
+            plan = self.plan_store.get(plan_id=state.plan_id, user_id=state.user_id)
+        except PlanNotFound:
+            return "当前分析计划已不可用，请根据现有输入重新生成计划。"
+        label = {
+            AnalysisType.DIFFERENTIAL: "DEG 差异表达",
+            AnalysisType.DEM: "DEM 差异代谢",
+            AnalysisType.CORRELATION: "GMA 转录组-代谢组关联",
+        }[plan.analysis_type]
+        details = []
+        for contrast in plan.contrasts[:5]:
+            field = str(contrast.get("compare_field") or "分组列")
+            tested = str(contrast.get("tested_level") or "实验组")
+            reference = str(contrast.get("reference_level") or "对照组")
+            tested_count = int(contrast.get("tested_count") or 0)
+            reference_count = int(contrast.get("reference_count") or 0)
+            details.append(
+                f"按 {field} 比较 {tested}（{tested_count} 个样本）与 "
+                f"{reference}（{reference_count} 个样本）"
+            )
+        comparison = "；".join(details) or "使用当前上传的三类组学输入进行关联分析"
+        params = plan.effective_params
+        thresholds = []
+        if "padj_cutoff" in params:
+            thresholds.append(f"校正后 P 值阈值 {params['padj_cutoff']}")
+        if "log2fc_cutoff" in params:
+            thresholds.append(f"|log2FC| 阈值 {params['log2fc_cutoff']}")
+        if "min_total_count" in params:
+            thresholds.append(f"最低总计数 {params['min_total_count']}")
+        threshold_text = "，".join(thresholds)
+        explanation = f"这是一个 {label} 计划：{comparison}。"
+        if threshold_text:
+            explanation += f"筛选设置为{threshold_text}。"
+        explanation += "计划本身不会创建任务；只有批准与该计划哈希绑定的审批后才会提交。"
+        if state.pending_approval_id is None:
+            explanation += "当前计划没有有效的待审批请求，不会执行；你可以修改比较条件后重新生成。"
+        return explanation
 
     def _executor(self, profile: ActiveProfile) -> PolicyToolExecutor:
         return PolicyToolExecutor(

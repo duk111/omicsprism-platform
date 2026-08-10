@@ -17,6 +17,7 @@ class ContractModel(BaseModel):
 
 class RouteIntent(str, Enum):
     HELP = "help"
+    EXPLAIN_PLAN = "explain_plan"
     ANALYZE = "analyze"
     INTERPRET = "interpret"
     RERUN = "rerun"

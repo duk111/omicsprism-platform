@@ -276,7 +276,7 @@ class AgentToolRuntime:
         files = _upload_files(self.inputs)
         assert self.preflight_service is not None
         assert self.analysis_specs is not None
-        requested_params = dict(params)
+        requested_params = self.analysis_specs.requested_params(atype, dict(params))
         effective_params = self.analysis_specs.effective_params(atype, requested_params)
         response = self.preflight_service.preflight(atype, params=effective_params, files=files)
         contrasts: list[dict[str, object]] = []

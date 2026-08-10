@@ -170,3 +170,7 @@ exit 0
 本轮验证：后端 `144 passed, 6 skipped`；unit golden eval `25/25`，全部安全与准确率门禁通过。
 
 大文件修正上线后，真实模型能够推荐 DEG，但在宽泛“分析一下”请求中可能返回空 contrast 参数。原实现仍把该不完整决策送入预检，因而正确但不友好地提示 `compare_field, tested_levels and reference_level are required`。现新增确定性 contrast 补全：仅当 metadata 中存在唯一、满足最小重复数且含 control/ctrl/CK/WT/mock/untreated 等明确参考水平的二水平分组时，使用真实列和值自动补齐；存在多个候选或参考语义不明确时，列出真实候选列、水平和计数，请用户明确实验组/对照组，不创建 plan 或 job。最新验证为后端 `146 passed, 6 skipped`，unit golden eval `25/25`。
+
+产品联调又发现计划拒绝后的会话问题：解释旧 plan 时被误当成普通输入咨询；上传新 bundle 后 worker 仍优先读取旧 plan 的输入来源。现新增 `EXPLAIN_PLAN` 确定性路径，直接解释分析类型、真实 contrast、样本数、阈值和审批含义；普通后续消息优先使用最新显式上传 bundle，只有待审批/批准提交 turn 才锁定 plan 的输入来源。计划参数现在按 analysis spec 白名单过滤，前端将 contrast 渲染为比较列/实验组/对照组/样本数，不再显示重复参数或 raw JSON。
+
+本轮验证：后端 `149 passed, 6 skipped`；前端 `9 passed`；前端生产构建通过。

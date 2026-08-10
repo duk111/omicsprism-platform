@@ -104,9 +104,14 @@ class AnalysisSpecRegistry:
     def get(self, analysis_type: AnalysisType | str) -> AnalysisSpec:
         return self._specs[AnalysisType(analysis_type)]
 
+    def requested_params(self, analysis_type: AnalysisType | str, requested: dict[str, Any]) -> dict[str, Any]:
+        """模型或用户参数只能进入对应 analysis spec 的白名单。"""
+        allowed = {rule.name for rule in self.get(analysis_type).parameter_rules}
+        return {name: value for name, value in requested.items() if name in allowed}
+
     def effective_params(self, analysis_type: AnalysisType | str, requested: dict[str, Any]) -> dict[str, Any]:
         spec = self.get(analysis_type)
-        effective = dict(requested)
+        effective = self.requested_params(analysis_type, requested)
         for rule in spec.parameter_rules:
             if rule.name not in effective and rule.default is not None:
                 effective[rule.name] = rule.default

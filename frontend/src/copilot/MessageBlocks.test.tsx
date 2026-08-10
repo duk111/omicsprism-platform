@@ -44,6 +44,28 @@ describe("MessageBlocks", () => {
     expect(approve).toHaveBeenCalledWith("approval-1", "approve", "sha256:bound");
   });
 
+  it("renders plan comparisons as structured fields instead of raw JSON", () => {
+    const { container } = render(<MessageBlocks message={message([{
+      type: "plan",
+      plan_id: "plan-1",
+      plan_hash: "sha256:plan",
+      analysis_type: "differential",
+      requested_params: {},
+      effective_params: { compare_field: "treatment", tested_levels: "salt", reference_level: "control", padj_cutoff: 0.05, normalize: true },
+      contrasts: [{ compare_field: "treatment", tested_level: "salt", reference_level: "control", tested_count: 55, reference_count: 56, same_values: {} }],
+      warnings: [],
+      expires_at: "2026-08-03T01:00:00Z",
+    }])} approvalBusy={null} onApproval={vi.fn()} onRetry={vi.fn()} />);
+
+    expect(screen.getByText("Experimental group")).toBeVisible();
+    expect(screen.getByText("55 samples")).toBeVisible();
+    expect(screen.getByText("Reference group")).toBeVisible();
+    expect(screen.getByText("56 samples")).toBeVisible();
+    expect(screen.getByText("Adjusted P-value cutoff")).toBeVisible();
+    expect(screen.getByText("Enabled")).toBeVisible();
+    expect(container.textContent).not.toContain("{\"compare_field\"");
+  });
+
   it("shows verifiable artifact, row and checksum evidence", () => {
     render(<MessageBlocks message={message([{ type: "evidence", claims: [{ text: "Gene A is elevated.", citation: { artifact: "deg.csv", checksum: "sha256:12345678901234567890", row_ids: [4, 8] } }] }])} approvalBusy={null} onApproval={vi.fn()} onRetry={vi.fn()} />);
     expect(screen.getByText("deg.csv")).toBeVisible();

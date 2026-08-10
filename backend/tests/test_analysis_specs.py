@@ -25,3 +25,20 @@ def test_registry_contains_input_and_parameter_rule_containers() -> None:
         assert spec.analysis_type is analysis_type
         assert isinstance(spec.input_rules, tuple)
         assert isinstance(spec.parameter_rules, tuple)
+
+
+def test_registry_filters_parameters_to_analysis_whitelist() -> None:
+    registry = AnalysisSpecRegistry()
+
+    requested = registry.requested_params(AnalysisType.DIFFERENTIAL, {
+        "compare_field": "treatment",
+        "tested_levels": "salt",
+        "counts": "counts",
+        "comparison": "treatment",
+    })
+    effective = registry.effective_params(AnalysisType.DIFFERENTIAL, requested)
+
+    assert requested == {"compare_field": "treatment", "tested_levels": "salt"}
+    assert "counts" not in effective
+    assert "comparison" not in effective
+    assert effective["padj_cutoff"] == 0.05

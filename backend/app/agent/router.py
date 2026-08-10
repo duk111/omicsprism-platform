@@ -34,7 +34,14 @@ class RuleRouter:
             "这个文件能做什么", "这些文件能做什么", "这两个文件能做什么",
             "what can this data do", "what can these files do",
         )
+        explain_plan_terms = (
+            "plan是什么意思", "plan 是什么意思", "这个plan", "这个 plan",
+            "计划是什么意思", "这个计划", "解释计划", "解释一下计划",
+            "explain the plan", "what does this plan mean",
+        )
 
+        if any(term in text for term in explain_plan_terms):
+            return RouteDecision(intent=RouteIntent.EXPLAIN_PLAN, target_profile=RouteTargetProfile.ANALYSIS, reason="explain current plan")
         if any(term in text for term in attached_capability_terms):
             return RouteDecision(intent=RouteIntent.DESCRIBE_ONLY, target_profile=RouteTargetProfile.ANALYSIS, reason="describe uploaded inputs")
         if any(term in text for term in help_terms):
