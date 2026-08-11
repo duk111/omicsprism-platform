@@ -796,8 +796,8 @@ def _job_blocks(job_ids: list[str], *, status: JobStatus, progress: int) -> list
             job_id=job_id,
             status=status,
             progress=progress,
-            progress_url=f"/api/jobs/{job_id}/progress",
-            results_url=f"/results/{job_id}" if status is JobStatus.SUCCEEDED else None,
+            progress_url=f"/jobs/{job_id}",
+            results_url=f"/jobs/{job_id}/results" if status is JobStatus.SUCCEEDED else None,
         )
         for job_id in job_ids
     ]

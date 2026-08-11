@@ -4,6 +4,14 @@ import { describe, expect, it, vi } from "vitest";
 import type { AgentMessageResponse } from "../api-types";
 import { MessageBlocks } from "./MessageBlocks";
 
+const { mockUseJobProgressSubscription } = vi.hoisted(() => ({
+  mockUseJobProgressSubscription: vi.fn(),
+}));
+
+vi.mock("../app/jobs/useJobProgressSubscription", () => ({
+  useJobProgressSubscription: mockUseJobProgressSubscription,
+}));
+
 function message(blocks: AgentMessageResponse["blocks"]): AgentMessageResponse {
   return { message_id: "message-1", thread_id: "thread-1", run_id: "run-1", role: "assistant", blocks, created_at: "2026-08-03T00:00:00Z" };
 }
@@ -72,5 +80,28 @@ describe("MessageBlocks", () => {
     expect(screen.getByText("deg.csv")).toBeVisible();
     expect(screen.getByText("Rows 4, 8")).toBeVisible();
     expect(screen.getByTitle("sha256:12345678901234567890")).toBeVisible();
+  });
+
+  it("updates a queued job block from live progress and links to results", () => {
+    mockUseJobProgressSubscription.mockReturnValue({
+      progress: { job_id: "job-1", status: "succeeded", progress: 100 },
+      error: null,
+      mode: "sse",
+      connectionState: "closed",
+      reconnectAttempts: 0,
+    });
+
+    render(<MessageBlocks message={message([{
+      type: "job",
+      job_id: "job-1",
+      status: "queued",
+      progress: 0,
+      progress_url: "/jobs/job-1",
+      results_url: null,
+    }])} approvalBusy={null} onApproval={vi.fn()} onRetry={vi.fn()} />);
+
+    expect(screen.getByText("succeeded")).toBeVisible();
+    expect(screen.getByText("100% complete")).toBeVisible();
+    expect(screen.getByRole("link", { name: /Open results/ })).toHaveAttribute("href", "/jobs/job-1/results");
   });
 });

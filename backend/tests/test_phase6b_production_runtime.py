@@ -511,6 +511,9 @@ def test_production_analysis_requires_structured_approval_then_submits_once() ->
     submitted = coordinator.execute_turn(turn=_turn("approved-key"), user_message="")
 
     assert [block.type for block in submitted.blocks] == ["job"]
+    job_block = submitted.blocks[0]
+    assert job_block.progress_url == f"/jobs/{job_block.job_id}"
+    assert job_block.results_url is None
     assert len(jobs.saved) == 1
     assert len(executor.enqueued) == 1
 

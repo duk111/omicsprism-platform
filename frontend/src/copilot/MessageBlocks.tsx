@@ -1,5 +1,7 @@
 import { AlertTriangle, BookOpen, Check, ExternalLink, FileText, FlaskConical, Lightbulb, Quote, X } from "lucide-react";
-import type { AgentMessageResponse, AgentApprovalDecision } from "../api-types";
+import { publicUrl } from "../api";
+import { useJobProgressSubscription } from "../app/jobs/useJobProgressSubscription";
+import type { AgentJobBlock, AgentMessageResponse, AgentApprovalDecision } from "../api-types";
 
 type Block = AgentMessageResponse["blocks"][number];
 
@@ -65,15 +67,39 @@ function BlockView({ block, approvalBusy, onApproval, onRetry }: {
         {pending && <div className="approval-actions"><button type="button" className="secondary danger-action" disabled={approvalBusy === block.approval_id} onClick={() => onApproval(block.approval_id, "reject", block.plan_hash)}><X size={16} />Reject</button><button type="button" className="primary" disabled={approvalBusy === block.approval_id} onClick={() => onApproval(block.approval_id, "approve", block.plan_hash)}><Check size={16} />Approve plan</button></div>}
       </section>;
     }
-    case "job": return (
-      <section className="job-block"><div><span className={`job-status status-${block.status}`}>{block.status}</span><h3>Analysis job</h3><p>{Math.round(block.progress)}% complete</p></div><div className="job-progress" aria-label={`${block.progress}% complete`}><span style={{ width: `${Math.max(0, Math.min(100, block.progress))}%` }} /></div><a href={block.results_url || block.progress_url}>{block.results_url ? "Open results" : "Track job"}<ExternalLink size={15} /></a></section>
-    );
+    case "job": return <JobBlockView block={block} />;
     case "evidence": return (
       <section className="evidence-block"><h3><Quote size={16} /> Evidence</h3>{block.claims.length === 0 ? <p>No evidence met the requested threshold.</p> : block.claims.map((claim, index) => <article key={`${claim.citation.checksum}-${index}`}><p>{claim.text}</p><footer><code>{claim.citation.artifact}</code><span>Rows {claim.citation.row_ids.join(", ")}</span><span title={claim.citation.checksum}>{shortChecksum(claim.citation.checksum)}</span></footer></article>)}</section>
     );
     case "error": return <section className="error-block" role="alert"><AlertTriangle size={18} /><div><strong>{block.user_message}</strong>{block.request_id && <small>Request {block.request_id}</small>}</div>{block.retryable && <button type="button" className="secondary" onClick={onRetry}>Retry</button>}</section>;
     default: return null;
   }
+}
+
+function JobBlockView({ block }: { block: AgentJobBlock }) {
+  const { progress } = useJobProgressSubscription(block.job_id);
+  const status = progress?.status ?? block.status;
+  const percent = progress?.progress ?? block.progress;
+  const succeeded = status === "succeeded";
+  const href = publicUrl(succeeded
+    ? `/jobs/${encodeURIComponent(block.job_id)}/results`
+    : `/jobs/${encodeURIComponent(block.job_id)}`);
+  return (
+    <section className="job-block">
+      <div>
+        <span className={`job-status status-${status}`}>{status}</span>
+        <h3>Analysis job</h3>
+        <p>{Math.round(percent)}% complete</p>
+      </div>
+      <div className="job-progress" aria-label={`${percent}% complete`}>
+        <span style={{ width: `${Math.max(0, Math.min(100, percent))}%` }} />
+      </div>
+      <a href={href}>
+        {succeeded ? "Open results" : "Track job"}
+        <ExternalLink size={15} />
+      </a>
+    </section>
+  );
 }
 
 function ContrastView({ contrast }: { contrast: Record<string, unknown> }) {
