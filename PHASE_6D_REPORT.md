@@ -174,3 +174,7 @@ exit 0
 产品联调又发现计划拒绝后的会话问题：解释旧 plan 时被误当成普通输入咨询；上传新 bundle 后 worker 仍优先读取旧 plan 的输入来源。现新增 `EXPLAIN_PLAN` 确定性路径，直接解释分析类型、真实 contrast、样本数、阈值和审批含义；普通后续消息优先使用最新显式上传 bundle，只有待审批/批准提交 turn 才锁定 plan 的输入来源。计划参数现在按 analysis spec 白名单过滤，前端将 contrast 渲染为比较列/实验组/对照组/样本数，不再显示重复参数或 raw JSON。
 
 本轮验证：后端 `149 passed, 6 skipped`；前端 `9 passed`；前端生产构建通过。
+
+双服务器生产验收发现审批可能提示 `Approval has expired`。原实现由算力 worker 生成绝对到期时间、云端 API 用本机时间校验，且 TTL 仅 10 分钟；服务器时钟偏差或较长人工审阅都会导致审批不可用。现将生产 PostgreSQL 装配改为用数据库 `clock_timestamp()` 生成和校验到期时间，TTL 延长到 30 分钟；worker 创建审批后回读数据库中的权威到期时间用于 plan/approval block。过期点击会释放 run 的 pending approval 并回到 `NEED_USER_INPUT`，允许重新生成计划，且仍不创建 job。前端计划卡明确标注 `Expires`。
+
+本轮验证：后端 `150 passed, 6 skipped`；前端 `9 passed`；unit golden eval `25/25`；前端生产构建通过。

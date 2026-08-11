@@ -486,6 +486,8 @@ def test_production_analysis_requires_structured_approval_then_submits_once() ->
     assert proposed.state.status is RunStatus.SUSPENDED
     assert proposed.state.pending_approval_id
     assert {block.type for block in proposed.blocks} == {"recommendation", "plan", "approval"}
+    plan_block = next(block for block in proposed.blocks if block.type == "plan")
+    assert timedelta(minutes=29) < plan_block.expires_at - datetime.now(timezone.utc) <= timedelta(minutes=30)
     assert jobs.saved == []
     assert executor.enqueued == []
     assert "database_url" not in model.contexts[0].model_dump_json()

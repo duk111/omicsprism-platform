@@ -60,6 +60,9 @@ class CoordinatorBudgetExceeded(RuntimeError):
     pass
 
 
+APPROVAL_TTL = timedelta(minutes=30)
+
+
 class ProductionRunCoordinator:
     """生产 turn 的有界协调器；所有 I/O 都经注入的 store、model 与 tool 接口。"""
 
@@ -309,7 +312,7 @@ class ProductionRunCoordinator:
                     approval_id=None,
                 )
                 plan.plan_hash = compute_plan_hash(plan)
-                expires_at = datetime.now(timezone.utc) + timedelta(minutes=10)
+                expires_at = datetime.now(timezone.utc) + APPROVAL_TTL
                 self.plan_store.save(plan)
                 approval_id = self.approvals.suspend(
                     plan_id=plan.plan_id,
@@ -319,6 +322,12 @@ class ProductionRunCoordinator:
                     plan_hash=plan.plan_hash,
                     expires_at=expires_at,
                 )
+                # PostgreSQL 装配以数据库时钟为准，避免云端 API 与算力 worker
+                # 存在时钟偏差时，刚生成的审批立即被判过期。
+                expires_at = self.approvals.get_owned(
+                    approval_id=approval_id,
+                    user_id=state.user_id,
+                ).expires_at
                 plan.approval_id = approval_id
                 self.plan_store.save(plan)
                 state.plan_id = plan.plan_id

@@ -340,9 +340,6 @@ def create_agent_router(
         ):
             raise _conflict("Approval does not match the current plan")
         now = datetime.now(timezone.utc)
-        if now >= approval.expires_at:
-            raise _conflict("Approval has expired")
-
         if payload.decision is AgentApprovalDecision.REJECT:
             try:
                 ctx.approval_gate.reject(
@@ -350,9 +347,11 @@ def create_agent_router(
                     run_id=state.run_id,
                     user_id=user_id,
                     plan_hash=payload.plan_hash,
-                    now=now,
                 )
-            except (ApprovalMismatch, ApprovalExpired) as exc:
+            except ApprovalExpired as exc:
+                _release_expired_approval(ctx, state, approval_id, user_id)
+                raise _conflict("Approval has expired; generate a new plan to continue") from exc
+            except ApprovalMismatch as exc:
                 raise _conflict(str(exc)) from exc
             state.pending_approval_id = None
             state.state = AgentState.NEED_USER_INPUT
@@ -384,7 +383,6 @@ def create_agent_router(
                 run_id=state.run_id,
                 user_id=user_id,
                 plan_hash=payload.plan_hash,
-                now=now,
             )
             turn = AgentTurnRecord(
                 turn_id=f"turn-{uuid4()}",
@@ -418,7 +416,10 @@ def create_agent_router(
                 created_at=now,
             )
             queued, _ = ctx.product_store.enqueue_turn(message=approval_message, turn=turn)
-        except (ApprovalMismatch, ApprovalExpired, IdempotencyConflict, ActiveTurnConflict) as exc:
+        except ApprovalExpired as exc:
+            _release_expired_approval(ctx, state, approval_id, user_id)
+            raise _conflict("Approval has expired; generate a new plan to continue") from exc
+        except (ApprovalMismatch, IdempotencyConflict, ActiveTurnConflict) as exc:
             raise _conflict(str(exc)) from exc
         response.status_code = 202
         return _turn_response(queued)
@@ -554,6 +555,23 @@ def _persist_non_transactional_focus_if_needed(
         return
     current.focus = focus
     ctx.state_store.save(current, expected_version=current.version)
+
+
+def _release_expired_approval(
+    ctx: AgentApiContext,
+    state: RunState,
+    approval_id: str,
+    user_id: str,
+) -> None:
+    if state.pending_approval_id != approval_id:
+        return
+    state.pending_approval_id = None
+    state.state = AgentState.NEED_USER_INPUT
+    state.status = RunStatus.RUNNING
+    try:
+        ctx.state_store.save(state, expected_version=state.version)
+    except StateConflict as exc:
+        raise _conflict(str(exc)) from exc
 
 
 def _thread_response(record: AgentThreadRecord) -> AgentThreadResponse:

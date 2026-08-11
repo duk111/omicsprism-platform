@@ -52,7 +52,7 @@ function BlockView({ block, approvalBusy, onApproval, onRetry }: {
     case "plan": {
       const params = Object.entries(block.effective_params).filter(([key]) => !CONTRAST_PARAM_KEYS.has(key));
       return (
-        <section className="message-section plan-block"><div className="block-heading"><div><span className="analysis-label">{analysisLabel(block.analysis_type)}</span><h3>Analysis plan</h3></div><time>{formatDate(block.expires_at)}</time></div>
+        <section className="message-section plan-block"><div className="block-heading"><div><span className="analysis-label">{analysisLabel(block.analysis_type)}</span><h3>Analysis plan</h3></div><time><span>Expires</span>{formatDate(block.expires_at)}</time></div>
           {block.contrasts.length > 0 && <div className="contrast-list"><strong>Comparisons</strong>{block.contrasts.map((contrast, index) => <ContrastView key={index} contrast={contrast} />)}</div>}
           {params.length > 0 && <><h4>Analysis settings</h4><dl>{params.map(([key, value]) => <div key={key}><dt>{paramLabel(key)}</dt><dd>{formatParam(value)}</dd></div>)}</dl></>}
           {(block.warnings ?? []).map(item => <p className="inline-warning" key={item}><AlertTriangle size={15} />{item}</p>)}

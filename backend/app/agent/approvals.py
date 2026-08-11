@@ -230,22 +230,26 @@ class PostgresApprovalGate:
         if not plan_id or not thread_id:
             raise ValueError("PostgreSQL approval requires plan_id and thread_id")
         approval_id = f"approval-{uuid4()}"
+        ttl_seconds = _approval_ttl_seconds(expires_at)
         with self._connect() as conn:
             conn.execute(
                 """
                 insert into agent_approvals (
                     approval_id, plan_id, run_id, thread_id, user_id,
                     plan_hash, status, expires_at
-                ) values (%s, %s, %s, %s, %s, %s, 'pending', %s)
+                ) values (
+                    %s, %s, %s, %s, %s, %s, 'pending',
+                    clock_timestamp() + (%s * interval '1 second')
+                )
                 """,
-                (approval_id, plan_id, run_id, thread_id, user_id, plan_hash, expires_at),
+                (approval_id, plan_id, run_id, thread_id, user_id, plan_hash, ttl_seconds),
             )
         return approval_id
 
     def resume(self, *, approval_id: str, run_id: str, user_id: str, plan_hash: str,
                now: datetime | None = None) -> None:
-        current = now or datetime.now(timezone.utc)
         with self._connect() as conn:
+            current = self._database_now(conn)
             record = self._get_owned(conn, approval_id, user_id)
             self._validate_binding(record, run_id, plan_hash)
             if record.status is ApprovalStatus.REJECTED:
@@ -266,9 +270,9 @@ class PostgresApprovalGate:
 
     def is_valid(self, *, approval_id: str, run_id: str, user_id: str, plan_hash: str,
                  now: datetime | None = None) -> bool:
-        current = now or datetime.now(timezone.utc)
         try:
             with self._connect() as conn:
+                current = self._database_now(conn)
                 record = self._get_owned(conn, approval_id, user_id)
         except ApprovalNotFound:
             return False
@@ -281,8 +285,8 @@ class PostgresApprovalGate:
 
     def reject(self, *, approval_id: str, run_id: str, user_id: str, plan_hash: str,
                now: datetime | None = None) -> None:
-        current = now or datetime.now(timezone.utc)
         with self._connect() as conn:
+            current = self._database_now(conn)
             record = self._get_owned(conn, approval_id, user_id)
             self._validate_binding(record, run_id, plan_hash)
             if record.status is ApprovalStatus.REJECTED:
@@ -324,9 +328,20 @@ class PostgresApprovalGate:
         if record.run_id != run_id or record.plan_hash != plan_hash:
             raise ApprovalMismatch("approval does not match run, user, or plan")
 
+    @staticmethod
+    def _database_now(conn) -> datetime:
+        return conn.execute("select clock_timestamp()").fetchone()[0]
+
     def _connect(self):
         try:
             import psycopg
         except ImportError as exc:  # pragma: no cover - dependency guard
             raise RuntimeError("Install psycopg[binary]>=3.1.18 to use PostgreSQL storage") from exc
         return psycopg.connect(self.database_url)
+
+
+def _approval_ttl_seconds(expires_at: datetime) -> int:
+    """把调用方的绝对时间转换为相对 TTL，实际到期点由 PostgreSQL 生成。"""
+    current = datetime.now(timezone.utc)
+    normalized = expires_at if expires_at.tzinfo is not None else expires_at.replace(tzinfo=timezone.utc)
+    return max(1, min(24 * 60 * 60, round((normalized - current).total_seconds())))

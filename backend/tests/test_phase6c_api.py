@@ -386,6 +386,58 @@ def test_structured_approval_validates_owner_hash_and_queues_resume_turn() -> No
     assert context.job_store.created == 0
 
 
+def test_expired_approval_releases_run_for_a_new_plan() -> None:
+    context = _context()
+    client = _client(context)
+    thread = _create_thread(client, "user-a")
+    thread_id = thread["thread_id"]
+    state = context.state_store.get(run_id=thread["current_run_id"], user_id="user-a")
+    plan = PlanRecord(
+        plan_id="plan-expired",
+        run_id=state.run_id,
+        thread_id=thread_id,
+        user_id="user-a",
+        analysis_type=AnalysisType.DIFFERENTIAL,
+        input_source={"kind": "existing_job", "source_id": "job-a"},
+        requested_params={},
+        effective_params={},
+        contrasts=[{"compare_field": "group", "tested_level": "salt", "reference_level": "control"}],
+        plan_hash="pending",
+        approval_id=None,
+    )
+    plan.plan_hash = compute_plan_hash(plan)
+    context.plan_store.save(plan)
+    approval_id = context.approval_gate.suspend(
+        run_id=state.run_id,
+        user_id="user-a",
+        plan_hash=plan.plan_hash,
+        plan_id=plan.plan_id,
+        thread_id=thread_id,
+        expires_at=datetime.now(timezone.utc) - timedelta(seconds=1),
+    )
+    plan.approval_id = approval_id
+    context.plan_store.save(plan)
+    state.plan_id = plan.plan_id
+    state.plan_hash = plan.plan_hash
+    state.pending_approval_id = approval_id
+    state.state = AgentState.WAIT_EXECUTION_CONFIRMATION
+    state.status = RunStatus.SUSPENDED
+    context.state_store.save(state, expected_version=state.version)
+
+    response = client.post(
+        f"/api/agent/threads/{thread_id}/approvals/{approval_id}",
+        json={"decision": "approve", "plan_hash": plan.plan_hash},
+    )
+
+    assert response.status_code == 409
+    assert "generate a new plan" in response.json()["detail"]
+    released = context.state_store.get(run_id=state.run_id, user_id="user-a")
+    assert released.pending_approval_id is None
+    assert released.state is AgentState.NEED_USER_INPUT
+    assert released.status is RunStatus.RUNNING
+    assert context.job_store.created == 0
+
+
 def test_openapi_exposes_agent_contract_without_api_model_dependency() -> None:
     from backend.app import main
 

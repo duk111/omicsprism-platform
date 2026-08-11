@@ -63,6 +63,7 @@ describe("MessageBlocks", () => {
     expect(screen.getByText("56 samples")).toBeVisible();
     expect(screen.getByText("Adjusted P-value cutoff")).toBeVisible();
     expect(screen.getByText("Enabled")).toBeVisible();
+    expect(screen.getByText("Expires")).toBeVisible();
     expect(container.textContent).not.toContain("{\"compare_field\"");
   });
 
