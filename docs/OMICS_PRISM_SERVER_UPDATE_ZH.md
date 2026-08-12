@@ -3,7 +3,7 @@
 本文记录代码更新后如何同步到服务器。当前部署分为两台机器：
 
 - 云服务器：对外提供网页、nginx、API、Postgres、Redis、MinIO、housekeeping。
-- 算力服务器：只运行 worker，负责执行耗时分析。
+- 算力服务器：运行 analysis worker、agent worker 与 vLLM；analysis worker 负责耗时分析，agent worker 负责 Copilot turn。
 
 当前公网访问入口：
 
@@ -39,10 +39,12 @@ docker compose down -v
 | `frontend/` | 云服务器：重新 build 前端并复制 `dist` |
 | `backend/` API 逻辑 | 云服务器：重建 `api` |
 | `backend/` worker 逻辑 | 算力服务器：重建 `worker` |
+| `backend/agent_worker.py`、`backend/app/agent/` | 算力服务器：重建 `agent-worker`；API 契约变更时云服务器也重建 `api` |
 | `omicsprism/` 分析库、绘图、依赖 | 算力服务器：重建 `worker`；必要时云服务器也重建 `api` |
 | `Dockerfile.backend`、`backend/requirements.txt`、`pyproject.toml` 依赖 | 云服务器和算力服务器都重新 build；算力服务器建议 `--no-cache` |
 | `docker-compose.yml`、`docker-compose.expose.yml` | 云服务器按 compose 重建受影响服务 |
 | `docker-compose.worker.yml`、`.env.worker` | 算力服务器重建 `worker` |
+| `docker-compose.agent-worker.yml`、`.env.agent` | 算力服务器重建 `agent-worker` |
 | 只改文档 | 不需要更新服务器 |
 
 ---
@@ -145,6 +147,11 @@ git pull
 
 sudo docker compose -f docker-compose.worker.yml -p omicsprism-worker down
 sudo docker compose -f docker-compose.worker.yml -p omicsprism-worker up -d --build
+
+sudo docker compose \
+  -p omicsprism-agent \
+  -f docker-compose.agent-worker.yml \
+  up -d --build --no-deps --force-recreate agent-worker
 ```
 
 如果修改了依赖或 Dockerfile，使用无缓存重建：
@@ -197,7 +204,70 @@ Buckets: ['omicsprism']
 
 ---
 
-## 5. 更新系统依赖或 Python 依赖
+## 5. 更新算力服务器 agent worker
+
+适用场景：修改 `backend/agent_worker.py`、`backend/app/agent/`、Copilot 模型适配或结果解读逻辑。
+
+首次切换到仓库内 compose 时，确认 `.env.agent` 已存在；可参考 `deploy/agent-worker.env.example`，不要把真实密码提交到 Git：
+
+```bash
+cd /data/wb/omicsprism-worker/omicsprism-platform
+test -f .env.agent
+sudo chmod 600 .env.agent
+```
+
+更新并只重建 agent worker：
+
+```bash
+git pull
+
+sudo docker compose \
+  -p omicsprism-agent \
+  -f docker-compose.agent-worker.yml \
+  up -d --build --no-deps --force-recreate agent-worker
+```
+
+验证受版本控制的 compose、数据库连接和 vLLM：
+
+```bash
+sudo docker compose \
+  -p omicsprism-agent \
+  -f docker-compose.agent-worker.yml \
+  config --services
+
+sudo docker compose \
+  -p omicsprism-agent \
+  -f docker-compose.agent-worker.yml \
+  ps
+
+sudo docker exec omicsprism-agent-agent-worker-1 \
+  python -c 'import os,psycopg; c=psycopg.connect(os.environ["OMICS_PRISM_RUNTIME_DATABASE_URL"],connect_timeout=10); print(c.execute("select current_user,current_database()").fetchone()); c.close()'
+
+curl -fsS http://127.0.0.1:18000/v1/models | python3 -m json.tool
+
+sudo docker logs \
+  --since 2m \
+  --timestamps \
+  omicsprism-agent-agent-worker-1
+```
+
+预期服务名只有 `agent-worker`，数据库用户为 `omics_app`，vLLM 模型名与 `.env.agent` 一致。
+
+回滚时只回滚 agent worker，不删除数据库表或审计记录：
+
+```bash
+git checkout <last-known-good-commit> -- \
+  backend/agent_worker.py backend/app/agent docker-compose.agent-worker.yml
+
+sudo docker compose \
+  -p omicsprism-agent \
+  -f docker-compose.agent-worker.yml \
+  up -d --build --no-deps --force-recreate agent-worker
+```
+
+---
+
+## 6. 更新系统依赖或 Python 依赖
 
 适用场景：
 
@@ -242,7 +312,7 @@ PY
 
 ---
 
-## 6. 更新 housekeeping
+## 7. 更新 housekeeping
 
 适用场景：修改过期清理逻辑、MinIO 清理逻辑、任务 TTL 逻辑。
 
@@ -264,7 +334,7 @@ docker exec omicsprism-housekeeping-1 printenv | grep OMICS_PRISM
 
 ---
 
-## 7. 更新后端口和网络检查
+## 8. 更新后端口和网络检查
 
 云服务器检查容器网络：
 
@@ -298,9 +368,9 @@ minio:    0.0.0.0:19000 -> 9000
 
 ---
 
-## 8. 常见问题快速定位
+## 9. 常见问题快速定位
 
-### 8.1 网页报 502 Bad Gateway
+### 9.1 网页报 502 Bad Gateway
 
 含义：nginx 到 API 失败。
 
@@ -319,7 +389,7 @@ docker compose -p omicsprism -f docker-compose.yml -f docker-compose.expose.yml 
 - API 和 Postgres 不在同一个 Docker 网络
 - nginx `/omicsprism/api/` proxy_pass 配置错误
 
-### 8.2 网页一直显示 Waiting for worker
+### 9.2 网页一直显示 Waiting for worker
 
 含义：任务已进入排队/等待阶段，但 worker 没正常接走或没更新状态。
 
@@ -343,7 +413,7 @@ sudo docker compose -f docker-compose.worker.yml -p omicsprism-worker logs --tai
 - worker 容器崩溃重启
 - API 写入的 Postgres 和 worker 读取的 Postgres 不是同一个
 
-### 8.3 上传时报 413 Request Entity Too Large
+### 9.3 上传时报 413 Request Entity Too Large
 
 含义：nginx 上传大小限制。
 
@@ -366,7 +436,7 @@ docker exec nginx-all nginx -t
 docker exec nginx-all nginx -s reload
 ```
 
-### 8.4 Kaleido requires Google Chrome
+### 9.4 Kaleido requires Google Chrome
 
 含义：worker 镜像里缺 Chromium。
 
@@ -385,7 +455,7 @@ sudo docker compose -f docker-compose.worker.yml -p omicsprism-worker up -d
 sudo docker compose -f docker-compose.worker.yml -p omicsprism-worker exec -T worker chromium --version
 ```
 
-### 8.5 DEG module requires PyDESeq2
+### 9.5 DEG module requires PyDESeq2
 
 含义：worker 镜像没有安装 `omicsprism[deg]`。
 
@@ -409,7 +479,7 @@ PY
 
 ---
 
-## 9. 最小完整更新清单
+## 10. 最小完整更新清单
 
 如果不确定改动属于哪类，但想保证线上完整更新，可执行：
 

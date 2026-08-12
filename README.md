@@ -183,6 +183,10 @@ The included `docker-compose.yml` starts:
 The frontend is built as static files and served by the host nginx or server
 panel site directory. It is not started as a compose service by default.
 
+The Copilot model is isolated in a separate `agent-worker` deployment unit.
+The cloud API never receives the vLLM URL or API key; the existing analysis
+worker also remains independent from the model service.
+
 ### Start the backend stack
 
 ```powershell
@@ -206,6 +210,35 @@ To remove volumes as well:
 ```powershell
 docker compose down -v
 ```
+
+### Start the compute-server agent worker
+
+The compute server must have the sibling `../omicsprism` repository, a local
+vLLM endpoint, and network access to the cloud PostgreSQL, Redis, and MinIO
+ports. Create the untracked runtime environment first:
+
+```bash
+cp deploy/agent-worker.env.example .env.agent
+chmod 600 .env.agent
+```
+
+Replace every placeholder in `.env.agent`, then build and start only the
+Copilot worker:
+
+```bash
+docker compose \
+  -p omicsprism-agent \
+  -f docker-compose.agent-worker.yml \
+  up -d --build agent-worker
+```
+
+`network_mode: host` is intentional for the current Linux compute-server
+deployment: it lets the container reach the loopback-only vLLM endpoint at
+`127.0.0.1:18000`. Do not expose vLLM directly to browsers or the cloud API.
+
+Gate E deployment, rollback, cross-user 404, and model-off verification steps
+are recorded in [`PHASE_6E_REPORT.md`](PHASE_6E_REPORT.md) and
+[`docs/OMICS_PRISM_SERVER_UPDATE_ZH.md`](docs/OMICS_PRISM_SERVER_UPDATE_ZH.md).
 
 ## Database migration
 

@@ -1,6 +1,6 @@
 # Phase 6 — Copilot 产品接入：生产运行时、对话 API 与前端闭环
 
-> 状态：Gate A/B/C 已完成并通过服务器验证与人工审阅；当前执行 Gate D，人工审阅通过前不得进入 Gate E。
+> 状态：Gate A/B/C/D 已完成并通过服务器验证与人工审阅；当前执行 Gate E。四项真实服务器演示全部通过前不得关闭 Phase 6。
 > 基线：Phase 0–5 已完成；本 Phase 不改写既有评测成绩，不读取或依赖 `OMICS_PRISM_COPILOT_PRODUCTIZATION_SPEC.md`。
 > 目标：用户在 OmicsPrism 前端完成对话、上传输入、审批分析、查看任务和解读结果的完整闭环。
 

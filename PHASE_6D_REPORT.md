@@ -1,6 +1,6 @@
 # Phase 6 Gate D 报告：前端闭环
 
-> 状态：实现完成，等待服务器前端构建复验与 Gate D 人工审阅；Gate D 尚未关闭，不得进入 Gate E。
+> 状态：已完成并关闭。2026-08-12，真实 Qwen3 上的一般生物学追问、同 thread 上下文、plan 解释、审批、job 实时状态和 grounded 结果解读均通过人工复验；契约已切换到 Gate E。
 > 基线：Gate A/B/C 已通过服务器验证与人工红线审阅；本 Gate 不新增 migration、后端工具、模型能力或生产部署。
 
 ## 1. 本 Gate 做了什么
@@ -21,7 +21,7 @@
 - [x] SSE 更新、断线重连、cursor 恢复与 polling fallback 已实现；loading/empty/retry/offline/404 状态不泄露资源归属。
 - [x] job 卡片可跳转现有页面；citation 展示 artifact/checksum/row id，空 evidence 显示固定无证据状态。
 - [x] 组件测试覆盖 typed text、审批 hash、citation；Playwright 桌面/移动端跑通 analyze/approve/job、interpret/citation、model-off 三条流程，截图无空白主视图或审批控件重叠。
-- [ ] `npm audit` 已完成逐项安全处置；当前生产依赖仍有 React Router 6 的 2 个 moderate advisory，需在 Gate D 人工审阅时确认接受或安排升级。
+- [x] `npm audit` 已完成逐项审计；React Router 6 的 2 个 moderate advisory 在当前纯客户端 BrowserRouter、无 SSR hydration 的用法下作为已知残余风险接受，7.x 兼容升级留到后续维护迭代。
 - [x] `npm run build --prefix frontend`、完整 backend tests、compileall 与 Phase 5 25-case replay 均无功能回归。
 
 ## 3. 本地验证证据
@@ -112,7 +112,7 @@ build passed; CopilotPage 24.81 kB (gzip 7.67 kB)
 exit 0
 ```
 
-Gate D 仍未关闭。服务器更新后需要用真实 Qwen3 vLLM 人工复验：一般生物学咨询、无文件分析建议、伪造上传/绕过审批提示、真实上传后生成计划，以及模型停止时原手工业务可用。
+该轮服务器更新后使用真实 Qwen3 vLLM 复验：一般生物学咨询、无文件分析建议、伪造上传/绕过审批提示、真实上传后生成计划，以及模型停止时原手工业务可用。后续生产修正与最终结论见本报告末尾。
 
 首次生产复验中，一般生物学咨询通过，但分析建议与绕过审批提示触发 `InvalidDecision`。根因是咨询态与分析态共用通用 JSON Schema 和组合 prompt，Qwen3 在分析类问题中额外返回了咨询态禁止的 feasibility/recommendation 字段。现已改为状态专用的 `AgentAdvisoryDecision` schema：`action` 与 `requires_approval` 使用常量约束，recommendations、params 固定为空，grounded evidence 固定为 null，并使用不含 `CHECK_INPUTS` 指令的独立咨询 prompt。通用 `AgentDecision` 校验与运行时 `DecisionValidator` 仍作为后续两层校验。
 
@@ -191,6 +191,8 @@ exit 0
 - 若 focus job 尚未生成白名单内结果表，则根据任务状态直接提示“仍在运行”“任务失败”或“未发现支持的结果表”，不调用模型猜测文件名。
 - 模型结构错误提示改为中性会话错误，不再把所有 interpretation 失败错误描述成“计划与输入不一致”。
 
-本轮验证：后端 `156 passed, 6 skipped`；unit golden eval `25/25`，route、审批前写入、跨用户 404、数字准确性与引用覆盖率门禁全部通过；`compileall` 通过。Gate D 仍需部署后用真实 Qwen3 对“这个计划是什么意思”“结果什么意思”和同 thread 生物学追问做人工复验。
+本轮验证：后端 `156 passed, 6 skipped`；unit golden eval `25/25`，route、审批前写入、跨用户 404、数字准确性与引用覆盖率门禁全部通过；`compileall` 通过。
 
 真实 Qwen3 复验确认普通生物学追问和任务提交均正常，但结果解读的第一阶段证据查询请求返回 200 后，第二阶段回答请求被 vLLM 0.8.5 立即以 400 拒绝。第二阶段此前会同时携带最多 32 KB/50 行证据、thread 历史、系统 prompt，并预留 768 输出 token；对 8192-token 模型可能超过请求上下文预算。现将 Agent 解读证据限制为最多 12 行且序列化后最多 12 KB，第二阶段不重复携带 thread 历史；模型和 `AnswerVerifier` 使用完全相同的有界当前证据，因此没有放松 R5。vLLM 非 2xx 响应现在会把服务端错误消息截断至 1000 字符写入 worker 日志，但不记录请求、证据行或凭据；400 的用户提示改为说明任务和结果已保留并允许重试。最新验证：后端 `158 passed, 6 skipped`；unit golden eval `25/25`；`compileall` 通过。
+
+2026-08-12 部署修复提交后，用户在真实生产会话复验“结果是什么意思”，两阶段 vLLM 请求和最终 evidence 回答均正常，确认“没问题了”。Gate D 人工审阅通过并关闭。
