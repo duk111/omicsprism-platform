@@ -29,7 +29,7 @@
 
 人工结论：通过。
 
-## 3. 待执行：E3 跨用户全资源 404
+## 3. 已完成：E3 跨用户全资源 404
 
 先从生产 PostgreSQL 选择同一用户 A 的一组现有资源，只输出 ID，不输出 payload、storage key 或凭据：
 
@@ -107,7 +107,16 @@ curl -o /tmp/e3-approval.json -w 'approval=%{http_code}\n' \
   "$PUBLIC_API/agent/threads/$B_THREAD_ID/approvals/$A_APPROVAL_ID"
 ```
 
-验收记录：待人工执行。
+验收记录：2026-08-12 人工执行。首次复制命令时因 shell 续行中插入空行，A 资源变量为空，产生的 307/202 不计入验收；随后增加非空变量检查并使用生产 PostgreSQL 中用户 A 的真实资源 ID、全新用户 B Cookie 重新执行，最终结果为：
+
+```text
+thread=404
+job=404
+bundle=404
+approval=404
+```
+
+四类响应均未返回资源归属信息。人工结论：通过。
 
 ## 4. 待执行：E4 模型/agent worker 故障不影响原业务
 
@@ -182,7 +191,7 @@ build passed; main entry 206.06 kB, CopilotPage 26.62 kB
 
 - [x] 真实 DEG analyze → approve → job 完成。
 - [x] 真实结果 interpretation → evidence → citation 完成。
-- [ ] thread/job/bundle/approval 跨用户请求全部 404，且响应不泄露归属。
+- [x] thread/job/bundle/approval 跨用户请求全部 404，且响应不泄露归属。
 - [ ] 关闭 vLLM 与 agent worker 后，手工分析、进度、结果与下载继续正常。
 - [x] agent worker compose 与无密钥环境模板纳入版本控制。
 - [ ] 四项人工演示全部通过后生成 `PHASE_6_REPORT.md`，并将根契约切回维护与回归。
