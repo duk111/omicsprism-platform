@@ -324,6 +324,7 @@ def test_status_and_result_evidence_are_user_bound_and_field_based() -> None:
 
     status = runtime.get_jobs_status(["source-1"])
     assert status.ok and status.rows[0]["status"] == "succeeded"
+    assert status.rows[0]["artifacts"] == ["T02_High_Confidence_Network.csv"]
     evidence = runtime.query_result_evidence(
         "source-1", "T02_High_Confidence_Network.csv",
         filters={"Gene": "GeneA"}, sort="EdgeWeight desc", limit=10,

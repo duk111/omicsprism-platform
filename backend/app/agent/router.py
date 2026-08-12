@@ -26,7 +26,10 @@ class RuleRouter:
             "差异", "差异分析", "differential", "deg", "分析", "运行", "比较", "contrast",
             "analysis", "analyze", "analyse", "execute",
         )
-        describe_terms = ("描述", "概览", "describe", "metadata", "元数据", "样本信息", "我有", "转录组", "代谢组")
+        describe_terms = (
+            "描述", "概览", "describe", "metadata", "元数据", "样本信息", "我有", "转录组", "代谢组",
+            "上传", "传了", "文件已传", "uploaded", "attached",
+        )
         interpret_terms = ("结果", "解释", "解读", "火山图", "富集", "evidence", "interpret")
         continuation_terms = ("继续", "下一步", "好的", "可以", "continue")
         attached_capability_terms = (
@@ -50,11 +53,11 @@ class RuleRouter:
             return RouteDecision(intent=RouteIntent.RERUN, target_profile=RouteTargetProfile.ANALYSIS, reason="rerun intent")
         if any(term in text for term in describe_terms) and not any(term in text for term in analysis_terms):
             return RouteDecision(intent=RouteIntent.DESCRIBE_ONLY, target_profile=RouteTargetProfile.ANALYSIS, reason="analysis consultation")
+        if any(term in text for term in interpret_terms) and state.focus.in_scope_job_ids:
+            return RouteDecision(intent=RouteIntent.INTERPRET, target_profile=RouteTargetProfile.INTERPRETATION, reason="focused result intent")
         if any(term in text for term in analysis_terms):
             return RouteDecision(intent=RouteIntent.ANALYZE, target_profile=RouteTargetProfile.ANALYSIS, reason="analysis intent")
         if any(term in text for term in interpret_terms):
-            if state.focus.in_scope_job_ids:
-                return RouteDecision(intent=RouteIntent.INTERPRET, target_profile=RouteTargetProfile.INTERPRETATION, reason="focused result intent")
             return RouteDecision(intent=RouteIntent.INTERPRET, target_profile=RouteTargetProfile.ASK_USER, reason="no result in focus")
         if any(term in text for term in continuation_terms):
             target = RouteTargetProfile(state.active_profile.value)

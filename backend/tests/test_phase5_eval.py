@@ -242,6 +242,56 @@ def test_vllm_adapter_uses_state_specific_schema_for_advisory_answers() -> None:
     assert result.advisory_answer.startswith("Upload counts")
 
 
+def test_vllm_interpretation_prompt_has_identity_context_and_query_only_schema() -> None:
+    captured = {}
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        captured["body"] = json.loads(request.content)
+        return httpx.Response(200, json={
+            "choices": [{"message": {"content": json.dumps({
+                "action": "answer",
+                "reasoning_summary": "先查询当前结果证据",
+                "feasibility": None,
+                "analysis_recommendations": [],
+                "requires_approval": False,
+                "requested_params": {
+                    "job_id": "job-1",
+                    "artifact": "union_significant_genes.csv",
+                },
+                "grounded_answer": None,
+                "advisory_answer": None,
+            })}}],
+        })
+
+    adapter = VllmModelAdapter(
+        base_url="http://model-host:8000",
+        model="Qwen3-14B-AWQ",
+        client=httpx.Client(transport=httpx.MockTransport(handle)),
+    )
+    context = ModelContext(
+        user_message="这个结果什么意思？",
+        active_profile=ActiveProfile.INTERPRETATION,
+        state=AgentState.ANSWER_WITH_EVIDENCE,
+        in_scope_job_ids=["job-1"],
+        available_result_artifacts=["job-1:union_significant_genes.csv"],
+        conversation_summary="assistant: analysis job job-1 status=succeeded",
+        available_tools=[ToolName.GET_JOBS_STATUS, ToolName.QUERY_RESULT_EVIDENCE],
+    )
+
+    result = adapter.decide(context)
+
+    body = captured["body"]
+    system_prompt = body["messages"][0]["content"]
+    schema = body["response_format"]["json_schema"]["schema"]
+    assert "You are OmicsPrism Copilot" in system_prompt
+    assert "Maintain continuity within this thread" in system_prompt
+    assert "interpretation profile" in system_prompt
+    assert schema["properties"]["action"]["const"] == "answer"
+    assert schema["properties"]["requires_approval"]["const"] is False
+    assert schema["properties"]["analysis_recommendations"]["maxItems"] == 0
+    assert result.requested_params["artifact"] == "union_significant_genes.csv"
+
+
 def test_vllm_adapter_uses_state_specific_schema_for_input_decisions() -> None:
     captured = {}
 

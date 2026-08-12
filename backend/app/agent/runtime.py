@@ -52,7 +52,14 @@ from .validator import DecisionValidator
 class RunCoordinator(Protocol):
     """单步运行时接口；本阶段不实现控制循环。"""
 
-    def run_step(self, *, run_id: str, user_id: str, user_message: str) -> RunState:
+    def run_step(
+        self,
+        *,
+        run_id: str,
+        user_id: str,
+        user_message: str,
+        conversation_summary: str | None = None,
+    ) -> RunState:
         ...
 
 
@@ -96,6 +103,7 @@ class ProductionRunCoordinator:
         self.timeout_seconds = timeout_seconds
 
     def execute_turn(self, *, turn: AgentTurnRecord, user_message: str,
+                     conversation_summary: str | None = None,
                      persist: bool = True) -> AgentTurnExecutionResult:
         state = self.state_store.get(run_id=turn.run_id, user_id=turn.user_id)
         if state.thread_id != turn.thread_id or self.tool_runtime.user_id != turn.user_id:
@@ -144,6 +152,7 @@ class ProductionRunCoordinator:
                 AgentState.DONE,
                 AgentState.JOB_FAILED,
                 AgentState.PREFLIGHT_BLOCKED,
+                AgentState.MONITOR_JOBS,
             }:
                 route = self.router.route(user_message, state)
                 pending_events.append(self._event(state, "route.decided", {
@@ -166,10 +175,7 @@ class ProductionRunCoordinator:
                         ))
                         state.state = AgentState.AWAIT_FOLLOWUP
                         break
-                    if (
-                        route.intent in {RouteIntent.DESCRIBE_ONLY, RouteIntent.UNCLEAR}
-                        and self.tool_runtime.inputs
-                    ):
+                    if route.intent is RouteIntent.DESCRIBE_ONLY and self.tool_runtime.inputs:
                         inspected = call_tool(
                             self._executor(ActiveProfile.ANALYSIS),
                             ToolName.INSPECT_UPLOADED_INPUTS,
@@ -187,6 +193,8 @@ class ProductionRunCoordinator:
                             if route.intent is RouteIntent.DESCRIBE_ONLY
                             else AdvisoryCategory.GENERAL_BIOLOGY
                         )
+                        if route.intent is RouteIntent.UNCLEAR:
+                            advisory_input_roles = sorted(self.tool_runtime.inputs)
                         state.state = AgentState.ADVISE
                     else:
                         state.state = AgentState.CHECK_INPUTS
@@ -204,6 +212,7 @@ class ProductionRunCoordinator:
                     state=state,
                     active_profile=ActiveProfile.ANALYSIS,
                     user_message=user_message,
+                    conversation_summary=conversation_summary,
                     available_input_roles=advisory_input_roles,
                     input_summaries=advisory_input_summaries,
                 )
@@ -245,6 +254,7 @@ class ProductionRunCoordinator:
                     state=state,
                     active_profile=ActiveProfile.ANALYSIS,
                     user_message=user_message,
+                    conversation_summary=conversation_summary,
                     available_input_roles=available_input_roles,
                     input_summaries=input_summaries,
                 )
@@ -401,10 +411,28 @@ class ProductionRunCoordinator:
 
             if state.state is AgentState.ANSWER_WITH_EVIDENCE:
                 executor = self._executor(ActiveProfile.INTERPRETATION)
+                statuses = call_tool(
+                    executor,
+                    ToolName.GET_JOBS_STATUS,
+                    job_ids=state.focus.in_scope_job_ids,
+                )
+                if not statuses.ok:
+                    raise RuntimeError(statuses.error_code or "job status failed")
+                result_artifacts = [
+                    f"{row.get('job_id')}:{artifact}"
+                    for row in statuses.rows
+                    for artifact in list(row.get("artifacts") or [])[:20]
+                ]
+                if not result_artifacts:
+                    blocks.append(AgentTextBlock(text=_missing_result_artifacts_text(statuses.rows)))
+                    state.state = AgentState.AWAIT_FOLLOWUP
+                    break
                 query_context = self.context_builder.build(
                     state=state,
                     active_profile=ActiveProfile.INTERPRETATION,
                     user_message=user_message,
+                    conversation_summary=conversation_summary,
+                    available_result_artifacts=result_artifacts,
                 )
                 query_decision = call_model(query_context)
                 self.validator.validate(state, query_decision)
@@ -419,6 +447,8 @@ class ProductionRunCoordinator:
                         state=state,
                         active_profile=ActiveProfile.INTERPRETATION,
                         user_message=user_message,
+                        conversation_summary=conversation_summary,
+                        available_result_artifacts=result_artifacts,
                         evidence=evidence,
                     )
                     answer_decision = call_model(answer_context)
@@ -563,7 +593,14 @@ class FixtureRunCoordinator:
             event_store=event_store,
         )
 
-    def run_step(self, *, run_id: str, user_id: str, user_message: str) -> RunState:
+    def run_step(
+        self,
+        *,
+        run_id: str,
+        user_id: str,
+        user_message: str,
+        conversation_summary: str | None = None,
+    ) -> RunState:
         state = self.state_store.get(run_id=run_id, user_id=user_id)
         expected = state.version
 
@@ -619,14 +656,24 @@ class FixtureRunCoordinator:
                 state.active_profile = ActiveProfile.ANALYSIS
                 state.state = AgentState.CHECK_INPUTS
             else:
-                context = self.context_builder.build(state=state, active_profile=state.active_profile, user_message=user_message)
+                context = self.context_builder.build(
+                    state=state,
+                    active_profile=state.active_profile,
+                    user_message=user_message,
+                    conversation_summary=conversation_summary,
+                )
                 decision = self.model.decide(context)
                 state.model_calls += 1
                 self.validator.validate(state, decision)
                 if decision.action is AgentAction.ANSWER:
                     state.state = AgentState.AWAIT_FOLLOWUP
         else:
-            context = self.context_builder.build(state=state, active_profile=state.active_profile, user_message=user_message)
+            context = self.context_builder.build(
+                state=state,
+                active_profile=state.active_profile,
+                user_message=user_message,
+                conversation_summary=conversation_summary,
+            )
             decision = self.model.decide(context)
             state.model_calls += 1
             self.validator.validate(state, decision)
@@ -661,6 +708,15 @@ class FixtureRunCoordinator:
             step_no=state.step_no, event_type="state.updated",
             payload={"state": state.state.value, "active_profile": state.active_profile.value},
         ))
+
+
+def _missing_result_artifacts_text(rows: list[dict[str, Any]]) -> str:
+    statuses = {str(row.get("status") or "") for row in rows}
+    if statuses & {"queued", "running"}:
+        return "当前分析任务仍在排队或运行，结果表生成后才能进行证据化解读。"
+    if statuses & {"failed", "cancelled"}:
+        return "当前分析任务未成功完成，因此没有可解读的结果表。请先查看任务错误信息或重新运行分析。"
+    return "当前任务已完成，但未发现 OmicsPrism Copilot 支持解读的结果表；请先在任务结果页确认结果文件是否完整。"
 
 
 def _is_explicit_approval(user_message: str) -> bool:

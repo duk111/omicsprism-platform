@@ -20,6 +20,7 @@ from .app.agent.model import (
 from .app.agent.plans import PostgresPlanStore
 from .app.agent.product_store import AgentProductStore, PostgresAgentProductStore
 from .app.agent.runtime import CoordinatorBudgetExceeded, ProductionRunCoordinator
+from .app.agent.context import build_conversation_summary
 from .app.agent.schemas import (
     AgentErrorBlock,
     AgentInputSourceKind,
@@ -182,6 +183,7 @@ class ProductionTurnProcessor:
         state = self.state_store.get(run_id=turn.run_id, user_id=turn.user_id)
         messages = self.product_store.list_messages(thread_id=turn.thread_id, user_id=turn.user_id)
         user_message = _latest_user_text(messages)
+        conversation_summary = build_conversation_summary(messages[:-1] if messages and messages[-1].role is AgentMessageRole.USER else messages)
         source_ref = _select_input_source(
             state=state,
             messages=messages,
@@ -233,7 +235,12 @@ class ProductionTurnProcessor:
             model=self.model,
             tool_runtime=tool_runtime,
             timeout_seconds=self.timeout_seconds,
-        ).execute_turn(turn=turn, user_message=user_message, persist=False)
+        ).execute_turn(
+            turn=turn,
+            user_message=user_message,
+            conversation_summary=conversation_summary,
+            persist=False,
+        )
 
 
 def create_worker(settings: AppSettings | None = None) -> AgentWorker:
@@ -345,15 +352,15 @@ def _classify_error(exc: Exception) -> tuple[str, str, bool]:
     if isinstance(exc, ModelBoundaryError):
         return (
             "invalid_model_response",
-            "模型两次都未能生成当前步骤需要的结构化结果。上传文件仍然保留，且未创建任务；"
-            "请明确分析目标、比较列和实验组/对照组后重试。",
+            "模型两次都未能生成当前步骤需要的结构化结果。当前会话上下文、上传文件和已有任务均保留，"
+            "且未创建任务；请明确要分析的数据或要解读的结果后重试。",
             True,
         )
     if isinstance(exc, InvalidDecision):
         return (
             "model_decision_conflict",
-            "模型给出的计划与当前输入或审批状态不一致，因此系统未创建任务。"
-            "上传文件仍然保留；请补充具体分析目标或比较条件。",
+            "模型回复与当前会话状态不一致，因此系统没有执行写操作，也未创建任务。"
+            "会话上下文、上传文件和已有任务均保留；请重试或明确当前要分析还是解读结果。",
             True,
         )
     if isinstance(exc, ValueError):

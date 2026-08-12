@@ -217,6 +217,19 @@ AgentAnalysisDecision = Annotated[
 ]
 
 
+class AgentInterpretationQueryDecision(ContractModel):
+    """解释 profile 的第一步只能请求受限证据查询。"""
+
+    action: Literal["answer"]
+    reasoning_summary: BriefModelText
+    feasibility: None = None
+    analysis_recommendations: list[AnalysisType] = Field(max_length=0)
+    requires_approval: Literal[False]
+    requested_params: dict[str, AgentParamValue] = Field(max_length=6)
+    grounded_answer: None = None
+    advisory_answer: None = None
+
+
 class AnalysisCapability(ContractModel):
     analysis_type: AnalysisType
     display_label: str = Field(min_length=1)
@@ -248,6 +261,7 @@ class ModelContext(ContractModel):
     active_profile: ActiveProfile
     state: AgentState
     in_scope_job_ids: list[str] = Field(max_length=20)
+    available_result_artifacts: list[str] = Field(default_factory=list, max_length=50)
     conversation_summary: str | None = Field(default=None, max_length=4000)
     available_input_roles: list[str] = Field(default_factory=list, max_length=20)
     input_summaries: list[InputInspectionSummary] = Field(default_factory=list, max_length=6)
@@ -335,6 +349,19 @@ class GroundedClaim(ContractModel):
 
 class GroundedAnswer(ContractModel):
     claims: list[GroundedClaim] = Field(max_length=50)
+
+
+class AgentInterpretationAnswerDecision(ContractModel):
+    """解释 profile 的第二步只能组织当前证据适配器返回的行。"""
+
+    action: Literal["answer"]
+    reasoning_summary: BriefModelText
+    feasibility: None = None
+    analysis_recommendations: list[AnalysisType] = Field(max_length=0)
+    requires_approval: Literal[False]
+    requested_params: dict[str, AgentParamValue] = Field(max_length=0)
+    grounded_answer: GroundedAnswer
+    advisory_answer: None = None
 
 
 class AgentTextBlock(ContractModel):

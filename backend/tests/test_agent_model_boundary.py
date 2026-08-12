@@ -10,6 +10,7 @@ from backend.app.agent.model import (
     ModelUnavailableError,
     StructuredModelAdapter,
     UnavailableModelAdapter,
+    _decision_adapter,
 )
 from backend.app.agent.schemas import AgentAction
 from backend.app.agent.schemas import ActiveProfile, AgentState, ModelContext, ToolName
@@ -53,6 +54,7 @@ def test_model_receives_only_serializable_context_and_returns_validated_decision
         "active_profile": "interpretation",
         "state": "ANSWER_WITH_EVIDENCE",
         "in_scope_job_ids": ["job-1"],
+        "available_result_artifacts": [],
         "conversation_summary": None,
         "available_input_roles": [],
         "input_summaries": [],
@@ -102,6 +104,24 @@ def test_invalid_model_response_is_repaired_at_most_once() -> None:
 
     assert adapter.decide(_context()).action is AgentAction.REQUEST_MORE_DATA
     assert repair_calls == 1
+
+
+def test_interpretation_adapter_accepts_only_an_evidence_query_shape() -> None:
+    payload = {
+        "action": "answer",
+        "reasoning_summary": "先查询结果证据",
+        "feasibility": None,
+        "analysis_recommendations": [],
+        "requires_approval": False,
+        "requested_params": {"job_id": "job-1", "artifact": "deg.csv"},
+        "grounded_answer": None,
+        "advisory_answer": None,
+    }
+
+    decision = _decision_adapter(_context().model_dump()).validate_python(payload)
+
+    assert decision.action == AgentAction.ANSWER.value
+    assert decision.requested_params["job_id"] == "job-1"
 
 
 def test_invalid_repair_is_not_retried() -> None:

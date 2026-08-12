@@ -412,6 +412,12 @@ class AgentToolRuntime:
                 "error": job.error,
                 "log_name": log_name,
                 "log_excerpt": log_excerpt,
+                "artifacts": sorted({
+                    str(name)
+                    for item in [*job.artifacts, *job.result_files]
+                    for name in (getattr(item, "path", None), getattr(item, "filename", None))
+                    if name and _allowed_result_artifact(str(name), job.analysis_type)
+                })[:20],
             })
         return _tool_result(ToolName.GET_JOBS_STATUS, rows=rows)
 

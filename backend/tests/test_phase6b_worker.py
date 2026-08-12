@@ -6,6 +6,7 @@ import httpx
 import pytest
 
 from backend.agent_worker import AgentWorker, _select_input_source
+from backend.app.agent.context import build_conversation_summary
 from backend.app.agent.model import ModelBoundaryError, ModelUnavailableError
 from backend.app.agent.product_store import InMemoryAgentProductStore
 from backend.app.agent.schemas import (
@@ -309,3 +310,58 @@ def test_latest_bundle_replaces_rejected_plan_input_but_not_pending_plan_input()
         user_id="user-1",
     )
     assert locked == {"kind": "staged_bundle", "source_id": "bundle-old"}
+
+
+def test_conversation_summary_preserves_plan_and_job_context_without_evidence_claims() -> None:
+    now = datetime.now(timezone.utc)
+    messages = [
+        AgentMessageRecord(
+            message_id="user-1",
+            thread_id="thread-1",
+            run_id="run-1",
+            user_id="user-1",
+            role=AgentMessageRole.USER,
+            blocks=[{"type": "text", "text": "请用 treatment 比较 salt 和 control，做 DEG"}],
+            created_at=now,
+        ),
+        AgentMessageRecord(
+            message_id="assistant-plan",
+            thread_id="thread-1",
+            run_id="run-1",
+            user_id="user-1",
+            role=AgentMessageRole.ASSISTANT,
+            blocks=[{
+                "type": "plan",
+                "plan_id": "plan-1",
+                "plan_hash": "sha256:plan",
+                "analysis_type": "differential",
+                "requested_params": {"compare_field": "treatment"},
+                "effective_params": {"compare_field": "treatment"},
+                "contrasts": [{"tested_level": "salt", "reference_level": "control"}],
+                "warnings": [],
+                "expires_at": (now + timedelta(minutes=30)).isoformat(),
+            }, {
+                "type": "job",
+                "job_id": "job-1",
+                "status": "succeeded",
+                "progress": 100,
+                "progress_url": "/jobs/job-1",
+                "results_url": "/jobs/job-1/results",
+            }, {
+                "type": "evidence",
+                "claims": [{
+                    "text": "GeneA has log2FoldChange 9.99",
+                    "citation": {"artifact": "deg.csv", "checksum": "sha256:evidence", "row_ids": [1]},
+                }],
+            }],
+            created_at=now + timedelta(seconds=1),
+        ),
+    ]
+
+    summary = build_conversation_summary(messages)
+
+    assert summary is not None
+    assert "treatment" in summary
+    assert "job-1" in summary
+    assert "succeeded" in summary
+    assert "9.99" not in summary

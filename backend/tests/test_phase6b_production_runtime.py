@@ -264,6 +264,38 @@ def test_general_biology_question_returns_advisory_without_tools_or_writes() -> 
     assert executor.enqueued == []
 
 
+def test_general_biology_followup_after_upload_uses_chat_advisory() -> None:
+    state_store = InMemoryStateStore()
+    state_store.save(_state(state=AgentState.AWAIT_FOLLOWUP), expected_version=0)
+    model = _RecordingModel([_advisory_decision("ABA can regulate drought and salt-stress responses in plants.")])
+    coordinator = ProductionRunCoordinator(
+        state_store=state_store,
+        plan_store=InMemoryPlanStore(),
+        approval_gate=InMemoryApprovalGate(),
+        event_store=InMemoryAgentEventStore(),
+        model=model,
+        tool_runtime=AgentToolRuntime(
+            user_id="user-1",
+            inputs={"counts": AgentInputFile("counts.csv", b"gene,s1\ng1,10\n")},
+            job_store=_Jobs(),
+            files=_Files(),
+        ),
+    )
+
+    result = coordinator.execute_turn(
+        turn=_turn("biology-followup"),
+        user_message="盐胁迫下 ABA 通常有什么作用？",
+        conversation_summary="user: 刚才已完成 DEG；assistant: analysis job job-1 status=succeeded",
+    )
+
+    assert [block.type for block in result.blocks] == ["advisory"]
+    assert "ABA" in result.blocks[0].text
+    assert len(model.contexts) == 1
+    assert model.contexts[0].state is AgentState.ADVISE
+    assert model.contexts[0].available_input_roles == ["counts"]
+    assert "job-1 status=succeeded" in (model.contexts[0].conversation_summary or "")
+
+
 def test_capability_question_is_answered_deterministically_without_model_or_tools() -> None:
     state_store = InMemoryStateStore()
     state_store.save(_state(state=AgentState.COLLECT_INTENT), expected_version=0)
@@ -660,6 +692,54 @@ def test_rejected_plan_can_be_explained_without_model_or_tool_calls() -> None:
     assert model.contexts == []
 
 
+def test_monitor_jobs_does_not_drop_a_plan_followup_after_submission() -> None:
+    now = datetime.now(timezone.utc)
+    state = _state(state=AgentState.MONITOR_JOBS, focus=["job-1"])
+    state.plan_id = "plan-monitor"
+    state.plan_hash = "sha256:monitor"
+    state_store = InMemoryStateStore()
+    state_store.save(state, expected_version=0)
+    plans = InMemoryPlanStore()
+    plans.save(PlanRecord(
+        plan_id="plan-monitor",
+        run_id="run-1",
+        thread_id="thread-1",
+        user_id="user-1",
+        analysis_type=AnalysisType.DIFFERENTIAL,
+        input_source={"kind": "staged_bundle", "source_id": "bundle-1"},
+        requested_params={"compare_field": "treatment"},
+        effective_params={"compare_field": "treatment", "tested_levels": "salt", "reference_level": "control"},
+        contrasts=[{
+            "compare_field": "treatment",
+            "tested_level": "salt",
+            "reference_level": "control",
+            "tested_count": 2,
+            "reference_count": 2,
+        }],
+        plan_hash="sha256:monitor",
+        approval_id="approval-monitor",
+    ))
+    model = _RecordingModel([])
+    coordinator = ProductionRunCoordinator(
+        state_store=state_store,
+        plan_store=plans,
+        approval_gate=InMemoryApprovalGate(),
+        event_store=InMemoryAgentEventStore(),
+        model=model,
+        tool_runtime=AgentToolRuntime(user_id="user-1", inputs={}, plans=plans, job_store=_Jobs(), files=_Files()),
+    )
+
+    result = coordinator.execute_turn(
+        turn=_turn("monitor-plan-followup"),
+        user_message="这个计划是什么意思",
+    )
+
+    assert [block.type for block in result.blocks] == ["advisory"]
+    assert "treatment" in result.blocks[0].text
+    assert result.state.state is AgentState.AWAIT_FOLLOWUP
+    assert model.contexts == []
+
+
 def test_wrong_file_roles_return_specific_preflight_errors_without_plan() -> None:
     state_store = InMemoryStateStore()
     state_store.save(_state(), expected_version=0)
@@ -789,6 +869,7 @@ def test_interpretation_requeries_cited_rows_and_rejects_unsupported_number() ->
     evidence = next(block for block in result.blocks if block.type == "evidence")
     assert evidence.claims[0].text.startswith("验证未通过")
     assert evidence.claims[1].text.endswith("PearsonR=0.71")
+    assert model.contexts[0].available_result_artifacts == [f"job-1:{artifact}"]
     assert model.contexts[1].evidence is not None
     assert "secret/storage/key" not in model.contexts[1].model_dump_json()
     assert "submit_approved_plan" not in model.contexts[1].model_dump_json()
@@ -845,6 +926,47 @@ def test_empty_evidence_uses_fixed_template_without_second_model_call() -> None:
     assert [claim.text for claim in evidence.claims] == ["没有满足阈值的证据"]
     assert result.state.model_calls == 1
     assert model.decisions == []
+
+
+def test_interpretation_without_supported_artifact_returns_status_message_without_model_call() -> None:
+    now = datetime.now(timezone.utc)
+    job = JobRecord(
+        id="job-1",
+        project_name="deg",
+        analysis_type=AnalysisType.DIFFERENTIAL,
+        status=JobStatus.SUCCEEDED,
+        created_at=now,
+        updated_at=now,
+        owner_id="user-1",
+    )
+    state_store = InMemoryStateStore()
+    state_store.save(_state(
+        profile=ActiveProfile.INTERPRETATION,
+        state=AgentState.ANSWER_WITH_EVIDENCE,
+        focus=["job-1"],
+    ), expected_version=0)
+    model = _RecordingModel([])
+    coordinator = ProductionRunCoordinator(
+        state_store=state_store,
+        plan_store=InMemoryPlanStore(),
+        approval_gate=InMemoryApprovalGate(),
+        event_store=InMemoryAgentEventStore(),
+        model=model,
+        tool_runtime=AgentToolRuntime(
+            user_id="user-1",
+            inputs={},
+            job_store=_Jobs(job),
+            files=_Files(),
+        ),
+    )
+
+    result = coordinator.execute_turn(turn=_turn(), user_message="结果什么意思")
+
+    assert [block.type for block in result.blocks] == ["text"]
+    assert "未发现" in result.blocks[0].text
+    assert result.state.state is AgentState.AWAIT_FOLLOWUP
+    assert result.state.model_calls == 0
+    assert model.contexts == []
 
 
 def test_state_conflict_replay_does_not_duplicate_approved_job_side_effect() -> None:

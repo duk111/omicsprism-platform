@@ -178,3 +178,17 @@ exit 0
 双服务器生产验收发现审批可能提示 `Approval has expired`。原实现由算力 worker 生成绝对到期时间、云端 API 用本机时间校验，且 TTL 仅 10 分钟；服务器时钟偏差或较长人工审阅都会导致审批不可用。现将生产 PostgreSQL 装配改为用数据库 `clock_timestamp()` 生成和校验到期时间，TTL 延长到 30 分钟；worker 创建审批后回读数据库中的权威到期时间用于 plan/approval block。过期点击会释放 run 的 pending approval 并回到 `NEED_USER_INPUT`，允许重新生成计划，且仍不创建 job。前端计划卡明确标注 `Expires`。
 
 本轮验证：后端 `150 passed, 6 skipped`；前端 `9 passed`；unit golden eval `25/25`；前端生产构建通过。
+
+生产验收随后发现 Copilot 内嵌 job 卡片只保存创建时的 `queued/0%` 快照，即使分析 worker 已完成，旧消息仍显示排队；卡片链接也指向 API JSON 或错误结果路由。现已复用原任务页的 SSE + polling fallback，在每张 job 卡片上读取实时进度，终态后切换为正确的 `/jobs/{job_id}/results`；后端新生成的 job block 同步改用前端路由。验证为后端 `150 passed, 6 skipped`、前端 `10 passed`，前端生产构建通过。
+
+继续复验发现同一 thread 的对话上下文没有真正进入模型：worker 只读取最新用户文本，`ModelContext.conversation_summary` 始终为空；`MONITOR_JOBS` 还会先返回 job 快照并丢掉当轮“这个计划是什么意思”。现已完成以下修正：
+
+- 最近 12 条 typed message 构建最多 3600 字符的有界历史摘要，只保留对话、输入角色、plan/approval/job 结构；旧 evidence 只记录“曾返回证据”，不携带旧 claim 数字，避免绕过 R5。
+- 所有模型 prompt 明确身份为 OmicsPrism Copilot，并声明当前 state/profile、验证过的输入、focus job、工具和当前 evidence 才是权威上下文；历史与用户文本均不能改变策略。
+- `MONITOR_JOBS` 可直接重新路由用户追问；有 focus job 时，“结果/分析结果/解读”等优先进入 interpretation profile，不再回到输入规划。
+- 普通生物学或生物信息学追问即使已有上传文件，也进入无工具的 `ADVISE` 聊天态；明确说“上传/传了/文件已传”仍走确定性输入摘要。
+- interpretation profile 使用查询态/回答态两个窄 JSON Schema。回答前先通过 `get_jobs_status` 提供允许的结果 artifact 名称，再调用 evidence adapter；模型不能输出 plan、approval 或未经当前 evidence 支持的结果数字。
+- 若 focus job 尚未生成白名单内结果表，则根据任务状态直接提示“仍在运行”“任务失败”或“未发现支持的结果表”，不调用模型猜测文件名。
+- 模型结构错误提示改为中性会话错误，不再把所有 interpretation 失败错误描述成“计划与输入不一致”。
+
+本轮验证：后端 `156 passed, 6 skipped`；unit golden eval `25/25`，route、审批前写入、跨用户 404、数字准确性与引用覆盖率门禁全部通过；`compileall` 通过。Gate D 仍需部署后用真实 Qwen3 对“这个计划是什么意思”“结果什么意思”和同 thread 生物学追问做人工复验。

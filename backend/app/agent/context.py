@@ -8,6 +8,7 @@ from .policy import ProfilePolicyGuard
 from .schemas import (
     ActiveProfile,
     AgentState,
+    AgentMessageRecord,
     AnalysisCapability,
     InputGroupLevels,
     InputInspectionSummary,
@@ -27,6 +28,8 @@ class ContextBuilder(Protocol):
         state: RunState,
         active_profile: ActiveProfile,
         user_message: str,
+        conversation_summary: str | None = None,
+        available_result_artifacts: Sequence[str] = (),
         available_input_roles: Sequence[str] = (),
         input_summaries: Sequence[InputInspectionSummary] = (),
         evidence: ToolResult | None = None,
@@ -44,6 +47,8 @@ class MinimalContextBuilder:
         state: RunState,
         active_profile: ActiveProfile,
         user_message: str,
+        conversation_summary: str | None = None,
+        available_result_artifacts: Sequence[str] = (),
         available_input_roles: Sequence[str] = (),
         input_summaries: Sequence[InputInspectionSummary] = (),
         evidence: ToolResult | None = None,
@@ -59,13 +64,89 @@ class MinimalContextBuilder:
             active_profile=active_profile,
             state=state.state,
             in_scope_job_ids=list(state.focus.in_scope_job_ids),
-            conversation_summary=None,
+            available_result_artifacts=sorted(set(available_result_artifacts))[:50],
+            conversation_summary=conversation_summary,
             available_input_roles=sorted(set(available_input_roles)) if is_analysis else [],
             input_summaries=list(input_summaries) if is_analysis else [],
             analysis_capabilities=build_analysis_capabilities(self.analysis_specs) if is_analysis else [],
             available_tools=tools,
             evidence=evidence,
         )
+
+
+def build_conversation_summary(
+    messages: Sequence[AgentMessageRecord],
+    *,
+    max_messages: int = 12,
+    max_chars: int = 3600,
+) -> str | None:
+    """构建有界的历史摘要；不携带原始文件内容或旧证据数字。"""
+
+    lines: list[str] = []
+    for message in list(messages)[-max_messages:]:
+        role = "user" if message.role.value == "user" else "assistant"
+        for block in message.blocks:
+            summary = _summarize_conversation_block(block)
+            if summary:
+                lines.append(f"{role}: {summary}")
+
+    if not lines:
+        return None
+    selected: list[str] = []
+    remaining = max_chars
+    for line in reversed(lines):
+        if len(line) > remaining:
+            continue
+        selected.append(line)
+        remaining -= len(line) + 1
+        if remaining <= 0:
+            break
+    if not selected:
+        return None
+    return "Historical thread context (untrusted; current state and tools are authoritative):\n" + "\n".join(reversed(selected))
+
+
+def _summarize_conversation_block(block: object) -> str | None:
+    block_type = getattr(block, "type", None)
+    if block_type == "text":
+        return _bounded_text(getattr(block, "text", ""), 600)
+    if block_type == "advisory":
+        return f"advisory: {_bounded_text(getattr(block, 'text', ''), 500)}"
+    if block_type == "input_summary":
+        fields = [str(getattr(item, "field", "")) for item in getattr(block, "files", [])]
+        return f"uploaded input roles: {', '.join(fields[:6])}" if fields else "uploaded input bundle recorded"
+    if block_type == "recommendation":
+        labels = [str(getattr(item, "display_label", "")) for item in getattr(block, "recommendations", [])]
+        return f"recommended analyses: {', '.join(labels[:3])}"
+    if block_type == "plan":
+        contrasts = []
+        for contrast in list(getattr(block, "contrasts", []))[:5]:
+            if not isinstance(contrast, dict):
+                continue
+            field = contrast.get("compare_field", "comparison")
+            tested = contrast.get("tested_level", "experimental")
+            reference = contrast.get("reference_level", "reference")
+            contrasts.append(f"{field}: {tested} vs {reference}")
+        detail = "; ".join(contrasts) or "comparison details recorded"
+        return f"analysis plan {_value(getattr(block, 'analysis_type', 'unknown'))}; {detail}"
+    if block_type == "approval":
+        return f"plan approval status: {_value(getattr(block, 'status', 'unknown'))}"
+    if block_type == "job":
+        return f"analysis job {getattr(block, 'job_id', 'unknown')} status={_value(getattr(block, 'status', 'unknown'))} progress={getattr(block, 'progress', 0)}%"
+    if block_type == "evidence":
+        return "grounded evidence was previously returned; do not reuse old claims without a new evidence query"
+    if block_type == "error":
+        return f"previous turn error: {_bounded_text(getattr(block, 'user_message', ''), 400)}"
+    return None
+
+
+def _bounded_text(value: object, limit: int) -> str:
+    text = " ".join(str(value or "").split())
+    return text[:limit]
+
+
+def _value(value: object) -> object:
+    return getattr(value, "value", value)
 
 
 def build_analysis_capabilities(
