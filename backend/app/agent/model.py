@@ -180,7 +180,18 @@ class VllmModelAdapter(StructuredModelAdapter):
                 "messages": messages,
             },
         )
-        response.raise_for_status()
+        try:
+            response.raise_for_status()
+        except httpx.HTTPStatusError as exc:
+            detail = _response_error_detail(response)
+            message = str(exc)
+            if detail:
+                message = f"{message}; vllm_error={detail}"
+            raise httpx.HTTPStatusError(
+                message,
+                request=exc.request,
+                response=exc.response,
+            ) from exc
         payload = response.json()
         try:
             return payload["choices"][0]["message"]["content"]
@@ -226,6 +237,25 @@ def _chat_completions_url(base_url: str) -> str:
     if normalized.endswith("/v1"):
         return normalized + "/chat/completions"
     return normalized + "/v1/chat/completions"
+
+
+def _response_error_detail(response: httpx.Response, *, max_chars: int = 1000) -> str:
+    """只记录 vLLM 的有界错误消息，不把完整响应或请求上下文写入日志。"""
+
+    try:
+        payload = response.json()
+    except ValueError:
+        payload = None
+    candidates: list[object] = []
+    if isinstance(payload, Mapping):
+        error = payload.get("error")
+        if isinstance(error, Mapping):
+            candidates.extend((error.get("message"), error.get("detail")))
+        candidates.extend((payload.get("message"), payload.get("detail")))
+    for candidate in candidates:
+        if candidate:
+            return " ".join(str(candidate).split())[:max_chars]
+    return ""
 
 
 _DEFAULT_DECISION_ADAPTER = TypeAdapter(AgentDecision)

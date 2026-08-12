@@ -68,6 +68,8 @@ class CoordinatorBudgetExceeded(RuntimeError):
 
 
 APPROVAL_TTL = timedelta(minutes=30)
+AGENT_EVIDENCE_MAX_ROWS = 12
+AGENT_EVIDENCE_MAX_BYTES = 12 * 1024
 
 
 class ProductionRunCoordinator:
@@ -443,11 +445,11 @@ class ProductionRunCoordinator:
                 if not evidence.ok:
                     raise RuntimeError(evidence.error_code or "evidence query failed")
                 if evidence.rows:
+                    evidence = _bounded_model_evidence(evidence)
                     answer_context = self.context_builder.build(
                         state=state,
                         active_profile=ActiveProfile.INTERPRETATION,
                         user_message=user_message,
-                        conversation_summary=conversation_summary,
                         available_result_artifacts=result_artifacts,
                         evidence=evidence,
                     )
@@ -719,6 +721,22 @@ def _missing_result_artifacts_text(rows: list[dict[str, Any]]) -> str:
     return "当前任务已完成，但未发现 OmicsPrism Copilot 支持解读的结果表；请先在任务结果页确认结果文件是否完整。"
 
 
+def _bounded_model_evidence(evidence: ToolResult) -> ToolResult:
+    """为 8192-token 模型构建有界证据；模型与验证器必须使用同一批行。"""
+
+    rows = list(evidence.rows[:AGENT_EVIDENCE_MAX_ROWS])
+    original_count = len(evidence.rows)
+    while rows:
+        bounded = evidence.model_copy(update={
+            "rows": rows,
+            "truncated": evidence.truncated or len(rows) < original_count,
+        })
+        if len(bounded.model_dump_json().encode("utf-8")) <= AGENT_EVIDENCE_MAX_BYTES:
+            return bounded
+        rows.pop()
+    raise CoordinatorBudgetExceeded("evidence rows exceed the model context budget")
+
+
 def _is_explicit_approval(user_message: str) -> bool:
     text = user_message.strip().lower()
     return any(term in text for term in ("批准", "同意执行", "approve", "confirm execution"))
@@ -886,9 +904,9 @@ def _safe_evidence_query(params: dict[str, Any], focus_job_ids: list[str]) -> di
             if not isinstance(value, str):
                 raise ValueError(f"evidence query {name} must be text")
             query[name] = value
-    limit = params.get("limit")
+    limit = params.get("limit", AGENT_EVIDENCE_MAX_ROWS)
     if limit is not None:
         if not isinstance(limit, int) or isinstance(limit, bool):
             raise ValueError("evidence query limit must be an integer")
-        query["limit"] = max(1, min(50, limit))
+        query["limit"] = max(1, min(AGENT_EVIDENCE_MAX_ROWS, limit))
     return query

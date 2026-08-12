@@ -4,6 +4,7 @@ from collections import Counter
 import json
 
 import httpx
+import pytest
 
 from backend.app.agent.eval import (
     DEFAULT_CASES_PATH,
@@ -191,6 +192,33 @@ def test_vllm_adapter_sends_only_minimal_context_and_validates_response() -> Non
     assert captured["body"]["chat_template_kwargs"] == {"enable_thinking": False}
     assert captured["body"]["max_tokens"] == 768
     assert result.analysis_recommendations[0].value == "differential"
+
+
+def test_vllm_bad_request_includes_only_bounded_server_error_detail() -> None:
+    def handle(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(400, json={
+            "error": {
+                "message": "This model's maximum context length is 8192 tokens.",
+                "type": "BadRequestError",
+            },
+        })
+
+    adapter = VllmModelAdapter(
+        base_url="http://model-host:8000",
+        model="Qwen3-14B-AWQ",
+        client=httpx.Client(transport=httpx.MockTransport(handle)),
+    )
+    context = ModelContext(
+        user_message="interpret the result",
+        active_profile=ActiveProfile.INTERPRETATION,
+        state=AgentState.ANSWER_WITH_EVIDENCE,
+        in_scope_job_ids=["job-1"],
+        available_result_artifacts=["job-1:union_significant_genes.csv"],
+        available_tools=[ToolName.GET_JOBS_STATUS, ToolName.QUERY_RESULT_EVIDENCE],
+    )
+
+    with pytest.raises(httpx.HTTPStatusError, match="maximum context length"):
+        adapter.decide(context)
 
 
 def test_vllm_adapter_uses_state_specific_schema_for_advisory_answers() -> None:

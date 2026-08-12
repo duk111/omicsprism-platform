@@ -346,7 +346,11 @@ def _classify_error(exc: Exception) -> tuple[str, str, bool]:
         status_code = exc.response.status_code
         if status_code in {408, 429} or status_code >= 500:
             return "model_unavailable", "Copilot 模型暂时不可用，请稍后重试。", True
-        return "model_request_rejected", "Copilot 模型拒绝了本次请求，请联系管理员。", False
+        return (
+            "model_request_rejected",
+            "Copilot 模型未能接受本次结果解读上下文。当前任务和结果均已保留；请重试，若持续失败请联系管理员。",
+            True,
+        )
     if isinstance(exc, httpx.RequestError):
         return "model_unavailable", "Copilot 模型暂时不可用，请稍后重试。", True
     if isinstance(exc, ModelBoundaryError):

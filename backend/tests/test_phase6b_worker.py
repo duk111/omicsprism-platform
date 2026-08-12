@@ -163,7 +163,7 @@ def test_worker_slot_prevents_two_in_process_workers_from_claiming_concurrently(
                 response=httpx.Response(400),
             ),
             "model_request_rejected",
-            False,
+            True,
         ),
     ],
 )

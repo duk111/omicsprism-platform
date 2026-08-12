@@ -871,6 +871,7 @@ def test_interpretation_requeries_cited_rows_and_rejects_unsupported_number() ->
     assert evidence.claims[1].text.endswith("PearsonR=0.71")
     assert model.contexts[0].available_result_artifacts == [f"job-1:{artifact}"]
     assert model.contexts[1].evidence is not None
+    assert model.contexts[1].conversation_summary is None
     assert "secret/storage/key" not in model.contexts[1].model_dump_json()
     assert "submit_approved_plan" not in model.contexts[1].model_dump_json()
     assert result.state.model_calls == 2
@@ -967,6 +968,74 @@ def test_interpretation_without_supported_artifact_returns_status_message_withou
     assert result.state.state is AgentState.AWAIT_FOLLOWUP
     assert result.state.model_calls == 0
     assert model.contexts == []
+
+
+def test_interpretation_caps_model_evidence_rows_even_when_model_requests_more() -> None:
+    now = datetime.now(timezone.utc)
+    artifact = "union_significant_genes.csv"
+    job = JobRecord(
+        id="job-1",
+        project_name="deg",
+        analysis_type=AnalysisType.DIFFERENTIAL,
+        status=JobStatus.SUCCEEDED,
+        created_at=now,
+        updated_at=now,
+        owner_id="user-1",
+        artifacts=[FileArtifactInfo(
+            kind=FileArtifactKind.OUTPUT,
+            filename=artifact,
+            path=artifact,
+            storage_key="secret/storage/key",
+            checksum="sha256:evidence",
+            size_bytes=100,
+            created_at=now,
+        )],
+    )
+    state_store = InMemoryStateStore()
+    state_store.save(_state(
+        profile=ActiveProfile.INTERPRETATION,
+        state=AgentState.ANSWER_WITH_EVIDENCE,
+        focus=["job-1"],
+    ), expected_version=0)
+    answer = GroundedAnswer(claims=[GroundedClaim(
+        text="Gene1 is present in the current evidence.",
+        citation=Citation(artifact=artifact, checksum="sha256:evidence", row_ids=[1]),
+    )])
+    model = _RecordingModel([
+        _answer_decision(params={"job_id": "job-1", "artifact": artifact, "limit": 50}),
+        _answer_decision(answer=answer),
+    ])
+    csv_text = "Gene,log2FoldChange\n" + "\n".join(
+        f"Gene{index},{index / 10}" for index in range(1, 51)
+    ) + "\n"
+    coordinator = ProductionRunCoordinator(
+        state_store=state_store,
+        plan_store=InMemoryPlanStore(),
+        approval_gate=InMemoryApprovalGate(),
+        event_store=InMemoryAgentEventStore(),
+        model=model,
+        tool_runtime=AgentToolRuntime(
+            user_id="user-1",
+            inputs={},
+            job_store=_Jobs(job),
+            files=_Files(csv_text),
+        ),
+    )
+
+    result = coordinator.execute_turn(
+        turn=_turn("bounded-evidence"),
+        user_message="总结这个结果",
+        conversation_summary="historical context " * 100,
+    )
+
+    evidence_context = model.contexts[1]
+    assert evidence_context.evidence is not None
+    assert len(evidence_context.evidence.rows) == 12
+    assert len(evidence_context.evidence.model_dump_json().encode("utf-8")) <= 12 * 1024
+    assert evidence_context.evidence.truncated
+    assert evidence_context.evidence.row_count == 50
+    assert evidence_context.conversation_summary is None
+    assert result.blocks[0].type == "evidence"
 
 
 def test_state_conflict_replay_does_not_duplicate_approved_job_side_effect() -> None:
