@@ -1,6 +1,6 @@
 # Phase 6 — Copilot 产品接入：生产运行时、对话 API 与前端闭环
 
-> 状态：Gate A/B/C/D 已完成并通过服务器验证与人工审阅；当前执行 Gate E。四项真实服务器演示全部通过前不得关闭 Phase 6。
+> 状态：已完成。Gate A-E 均已通过自动化验证、真实服务器演示与人工审阅；后续进入维护与回归，完成证据见 `PHASE_6_REPORT.md`。
 > 基线：Phase 0–5 已完成；本 Phase 不改写既有评测成绩，不读取或依赖 `OMICS_PRISM_COPILOT_PRODUCTIZATION_SPEC.md`。
 > 目标：用户在 OmicsPrism 前端完成对话、上传输入、审批分析、查看任务和解读结果的完整闭环。
 
@@ -443,17 +443,17 @@ OMICS_PRISM_AGENT_INPUT_TTL_HOURS=24
 
 ## 15. DoD
 
-- [ ] `ProductionRunCoordinator` 使用真实 model/tool/store 装配，`FixtureRunCoordinator` 仍只用于测试。
-- [ ] `004/005` 纯 SQL migration、PostgreSQL stores 和 `omics_app` 最小权限完成；真实服务器权限测试通过。
-- [ ] thread/message/turn/approval/input-bundle API 完成，所有身份服务端注入，跨用户访问统一 404。
-- [ ] turn 队列具备幂等、单线程单活动 turn、lease recovery、乐观锁和稳定错误码。
-- [ ] 新上传输入审批前不创建 job；有效审批后恰好创建一个 job，重放不重复创建。
-- [ ] `/copilot` 支持线程、消息、CSV 附件、plan 审批、job 状态、结果跳转和 evidence 引用；桌面与移动端均可用。
-- [ ] 模型输出不直接控制 HTML/URL/按钮；用户可见内容只通过 typed message blocks。
-- [ ] Phase 5 25-case unit/offline replay 无安全指标回归；后端全量测试和前端 build/test/e2e 通过。
-- [ ] 真实服务器完成 analyze → approve → job、interpret → citation、跨用户 404、vLLM/agent-worker 关闭后原业务可用四项演示。
-- [ ] README、OpenAPI 类型、架构图、部署/回滚/故障排查文档与当前代码一致。
-- [ ] `PHASE_6_REPORT.md` 记录做了什么、逐条 DoD、原始测试输出、人工审阅结论和已知缺口。
+- [x] `ProductionRunCoordinator` 使用真实 model/tool/store 装配，`FixtureRunCoordinator` 仍只用于测试。
+- [x] `004/005` 纯 SQL migration、PostgreSQL stores 和 `omics_app` 最小权限完成；真实服务器权限测试通过。
+- [x] thread/message/turn/approval/input-bundle API 完成，所有身份服务端注入，跨用户访问统一 404。
+- [x] turn 队列具备幂等、单线程单活动 turn、lease recovery、乐观锁和稳定错误码。
+- [x] 新上传输入审批前不创建 job；有效审批后恰好创建一个 job，重放不重复创建。
+- [x] `/copilot` 支持线程、消息、CSV 附件、plan 审批、job 状态、结果跳转和 evidence 引用；桌面与移动端均可用。
+- [x] 模型输出不直接控制 HTML/URL/按钮；用户可见内容只通过 typed message blocks。
+- [x] Phase 5 25-case unit/offline replay 无安全指标回归；后端全量测试和前端 build/test/e2e 通过。
+- [x] 真实服务器完成 analyze → approve → job、interpret → citation、跨用户 404、vLLM/agent-worker 关闭后原业务可用四项演示。
+- [x] README、OpenAPI 类型、架构图、部署/回滚/故障排查文档与当前代码一致。
+- [x] `PHASE_6_REPORT.md` 记录做了什么、逐条 DoD、原始测试输出、人工审阅结论和已知缺口。
 
 ---
 

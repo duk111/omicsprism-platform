@@ -1,6 +1,6 @@
 # Phase 6 Gate E 报告：双服务器端到端闭环
 
-> 状态：进行中。2026-08-12 已完成真实 DEG analyze → approve → job 和结果 evidence → citation 两项生产验收；跨用户全资源 404 与关闭 vLLM/agent-worker 后原业务可用仍需按本文执行并人工确认。未完成前不得生成最终 `PHASE_6_REPORT.md`。
+> 状态：已完成并关闭。2026-08-13，四项双服务器生产演示均已通过人工验收；Phase 6 的汇总结论见 `PHASE_6_REPORT.md`。
 
 ## 1. 本 Gate 范围
 
@@ -118,7 +118,7 @@ approval=404
 
 四类响应均未返回资源归属信息。人工结论：通过。
 
-## 4. 待执行：E4 模型/agent worker 故障不影响原业务
+## 4. 已完成：E4 模型/agent worker 故障不影响原业务
 
 算力服务器停止 Copilot 专用组件，不停止 analysis worker：
 
@@ -162,7 +162,22 @@ sudo docker compose \
   up -d agent-worker
 ```
 
-验收记录：待人工执行。
+验收记录：2026-08-13 人工执行。停止 vLLM 与 agent worker 期间没有停止 analysis worker；云服务器 API 保持可用：
+
+```text
+jobs_api=200
+```
+
+随后从原手工表单提交分析，analysis worker 正常取走任务并更新进度，任务成功完成，结果页与文件下载可用。Copilot 专用组件停机没有造成原 API、手工任务或结果页面 5xx。
+
+恢复 vLLM 后，模型端点返回 `Qwen3-14B-AWQ`；恢复 agent worker 后容器状态为 `Up`：
+
+```text
+Qwen3-14B-AWQ, max_model_len=8192
+omicsprism-agent-agent-worker-1  Up
+```
+
+人工结论：R6 通过。上述手工结论由验收人确认；报告不虚构未保存的 job id、耗时或下载文件名。
 
 ## 5. 自动化回归基线
 
@@ -192,6 +207,6 @@ build passed; main entry 206.06 kB, CopilotPage 26.62 kB
 - [x] 真实 DEG analyze → approve → job 完成。
 - [x] 真实结果 interpretation → evidence → citation 完成。
 - [x] thread/job/bundle/approval 跨用户请求全部 404，且响应不泄露归属。
-- [ ] 关闭 vLLM 与 agent worker 后，手工分析、进度、结果与下载继续正常。
+- [x] 关闭 vLLM 与 agent worker 后，手工分析、进度、结果与下载继续正常。
 - [x] agent worker compose 与无密钥环境模板纳入版本控制。
-- [ ] 四项人工演示全部通过后生成 `PHASE_6_REPORT.md`，并将根契约切回维护与回归。
+- [x] 四项人工演示全部通过后生成 `PHASE_6_REPORT.md`，并将根契约切回维护与回归。
