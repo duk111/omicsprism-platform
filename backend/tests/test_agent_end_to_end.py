@@ -27,8 +27,11 @@ from backend.app.agent.schemas import (
     AgentDecision,
     AgentState,
     AgentTurnRecord,
+    Citation,
     Feasibility,
     FeasibilityVerdict,
+    GroundedAnswer,
+    GroundedClaim,
     ModelContext,
     RunFocus,
     RunState,
@@ -177,7 +180,7 @@ def _analysis_decision(*, params: dict | None = None) -> AgentDecision:
     )
 
 
-def _answer_decision(*, params: dict | None = None) -> AgentDecision:
+def _answer_decision(*, params: dict | None = None, answer: GroundedAnswer | None = None) -> AgentDecision:
     return AgentDecision(
         action=AgentAction.ANSWER,
         reasoning_summary="仅使用本轮证据",
@@ -185,7 +188,7 @@ def _answer_decision(*, params: dict | None = None) -> AgentDecision:
         analysis_recommendations=[],
         requires_approval=False,
         requested_params=params or {},
-        grounded_answer=None,
+        grounded_answer=answer,
     )
 
 
@@ -374,9 +377,7 @@ def test_e2e_job_failure_emits_diagnosis_and_sets_job_failed() -> None:
     assert "降低输入规模" in error_blocks[0].user_message
 
 
-def test_e2e_bad_artifact_query_degrades_gracefully() -> None:
-    """问题 4：模型选出 focus 之外的任务时降级为引导文本，而不是整个 turn 挂掉。"""
-    now = datetime.now(timezone.utc)
+def _evidence_job(now: datetime) -> tuple[str, JobRecord]:
     artifact = "T02_High_Confidence_Network.csv"
     job = JobRecord(
         id="job-1",
@@ -396,28 +397,75 @@ def test_e2e_bad_artifact_query_degrades_gracefully() -> None:
             created_at=now,
         )],
     )
+    return artifact, job
+
+
+def test_e2e_bad_artifact_query_retries_with_hint_then_succeeds() -> None:
+    """任务 E：第一次选错 artifact 时在预算内自动重试，第二次选对后给出证据。"""
+    now = datetime.now(timezone.utc)
+    artifact, job = _evidence_job(now)
+    draft = GroundedAnswer(claims=[GroundedClaim(
+        text="GeneA 的 PearsonR 为 0.71",
+        citation=Citation(artifact=artifact, checksum="sha256:evidence", row_ids=[1]),
+    )])
     state_store = InMemoryStateStore()
     state_store.save(_state(
         profile=ActiveProfile.INTERPRETATION,
         state=AgentState.ANSWER_WITH_EVIDENCE,
         focus=["job-1"],
     ), expected_version=0)
+    model = _RecordingModel([
+        _answer_decision(params={"job_id": "job-999", "artifact": "wrong.csv"}),
+        _answer_decision(params={"job_id": "job-1", "artifact": artifact}),
+        _answer_decision(answer=draft),
+    ])
     coordinator, _store, _plans, _approvals, _jobs, _executor = _make_coordinator(
-        model=_RecordingModel([
-            _answer_decision(params={"job_id": "job-999", "artifact": "wrong.csv"}),
-        ]),
+        model=model,
         inputs={},
         jobs=_Jobs(job),
         files=_Files("Source,Target,EdgeWeight,PearsonR\nGeneA,M0123,0.82,0.71\n"),
         state_store=state_store,
     )
 
-    result = coordinator.execute_turn(turn=_turn("bad-artifact"), user_message="解释这个结果")
+    result = coordinator.execute_turn(turn=_turn("retry-ok"), user_message="解释这个结果")
+
+    assert result.state.state is AgentState.AWAIT_FOLLOWUP
+    assert [block.type for block in result.blocks] == ["evidence"]
+    assert result.state.model_calls == 3  # 查询(错) + 查询(对) + 答案
+    assert model.contexts[1].retry_hint
+    assert artifact in model.contexts[1].retry_hint
+    assert model.decisions == []
+
+
+def test_e2e_bad_artifact_query_both_attempts_fail_then_degrades() -> None:
+    """任务 E：连续两次都选错 → 引导文本，状态 AWAIT_FOLLOWUP，不再有第三次调用。"""
+    now = datetime.now(timezone.utc)
+    artifact, job = _evidence_job(now)
+    state_store = InMemoryStateStore()
+    state_store.save(_state(
+        profile=ActiveProfile.INTERPRETATION,
+        state=AgentState.ANSWER_WITH_EVIDENCE,
+        focus=["job-1"],
+    ), expected_version=0)
+    model = _RecordingModel([
+        _answer_decision(params={"job_id": "job-999", "artifact": "wrong.csv"}),
+        _answer_decision(params={"job_id": "job-998", "artifact": "also-wrong.csv"}),
+    ])
+    coordinator, _store, _plans, _approvals, _jobs, _executor = _make_coordinator(
+        model=model,
+        inputs={},
+        jobs=_Jobs(job),
+        files=_Files("Source,Target,EdgeWeight,PearsonR\nGeneA,M0123,0.82,0.71\n"),
+        state_store=state_store,
+    )
+
+    result = coordinator.execute_turn(turn=_turn("retry-fail"), user_message="解释这个结果")
 
     assert result.state.state is AgentState.AWAIT_FOLLOWUP
     assert [block.type for block in result.blocks] == ["text"]
     assert artifact in result.blocks[0].text
-    assert result.state.model_calls == 1  # 只消耗一次查询决策，不继续消费答案调用
+    assert result.state.model_calls == 2
+    assert model.decisions == []
 
 
 def test_e2e_status_poll_refetches_jobs_while_running() -> None:

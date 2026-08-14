@@ -277,6 +277,7 @@ def test_context_builder_only_emits_minimal_serializable_context() -> None:
         "analysis_capabilities",
         "evidence",
         "confirmed_params",
+        "retry_hint",
     }
     assert "database_url" not in context.model_dump()
     assert "raw_file_path" not in context.model_dump()

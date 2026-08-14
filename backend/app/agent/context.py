@@ -34,6 +34,7 @@ class ContextBuilder(Protocol):
         input_summaries: Sequence[InputInspectionSummary] = (),
         evidence: ToolResult | None = None,
         confirmed_params: Mapping[str, object] | None = None,
+        retry_hint: str | None = None,
     ) -> ModelContext:
         ...
 
@@ -54,6 +55,7 @@ class MinimalContextBuilder:
         input_summaries: Sequence[InputInspectionSummary] = (),
         evidence: ToolResult | None = None,
         confirmed_params: Mapping[str, object] | None = None,
+        retry_hint: str | None = None,
     ) -> ModelContext:
         tools = (
             []
@@ -74,6 +76,7 @@ class MinimalContextBuilder:
             available_tools=tools,
             evidence=evidence,
             confirmed_params=dict(confirmed_params or {}),
+            retry_hint=retry_hint,
         )
 
 

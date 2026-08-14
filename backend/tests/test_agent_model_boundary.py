@@ -62,6 +62,7 @@ def test_model_receives_only_serializable_context_and_returns_validated_decision
         "available_tools": ["get_jobs_status", "query_result_evidence"],
         "evidence": None,
         "confirmed_params": {},
+        "retry_hint": None,
     }
     assert decision.action is AgentAction.REQUEST_MORE_DATA
 

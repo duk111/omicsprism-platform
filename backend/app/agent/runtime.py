@@ -482,30 +482,55 @@ class ProductionRunCoordinator:
                     blocks.append(AgentTextBlock(text=_missing_result_artifacts_text(statuses.rows)))
                     state.state = AgentState.AWAIT_FOLLOWUP
                     break
-                query_context = self.context_builder.build(
+                evidence, failure = self._evidence_query_once(
                     state=state,
-                    active_profile=ActiveProfile.INTERPRETATION,
                     user_message=user_message,
                     conversation_summary=conversation_summary,
-                    available_result_artifacts=result_artifacts,
+                    result_artifacts=result_artifacts,
+                    retry_hint=None,
+                    executor=executor,
+                    call_model=call_model,
+                    call_tool=call_tool,
                 )
-                query_decision = call_model(query_context)
-                self.validator.validate(state, query_decision)
-                if query_decision.grounded_answer is not None:
-                    blocks.append(AgentTextBlock(text=_evidence_query_required_text(result_artifacts)))
-                    state.state = AgentState.AWAIT_FOLLOWUP
-                    break
-                try:
-                    query = _safe_evidence_query(query_decision.requested_params, state.focus.in_scope_job_ids)
-                except ValueError:
+                if failure is not None:
+                    # 预算内自动重试一次；仍失败或预算耗尽时才降级给用户。
+                    hint = _evidence_retry_hint(result_artifacts, failure)
+                    try:
+                        evidence, failure = self._evidence_query_once(
+                            state=state,
+                            user_message=user_message,
+                            conversation_summary=conversation_summary,
+                            result_artifacts=result_artifacts,
+                            retry_hint=hint,
+                            executor=executor,
+                            call_model=call_model,
+                            call_tool=call_tool,
+                        )
+                    except CoordinatorBudgetExceeded:
+                        failure = "budget_exceeded"
+                if failure is not None:
                     blocks.append(AgentTextBlock(text=_evidence_query_fallback_text(result_artifacts)))
                     state.state = AgentState.AWAIT_FOLLOWUP
                     break
-                evidence = call_tool(executor, ToolName.QUERY_RESULT_EVIDENCE, **query)
-                if not evidence.ok:
-                    blocks.append(AgentTextBlock(text=_evidence_query_fallback_text(result_artifacts)))
-                    state.state = AgentState.AWAIT_FOLLOWUP
-                    break
+
+                def _repair_answer_draft(candidate, verdict) -> GroundedAnswer:
+                    # 语义修复通道：用 verifier 的拒绝信息生成 retry_hint 再要一次
+                    # grounded_answer；预算不足时原样返回，让 pipeline 走 fallback。
+                    try:
+                        repair_context = self.context_builder.build(
+                            state=state,
+                            active_profile=ActiveProfile.INTERPRETATION,
+                            user_message=user_message,
+                            available_result_artifacts=result_artifacts,
+                            evidence=evidence,
+                            retry_hint=_answer_repair_hint(),
+                        )
+                        repaired_decision = call_model(repair_context)
+                        self.validator.validate(state, repaired_decision)
+                        return repaired_decision.grounded_answer or candidate
+                    except CoordinatorBudgetExceeded:
+                        return candidate
+
                 if evidence.rows:
                     evidence = _bounded_model_evidence(evidence)
                     answer_context = self.context_builder.build(
@@ -520,7 +545,11 @@ class ProductionRunCoordinator:
                     if answer_decision.grounded_answer is None:
                         answer = self.grounded_answers.answer(evidence)
                     else:
-                        answer = self.grounded_answers.answer(evidence, answer_decision.grounded_answer)
+                        answer = self.grounded_answers.answer(
+                            evidence,
+                            answer_decision.grounded_answer,
+                            repair=_repair_answer_draft,
+                        )
                 else:
                     answer = self.grounded_answers.answer(evidence)
                 self.grounded_answers.grounder.update_focus(state, answer)
@@ -660,6 +689,40 @@ class ProductionRunCoordinator:
             # 还有未终态的任务：回到 MONITOR_JOBS 继续轮询（该状态在可恢复集合内）。
             state.state = AgentState.MONITOR_JOBS
         return blocks
+
+    def _evidence_query_once(
+        self,
+        *,
+        state: RunState,
+        user_message: str,
+        conversation_summary: str | None,
+        result_artifacts: Sequence[str],
+        retry_hint: str | None,
+        executor: PolicyToolExecutor,
+        call_model,
+        call_tool,
+    ) -> tuple[ToolResult | None, str | None]:
+        """单次证据查询（模型决策 + 工具执行）；返回 (证据, 失败原因)。"""
+        query_context = self.context_builder.build(
+            state=state,
+            active_profile=ActiveProfile.INTERPRETATION,
+            user_message=user_message,
+            conversation_summary=conversation_summary,
+            available_result_artifacts=result_artifacts,
+            retry_hint=retry_hint,
+        )
+        query_decision = call_model(query_context)
+        self.validator.validate(state, query_decision)
+        if query_decision.grounded_answer is not None:
+            return None, "grounded_answer_before_query"
+        try:
+            query = _safe_evidence_query(query_decision.requested_params, state.focus.in_scope_job_ids)
+        except ValueError:
+            return None, "invalid_evidence_query"
+        evidence = call_tool(executor, ToolName.QUERY_RESULT_EVIDENCE, **query)
+        if not evidence.ok:
+            return None, "evidence_query_failed"
+        return evidence, None
 
     def _model(self, context):
         return self.model.decide(context)
@@ -1067,6 +1130,28 @@ def _evidence_query_fallback_text(result_artifacts: Sequence[str]) -> str:
     return (
         "未能识别你要解读的结果表。当前可用的结果表如下，请指定其中一个"
         "（例如「解读 job-1 的结果」）：" + _artifact_list(result_artifacts)
+    )
+
+
+def _evidence_retry_hint(result_artifacts: Sequence[str], failure: str) -> str:
+    """服务端常量模板：只引用同一 context 已暴露的合法 job:artifact 列表（R1）。"""
+    options = "；".join(list(result_artifacts)[:5]) or "（当前没有可用的结果表）"
+    if failure == "grounded_answer_before_query":
+        return (
+            "上一次回复在查询证据之前就给出了答案。"
+            f"请先选择要查询的结果表（job_id 与 artifact，从以下 job_id:artifact 中选择一个）：{options}"
+        )
+    return (
+        "上一次选择的结果表不在可用列表中或查询失败。"
+        f"请从以下 job_id:artifact 中选择一个：{options}"
+    )
+
+
+def _answer_repair_hint() -> str:
+    """服务端常量模板：提示只引用本轮返回证据行（R1）。"""
+    return (
+        "上一次回答未通过证据核查：引用的数字或行不在返回证据中，"
+        "或做了超出证据的断言。请只引用本轮返回证据行中的字段与数字。"
     )
 
 

@@ -846,9 +846,14 @@ def test_interpretation_requeries_cited_rows_and_rejects_unsupported_number() ->
         text="GeneA 的 PearsonR 为 0.99",
         citation=Citation(artifact=artifact, checksum="sha256:evidence", row_ids=[1]),
     )])
+    corrected = GroundedAnswer(claims=[GroundedClaim(
+        text="GeneA 的 PearsonR 为 0.71",
+        citation=Citation(artifact=artifact, checksum="sha256:evidence", row_ids=[1]),
+    )])
     model = _RecordingModel([
         _answer_decision(params={"job_id": "job-1", "artifact": artifact}),
         _answer_decision(answer=draft),
+        _answer_decision(answer=corrected),
     ])
     coordinator = ProductionRunCoordinator(
         state_store=state_store,
@@ -867,14 +872,16 @@ def test_interpretation_requeries_cited_rows_and_rejects_unsupported_number() ->
     result = coordinator.execute_turn(turn=_turn(), user_message="解释 GeneA")
 
     evidence = next(block for block in result.blocks if block.type == "evidence")
-    assert evidence.claims[0].text.startswith("验证未通过")
-    assert evidence.claims[1].text.endswith("PearsonR=0.71")
+    # 错误的 0.99 被拒绝，语义修复用正确行值补答，而不是直接降级。
+    assert "0.99" not in evidence.model_dump_json()
+    assert evidence.claims[0].text == "GeneA 的 PearsonR 为 0.71"
+    assert result.state.model_calls == 3
     assert model.contexts[0].available_result_artifacts == [f"job-1:{artifact}"]
     assert model.contexts[1].evidence is not None
     assert model.contexts[1].conversation_summary is None
+    assert model.contexts[2].retry_hint
     assert "secret/storage/key" not in model.contexts[1].model_dump_json()
     assert "submit_approved_plan" not in model.contexts[1].model_dump_json()
-    assert result.state.model_calls == 2
 
 
 def test_empty_evidence_uses_fixed_template_without_second_model_call() -> None:

@@ -270,6 +270,10 @@ class ModelContext(ContractModel):
     available_tools: list[ToolName] = Field(max_length=6)
     evidence: ToolResult | None = None
     confirmed_params: dict[str, AgentParamValue] = Field(default_factory=dict, max_length=32)
+    # R1：retry_hint 只能由 runtime 用服务端常量模板填充，内容限于
+    # 「上一次决策哪里不合法 + 合法取值范围（同一 context 已暴露的 artifact / job id）」。
+    # 禁止把用户原文、文件内容、异常堆栈写进去。
+    retry_hint: Annotated[str, Field(max_length=300)] | None = None
 
 
 class Citation(ContractModel):
