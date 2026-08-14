@@ -29,6 +29,7 @@ from backend.app.agent.schemas import (
     AgentDecision,
     AgentState,
     AgentTurnRecord,
+    ApprovalStatus,
     Citation,
     Feasibility,
     FeasibilityVerdict,
@@ -428,6 +429,39 @@ def _evidence_job(now: datetime) -> tuple[str, JobRecord]:
         )],
     )
     return artifact, job
+
+
+def test_e2e_pending_plan_param_change_supersedes_and_regenerates() -> None:
+    """任务 G：待批期改参数 → 同一 turn 内作废旧计划并重新生成、重新审批。"""
+    model = _RecordingModel([
+        _analysis_decision(),
+        _analysis_decision(params={"padj_cutoff": 0.01}),
+    ])
+    coordinator, _store, plans, approvals, _jobs, _executor = _make_coordinator(
+        model=model,
+        inputs={"counts": COUNTS, "metadata": METADATA_TREATMENT},
+    )
+
+    proposed = coordinator.execute_turn(turn=_turn("first"), user_message="比较 salt 和 control")
+    assert proposed.state.state is AgentState.WAIT_EXECUTION_CONFIRMATION
+    old_plan_id = proposed.state.plan_id
+    old_approval_id = proposed.state.pending_approval_id
+    assert old_plan_id and old_approval_id
+
+    superseded = coordinator.execute_turn(turn=_turn("second"), user_message="padj 改成 0.01")
+
+    assert superseded.state.state is AgentState.WAIT_EXECUTION_CONFIRMATION
+    assert superseded.state.plan_id != old_plan_id
+    assert superseded.state.pending_approval_id != old_approval_id
+    assert approvals.get_owned(approval_id=old_approval_id, user_id="user-1").status is ApprovalStatus.REJECTED
+    new_plan = plans.get(plan_id=superseded.state.plan_id or "", user_id="user-1")
+    assert new_plan.effective_params["compare_field"] == "treatment"
+    assert new_plan.effective_params.get("padj_cutoff") == 0.01
+    assert superseded.state.focus.draft_params == {}
+    assert any(event.event_type == "approval.superseded" for event in superseded.events)
+    assert any(block.type == "text" and "原计划已作废" in block.text for block in superseded.blocks)
+    # 沿用旧计划的比较设置：第二次进模型的 confirmed_params 含 compare_field。
+    assert model.contexts[1].confirmed_params.get("compare_field") == "treatment"
 
 
 def test_e2e_bad_artifact_query_retries_with_hint_then_succeeds() -> None:

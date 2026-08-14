@@ -9,7 +9,7 @@ from typing import Any, Protocol, Sequence
 from uuid import uuid4
 
 from ..models import AnalysisType, JobStatus
-from .approvals import ApprovalGate, ApprovalMismatch, InMemoryApprovalGate
+from .approvals import ApprovalExpired, ApprovalGate, ApprovalMismatch, ApprovalNotFound, InMemoryApprovalGate
 from .audit import AgentEventStore, InMemoryAgentEventStore
 from .context import MinimalContextBuilder, build_input_summaries
 from .grounding import GroundedAnswerPipeline
@@ -187,6 +187,36 @@ class ProductionRunCoordinator:
                             category=AdvisoryCategory.ANALYSIS_GUIDANCE,
                             text=_input_receipt_text(roles, self.context_builder),
                         ))
+                    elif route.intent in {RouteIntent.ANALYZE, RouteIntent.RERUN}:
+                        # 改参数/重新分析必然要重新生成计划、重新审批；作废旧审批后
+                        # 在同一 turn 内继续走 CHECK_INPUTS，避免让用户多拒绝一步。
+                        old_plan_id = state.plan_id
+                        old_approval_id = state.pending_approval_id
+                        old_plan_hash = state.plan_hash
+                        if old_approval_id and old_plan_hash:
+                            try:
+                                self.approvals.reject(
+                                    approval_id=old_approval_id,
+                                    run_id=state.run_id,
+                                    user_id=state.user_id,
+                                    plan_hash=old_plan_hash,
+                                )
+                            except (ApprovalMismatch, ApprovalExpired, ApprovalNotFound):
+                                pass  # 已拒绝/已过期都视为已经不生效
+                        old_params, old_analysis_type = self._old_plan_compare_params(state, old_plan_id)
+                        state.focus.draft_params = old_params
+                        state.focus.draft_analysis_type = old_analysis_type
+                        state.pending_approval_id = None
+                        state.plan_id = None
+                        state.plan_hash = None
+                        state.status = RunStatus.RUNNING
+                        state.state = AgentState.CHECK_INPUTS
+                        pending_events.append(self._event(state, "approval.superseded", {
+                            "approval_id": old_approval_id,
+                            "plan_id": old_plan_id,
+                        }))
+                        blocks.append(AgentTextBlock(text=_PLAN_SUPERSEDED_TEXT))
+                        continue
                     else:
                         blocks.append(AgentTextBlock(text=_PENDING_PLAN_TEXT))
                     break
@@ -663,6 +693,24 @@ class ProductionRunCoordinator:
             )
         )
 
+    def _old_plan_compare_params(self, state: RunState, old_plan_id: str | None) -> tuple[dict[str, Any], str | None]:
+        """从旧计划提炼比较参数与新计划的分析类型；旧计划不可用则返回空。"""
+        if not old_plan_id:
+            return {}, None
+        try:
+            plan = self.plan_store.get(plan_id=old_plan_id, user_id=state.user_id)
+        except PlanNotFound:
+            return {}, None
+        params = plan.effective_params
+        compare = {
+            key: params[key]
+            for key in ("compare_field", "tested_levels", "reference_level")
+            if params.get(key)
+        }
+        if not compare:
+            return {}, None
+        return compare, plan.analysis_type.value
+
     def _reset_params_if_source_changed(self, state: RunState) -> None:
         """输入来源变化时清空参数记忆：旧列名/阈值不能沿用到新数据集。"""
         try:
@@ -1056,7 +1104,12 @@ _CAPABILITY_HELP = (
 _PENDING_PLAN_TEXT = (
     "当前有一个待审批的分析计划，在批准之前不会创建任何任务。"
     "你可以直接批准或拒绝计划卡片，也可以让我解释这个计划（例如「这个计划是什么意思」）；"
-    "如需修改比较参数，请先拒绝当前计划，再重新说明你的分析要求。"
+    "如需修改参数，直接说明新的分析要求即可，我会作废当前计划并重新生成。"
+)
+
+
+_PLAN_SUPERSEDED_TEXT = (
+    "原计划已作废，将根据新要求重新生成计划并再次请你确认。"
 )
 
 

@@ -326,6 +326,9 @@ def create_agent_router(
             if not state.plan_id:
                 raise ApprovalMismatch("run has no pending plan")
             plan = ctx.plan_store.get(plan_id=state.plan_id, user_id=user_id)
+        except ApprovalMismatch as exc:
+            # 计划已被自动作废（例如待批期改参数）：旧卡片不可再用，返回可读冲突而非 500。
+            raise _conflict(str(exc)) from exc
         except (ApprovalNotFound, PlanNotFound) as exc:
             raise _not_found() from exc
         if (
