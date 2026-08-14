@@ -1000,20 +1000,45 @@ def _preference_params(effective_params: dict[str, Any]) -> dict[str, Any]:
     return {key: effective_params[key] for key in _PREFERENCE_KEYS if key in effective_params}
 
 
+def _sanitize_error_text(text: str, *, limit: int) -> str:
+    """去掉错误文本里的内部标识：路径、URL、校验和、UUID 与长十六进制。
+
+    job_id 由调用方保留；这里只清理可能暴露存储/容器布局的片段。
+    """
+    cleaned = str(text)
+    # 校验和优先替换，避免后续长十六进制规则把 hash 拆成一半。
+    cleaned = re.sub(r"sha256:[0-9a-fA-F]{16,}", "<checksum>", cleaned)
+    cleaned = re.sub(r"https?://[^\s]+", "<url>", cleaned)
+    cleaned = re.sub(r"[A-Za-z]:\\(?:[^\\\s]+\\?)+", "<path>", cleaned)
+    cleaned = re.sub(r"(?<![A-Za-z0-9])/(?:[A-Za-z0-9_.\-]+/)+[A-Za-z0-9_.\-]+", "<path>", cleaned)
+    cleaned = re.sub(
+        r"\b[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\b",
+        "<id>",
+        cleaned,
+    )
+    cleaned = re.sub(r"\b[0-9a-fA-F]{16,}\b", "<id>", cleaned)
+    cleaned = " ".join(cleaned.split())
+    if len(cleaned) <= limit:
+        return cleaned
+    return cleaned[: limit - 1].rstrip() + "…"
+
+
 def _job_failure_diagnosis(rows: list[dict[str, Any]]) -> str:
     """任务失败时的有界中文诊断；error 与 log_excerpt 都可能为空。"""
     failed: list[str] = []
-    first_error = ""
+    first_error_raw = ""
     for row in rows:
         status = str(row.get("status") or "")
         if status not in {"failed", "cancelled"}:
             continue
-        error = str(row.get("error") or "").strip() or str(row.get("log_excerpt") or "").strip()[:200]
-        if not first_error:
-            first_error = error
-        failed.append(f"{row.get('job_id')}（{status}）" + (f"：{error[:300]}" if error else ""))
+        raw_error = str(row.get("error") or "").strip() or str(row.get("log_excerpt") or "").strip()
+        if not first_error_raw:
+            first_error_raw = raw_error
+        display = _sanitize_error_text(raw_error, limit=300)
+        failed.append(f"{row.get('job_id')}（{status}）" + (f"：{display}" if display else ""))
     detail = "；".join(failed) or "分析任务未成功完成。"
-    advice = _job_failure_advice(first_error) if first_error else "建议查看任务日志确认失败步骤后重新运行。"
+    # 建议文案在脱敏前的原文上判定关键词，避免路径被替换后丢失线索。
+    advice = _job_failure_advice(first_error_raw) if first_error_raw else "建议查看任务日志确认失败步骤后重新运行。"
     return f"以下任务未能成功完成：{detail}。{advice}"
 
 

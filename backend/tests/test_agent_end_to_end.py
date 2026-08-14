@@ -7,6 +7,7 @@ evidence 语义降级。这些行为此前完全没有测试覆盖（问题 6）
 
 from __future__ import annotations
 
+import re
 from datetime import datetime, timedelta, timezone
 
 from fastapi import HTTPException
@@ -15,7 +16,11 @@ from backend.app.agent.approvals import InMemoryApprovalGate
 from backend.app.agent.audit import InMemoryAgentEventStore
 from backend.app.agent.model import ModelAdapter
 from backend.app.agent.plans import InMemoryPlanStore
-from backend.app.agent.runtime import ProductionRunCoordinator, _preference_params
+from backend.app.agent.runtime import (
+    ProductionRunCoordinator,
+    _job_failure_diagnosis,
+    _preference_params,
+)
 from backend.app.agent.schemas import (
     ActiveProfile,
     AgentAction,
@@ -533,6 +538,23 @@ def test_preference_params_excludes_compare_field() -> None:
         "padj_cutoff": 0.05,
         "log2fc_cutoff": 1.0,
     }
+
+
+def test_job_failure_diagnosis_sanitizes_internal_identifiers() -> None:
+    """任务 D：失败诊断不回显内部路径/校验和/长十六进制，仍保留 CSV 建议。"""
+    rows = [{
+        "job_id": "job-1",
+        "status": "failed",
+        "error": (
+            "Traceback: /srv/omicsprism/storage/9f3ab1c2d4e5f60718293a4b5c6d7e8f/counts.csv "
+            "not found, key=sha256:abcd1234abcd1234abcd1234abcd1234abcd1234"
+        ),
+    }]
+    message = _job_failure_diagnosis(rows)
+    assert "/srv/" not in message
+    assert "sha256:" not in message
+    assert not re.search(r"\b[0-9a-f]{32}\b", message)
+    assert "检查 CSV 格式" in message
 
 
 def test_e2e_draft_scoped_to_analysis_type() -> None:
