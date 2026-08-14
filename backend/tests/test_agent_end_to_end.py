@@ -446,3 +446,82 @@ def test_e2e_status_poll_refetches_jobs_while_running() -> None:
     jobs.jobs["job-1"].status = JobStatus.SUCCEEDED
     done = coordinator.execute_turn(turn=_turn("poll-done"), user_message="任务跑完了吗")
     assert done.state.state is AgentState.AWAIT_FOLLOWUP
+
+
+def test_e2e_status_query_works_after_success_in_await_followup() -> None:
+    """任务 A：成功后处于 AWAIT_FOLLOWUP 也能查到任务，而不是「没有任务」。"""
+    now = datetime.now(timezone.utc)
+    succeeded_job = JobRecord(
+        id="job-1",
+        project_name="deg",
+        analysis_type=AnalysisType.DIFFERENTIAL,
+        status=JobStatus.SUCCEEDED,
+        progress=100,
+        created_at=now,
+        updated_at=now,
+        owner_id="user-1",
+    )
+    state_store = InMemoryStateStore()
+    state_store.save(_state(state=AgentState.AWAIT_FOLLOWUP, focus=["job-1"]), expected_version=0)
+    coordinator, _store, _plans, _approvals, _jobs, _executor = _make_coordinator(
+        model=_RecordingModel([]),
+        inputs={},
+        jobs=_Jobs(succeeded_job),
+        files=_Files(),
+        state_store=state_store,
+    )
+
+    result = coordinator.execute_turn(turn=_turn("status"), user_message="结果出来了吗")
+
+    assert [block.type for block in result.blocks] == ["job"]
+    assert result.state.state is AgentState.AWAIT_FOLLOWUP
+    assert not any(block.type == "text" and "没有正在运行" in block.text for block in result.blocks)
+
+
+def test_e2e_status_query_in_job_failed_returns_diagnosis() -> None:
+    """任务 A：失败后处于 JOB_FAILED 也能查到任务并拿到失败诊断。"""
+    now = datetime.now(timezone.utc)
+    failed_job = JobRecord(
+        id="job-1",
+        project_name="deg",
+        analysis_type=AnalysisType.DIFFERENTIAL,
+        status=JobStatus.FAILED,
+        created_at=now,
+        updated_at=now,
+        owner_id="user-1",
+        error="worker killed: out of memory",
+    )
+    state_store = InMemoryStateStore()
+    state_store.save(_state(state=AgentState.JOB_FAILED, focus=["job-1"]), expected_version=0)
+    coordinator, _store, _plans, _approvals, _jobs, _executor = _make_coordinator(
+        model=_RecordingModel([]),
+        inputs={},
+        jobs=_Jobs(failed_job),
+        files=_Files(),
+        state_store=state_store,
+    )
+
+    result = coordinator.execute_turn(turn=_turn("status"), user_message="跑完了吗")
+
+    error_blocks = [block for block in result.blocks if block.type == "error"]
+    assert error_blocks and error_blocks[0].code == "job_failed"
+    assert result.state.state is AgentState.JOB_FAILED
+
+
+def test_e2e_status_query_without_tasks_returns_guidance_without_tools() -> None:
+    """任务 A：focus 为空时返回引导文案，不调用任何工具。"""
+    state_store = InMemoryStateStore()
+    state_store.save(_state(state=AgentState.AWAIT_FOLLOWUP), expected_version=0)
+    coordinator, _store, _plans, _approvals, _jobs, _executor = _make_coordinator(
+        model=_RecordingModel([]),
+        inputs={},
+        jobs=_Jobs(),
+        files=_Files(),
+        state_store=state_store,
+    )
+
+    result = coordinator.execute_turn(turn=_turn("status"), user_message="任务跑完了吗")
+
+    assert [block.type for block in result.blocks] == ["text"]
+    assert "本会话还没有创建过分析任务" in result.blocks[0].text
+    assert result.state.tool_calls == 0

@@ -196,7 +196,9 @@ class ProductionRunCoordinator:
                     "target_profile": route.target_profile.value,
                 }))
                 if route.intent is RouteIntent.CHECK_STATUS:
-                    if state.state is AgentState.MONITOR_JOBS:
+                    # 判据是 focus 里有没有任务，而不是当前状态：任务成功后是
+                    # AWAIT_FOLLOWUP、失败后是 JOB_FAILED，此时仍应能查到任务。
+                    if state.focus.in_scope_job_ids:
                         blocks.extend(self._poll_jobs(state, call_tool))
                     else:
                         blocks.append(AgentTextBlock(text=_STATUS_NOT_RUNNING_TEXT))
@@ -626,6 +628,9 @@ class ProductionRunCoordinator:
                 ))
             else:
                 state.state = AgentState.AWAIT_FOLLOWUP
+        elif statuses.rows and any(row.get("status") in {"queued", "running"} for row in statuses.rows):
+            # 还有未终态的任务：回到 MONITOR_JOBS 继续轮询（该状态在可恢复集合内）。
+            state.state = AgentState.MONITOR_JOBS
         return blocks
 
     def _model(self, context):
@@ -953,8 +958,8 @@ _PENDING_PLAN_TEXT = (
 
 
 _STATUS_NOT_RUNNING_TEXT = (
-    "当前没有正在运行的分析任务。"
-    "你可以说明新的分析目标，或指定一个已有完成结果进行解读。"
+    "本会话还没有创建过分析任务。"
+    "你可以说明分析目标来生成新计划，或上传数据后开始分析。"
 )
 
 
