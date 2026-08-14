@@ -5,7 +5,7 @@ from hashlib import sha256
 import json
 import re
 from time import monotonic
-from typing import Any, Protocol
+from typing import Any, Protocol, Sequence
 from uuid import uuid4
 
 from ..models import AnalysisType, JobStatus
@@ -21,6 +21,7 @@ from .schemas import (
     AgentAction,
     AgentAdvisoryBlock,
     AgentApprovalBlock,
+    AgentErrorBlock,
     AgentEvent,
     AgentEvidenceBlock,
     AgentJobBlock,
@@ -145,6 +146,39 @@ class ProductionRunCoordinator:
                 raise CoordinatorBudgetExceeded("agent turn time budget exceeded")
             transitions += 1
 
+            # 待审批的计划不能被普通消息绕过提交；但用户在此状态下的提问/修正输入
+            # 仍应得到回复，且必须保持待批状态，避免后续审批 turn 丢失锚点。
+            if state.state is AgentState.WAIT_EXECUTION_CONFIRMATION:
+                if not self._approval_valid(state):
+                    route = self.router.route(user_message, state)
+                    pending_events.append(self._event(state, "route.decided", {
+                        "intent": route.intent.value,
+                        "target_profile": route.target_profile.value,
+                    }))
+                    if route.intent is RouteIntent.EXPLAIN_PLAN:
+                        blocks.append(AgentAdvisoryBlock(
+                            category=AdvisoryCategory.ANALYSIS_GUIDANCE,
+                            text=self._explain_current_plan(state),
+                        ))
+                    elif route.intent is RouteIntent.HELP:
+                        blocks.append(AgentAdvisoryBlock(
+                            category=AdvisoryCategory.ANALYSIS_GUIDANCE,
+                            text=_CAPABILITY_HELP,
+                        ))
+                    elif route.intent is RouteIntent.DESCRIBE_ONLY and self.tool_runtime.inputs:
+                        inspected = call_tool(
+                            self._executor(ActiveProfile.ANALYSIS),
+                            ToolName.INSPECT_UPLOADED_INPUTS,
+                        )
+                        roles = [str(row.get("field")) for row in inspected.rows]
+                        blocks.append(AgentAdvisoryBlock(
+                            category=AdvisoryCategory.ANALYSIS_GUIDANCE,
+                            text=_input_receipt_text(roles, self.context_builder),
+                        ))
+                    else:
+                        blocks.append(AgentTextBlock(text=_PENDING_PLAN_TEXT))
+                    break
+
             # 终止/阻塞状态仍允许用户在同一会话继续提问或修正输入。
             # 只有等待审批的状态不能被普通消息绕过；审批继续走专门的 resume turn。
             if state.state in {
@@ -161,6 +195,13 @@ class ProductionRunCoordinator:
                     "intent": route.intent.value,
                     "target_profile": route.target_profile.value,
                 }))
+                if route.intent is RouteIntent.CHECK_STATUS:
+                    if state.state is AgentState.MONITOR_JOBS:
+                        blocks.extend(self._poll_jobs(state, call_tool))
+                    else:
+                        blocks.append(AgentTextBlock(text=_STATUS_NOT_RUNNING_TEXT))
+                        state.state = AgentState.AWAIT_FOLLOWUP
+                    break
                 if route.target_profile is RouteTargetProfile.ANALYSIS:
                     state.active_profile = ActiveProfile.ANALYSIS
                     if route.intent is RouteIntent.EXPLAIN_PLAN:
@@ -259,6 +300,7 @@ class ProductionRunCoordinator:
                     conversation_summary=conversation_summary,
                     available_input_roles=available_input_roles,
                     input_summaries=input_summaries,
+                    confirmed_params={**state.focus.preferences, **state.focus.draft_params},
                 )
                 decision = call_model(context)
                 self.validator.validate(state, decision)
@@ -272,7 +314,12 @@ class ProductionRunCoordinator:
                     blocks.append(AgentTextBlock(text=message))
                     break
                 if not decision.analysis_recommendations:
-                    raise ValueError("analysis decision has no recommendation")
+                    state.state = AgentState.NEED_USER_INPUT
+                    blocks.append(AgentTextBlock(text=(
+                        "已识别上传文件，但当前无法确定合适的分析类型。"
+                        "请说明你的分析目标，例如「比较 salt 和 control 做差异分析」。"
+                    )))
+                    break
                 analysis_type = decision.analysis_recommendations[0]
                 reasons = decision.feasibility.reasons if decision.feasibility else []
                 blocks.append(AgentRecommendationBlock(recommendations=[AgentRecommendationItem(
@@ -280,12 +327,14 @@ class ProductionRunCoordinator:
                     display_label=self.context_builder.analysis_specs.get(analysis_type).display_label,
                     reasons=reasons,
                 )]))
+                merged_requested = {**state.focus.draft_params, **decision.requested_params}
                 requested_params, contrast_question = _complete_contrast_params(
                     analysis_type,
-                    decision.requested_params,
+                    merged_requested,
                     input_summaries,
                 )
                 if contrast_question:
+                    state.focus.draft_params = dict(requested_params)
                     state.state = AgentState.NEED_USER_INPUT
                     blocks.append(AgentTextBlock(text=contrast_question))
                     break
@@ -345,6 +394,8 @@ class ProductionRunCoordinator:
                 state.plan_id = plan.plan_id
                 state.plan_hash = plan.plan_hash
                 state.pending_approval_id = approval_id
+                state.focus.draft_params = {}
+                state.focus.preferences.update(_preference_params(plan.effective_params))
                 state.state = AgentState.WAIT_EXECUTION_CONFIRMATION
                 state.status = RunStatus.SUSPENDED
                 warnings = [_issue_text(item) for item in list(row.get("warnings") or [])]
@@ -369,12 +420,7 @@ class ProductionRunCoordinator:
                 break
 
             if state.state is AgentState.WAIT_EXECUTION_CONFIRMATION:
-                if not state.pending_approval_id or not state.plan_hash or not self.approvals.is_valid(
-                    approval_id=state.pending_approval_id,
-                    run_id=state.run_id,
-                    user_id=state.user_id,
-                    plan_hash=state.plan_hash,
-                ):
+                if not self._approval_valid(state):
                     raise ApprovalMismatch("structured approval is required before submission")
                 state.status = RunStatus.RUNNING
                 state.state = AgentState.SUBMIT_JOBS
@@ -399,16 +445,7 @@ class ProductionRunCoordinator:
                 break
 
             if state.state is AgentState.MONITOR_JOBS:
-                statuses = call_tool(
-                    self._executor(state.active_profile),
-                    ToolName.GET_JOBS_STATUS,
-                    job_ids=state.focus.in_scope_job_ids,
-                )
-                if not statuses.ok:
-                    raise RuntimeError(statuses.error_code or "job status failed")
-                blocks.extend(_job_blocks_from_rows(statuses.rows))
-                if statuses.rows and all(row.get("status") in {"succeeded", "failed", "cancelled"} for row in statuses.rows):
-                    state.state = AgentState.AWAIT_FOLLOWUP
+                blocks.extend(self._poll_jobs(state, call_tool))
                 break
 
             if state.state is AgentState.ANSWER_WITH_EVIDENCE:
@@ -439,11 +476,20 @@ class ProductionRunCoordinator:
                 query_decision = call_model(query_context)
                 self.validator.validate(state, query_decision)
                 if query_decision.grounded_answer is not None:
-                    raise ValueError("grounded answer is not allowed before evidence query")
-                query = _safe_evidence_query(query_decision.requested_params, state.focus.in_scope_job_ids)
+                    blocks.append(AgentTextBlock(text=_evidence_query_required_text(result_artifacts)))
+                    state.state = AgentState.AWAIT_FOLLOWUP
+                    break
+                try:
+                    query = _safe_evidence_query(query_decision.requested_params, state.focus.in_scope_job_ids)
+                except ValueError:
+                    blocks.append(AgentTextBlock(text=_evidence_query_fallback_text(result_artifacts)))
+                    state.state = AgentState.AWAIT_FOLLOWUP
+                    break
                 evidence = call_tool(executor, ToolName.QUERY_RESULT_EVIDENCE, **query)
                 if not evidence.ok:
-                    raise RuntimeError(evidence.error_code or "evidence query failed")
+                    blocks.append(AgentTextBlock(text=_evidence_query_fallback_text(result_artifacts)))
+                    state.state = AgentState.AWAIT_FOLLOWUP
+                    break
                 if evidence.rows:
                     evidence = _bounded_model_evidence(evidence)
                     answer_context = self.context_builder.build(
@@ -456,8 +502,9 @@ class ProductionRunCoordinator:
                     answer_decision = call_model(answer_context)
                     self.validator.validate(state, answer_decision)
                     if answer_decision.grounded_answer is None:
-                        raise ValueError("grounded answer is required after evidence query")
-                    answer = self.grounded_answers.answer(evidence, answer_decision.grounded_answer)
+                        answer = self.grounded_answers.answer(evidence)
+                    else:
+                        answer = self.grounded_answers.answer(evidence, answer_decision.grounded_answer)
                 else:
                     answer = self.grounded_answers.answer(evidence)
                 self.grounded_answers.grounder.update_focus(state, answer)
@@ -546,6 +593,40 @@ class ProductionRunCoordinator:
             active_profile=profile,
             policy=ProfilePolicyGuard(),
         )
+
+    def _approval_valid(self, state: RunState) -> bool:
+        return bool(
+            state.pending_approval_id
+            and state.plan_hash
+            and self.approvals.is_valid(
+                approval_id=state.pending_approval_id,
+                run_id=state.run_id,
+                user_id=state.user_id,
+                plan_hash=state.plan_hash,
+            )
+        )
+
+    def _poll_jobs(self, state: RunState, call_tool) -> list[AgentMessageBlock]:
+        """轮询任务状态；返回状态卡片，并在全部终态时切换状态/给出失败诊断。"""
+        statuses = call_tool(
+            self._executor(state.active_profile),
+            ToolName.GET_JOBS_STATUS,
+            job_ids=state.focus.in_scope_job_ids,
+        )
+        if not statuses.ok:
+            raise RuntimeError(statuses.error_code or "job status failed")
+        blocks = _job_blocks_from_rows(statuses.rows)
+        if statuses.rows and all(row.get("status") in {"succeeded", "failed", "cancelled"} for row in statuses.rows):
+            if any(row.get("status") in {"failed", "cancelled"} for row in statuses.rows):
+                state.state = AgentState.JOB_FAILED
+                blocks.append(AgentErrorBlock(
+                    code="job_failed",
+                    user_message=_job_failure_diagnosis(statuses.rows),
+                    retryable=True,
+                ))
+            else:
+                state.state = AgentState.AWAIT_FOLLOWUP
+        return blocks
 
     def _model(self, context):
         return self.model.decide(context)
@@ -862,6 +943,72 @@ _CAPABILITY_HELP = (
     "我也可以进行结果解读：读取你拥有的已完成任务结果，并提供可核验的结果行引用。"
     "实际分析会先检查文件和参数、展示计划，并且只有你明确批准后才创建任务。"
 )
+
+
+_PENDING_PLAN_TEXT = (
+    "当前有一个待审批的分析计划，在批准之前不会创建任何任务。"
+    "你可以直接批准或拒绝计划卡片，也可以让我解释这个计划（例如「这个计划是什么意思」）；"
+    "如需修改比较参数，请先拒绝当前计划，再重新说明你的分析要求。"
+)
+
+
+_STATUS_NOT_RUNNING_TEXT = (
+    "当前没有正在运行的分析任务。"
+    "你可以说明新的分析目标，或指定一个已有完成结果进行解读。"
+)
+
+
+_PREFERENCE_KEYS = ("compare_field", "padj_cutoff", "log2fc_cutoff", "min_total_count", "min_replicates")
+
+
+def _preference_params(effective_params: dict[str, Any]) -> dict[str, Any]:
+    """从最近一次计划中提炼跨会话保留的分析偏好（阈值类）。"""
+    return {key: effective_params[key] for key in _PREFERENCE_KEYS if key in effective_params}
+
+
+def _job_failure_diagnosis(rows: list[dict[str, Any]]) -> str:
+    """任务失败时的有界中文诊断；error 与 log_excerpt 都可能为空。"""
+    failed: list[str] = []
+    first_error = ""
+    for row in rows:
+        status = str(row.get("status") or "")
+        if status not in {"failed", "cancelled"}:
+            continue
+        error = str(row.get("error") or "").strip() or str(row.get("log_excerpt") or "").strip()[:200]
+        if not first_error:
+            first_error = error
+        failed.append(f"{row.get('job_id')}（{status}）" + (f"：{error[:300]}" if error else ""))
+    detail = "；".join(failed) or "分析任务未成功完成。"
+    advice = _job_failure_advice(first_error) if first_error else "建议查看任务日志确认失败步骤后重新运行。"
+    return f"以下任务未能成功完成：{detail}。{advice}"
+
+
+def _job_failure_advice(error_text: str) -> str:
+    text = error_text.lower()
+    if any(term in text for term in ("memory", "killed", "out of memory", "cannot allocate")):
+        return "建议降低输入规模或先过滤低表达特征后再运行。"
+    if any(term in text for term in ("sample", "index", "shape", "length", "align")):
+        return "建议检查样本顺序、重复样本 ID 或缺失样本。"
+    if any(term in text for term in ("group", "compare", "level", "metadata", "column")):
+        return "建议检查 metadata/分组表，确认分组列和水平拼写完全一致。"
+    if any(term in text for term in ("csv", "parse", "could not convert", "nan", "numeric")):
+        return "建议检查 CSV 格式，确保数值矩阵中不包含文本值。"
+    return "建议查看任务日志确认具体失败步骤后重新提交。"
+
+
+def _artifact_list(result_artifacts: Sequence[str]) -> str:
+    return "；".join(list(result_artifacts)[:10]) or "当前没有可解读的结果表。"
+
+
+def _evidence_query_required_text(result_artifacts: Sequence[str]) -> str:
+    return "请先选择要解读的结果表，我会基于该结果提供证据化解读。当前可用的结果表：" + _artifact_list(result_artifacts)
+
+
+def _evidence_query_fallback_text(result_artifacts: Sequence[str]) -> str:
+    return (
+        "未能识别你要解读的结果表。当前可用的结果表如下，请指定其中一个"
+        "（例如「解读 job-1 的结果」）：" + _artifact_list(result_artifacts)
+    )
 
 
 def _job_blocks(job_ids: list[str], *, status: JobStatus, progress: int) -> list[AgentJobBlock]:

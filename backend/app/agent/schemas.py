@@ -22,6 +22,7 @@ class RouteIntent(str, Enum):
     INTERPRET = "interpret"
     RERUN = "rerun"
     DESCRIBE_ONLY = "describe_only"
+    CHECK_STATUS = "check_status"
     UNCLEAR = "unclear"
 
 
@@ -268,6 +269,7 @@ class ModelContext(ContractModel):
     analysis_capabilities: list[AnalysisCapability] = Field(default_factory=list, max_length=3)
     available_tools: list[ToolName] = Field(max_length=6)
     evidence: ToolResult | None = None
+    confirmed_params: dict[str, AgentParamValue] = Field(default_factory=dict, max_length=32)
 
 
 class Citation(ContractModel):
@@ -280,6 +282,8 @@ class RunFocus(ContractModel):
     in_scope_job_ids: list[str]
     resolved_entities: dict[str, str]
     last_citation: Citation | None
+    draft_params: dict[str, Any] = Field(default_factory=dict, max_length=32)
+    preferences: dict[str, Any] = Field(default_factory=dict, max_length=32)
 
 
 class RunState(ContractModel):

@@ -33,6 +33,7 @@ class ContextBuilder(Protocol):
         available_input_roles: Sequence[str] = (),
         input_summaries: Sequence[InputInspectionSummary] = (),
         evidence: ToolResult | None = None,
+        confirmed_params: Mapping[str, object] | None = None,
     ) -> ModelContext:
         ...
 
@@ -52,6 +53,7 @@ class MinimalContextBuilder:
         available_input_roles: Sequence[str] = (),
         input_summaries: Sequence[InputInspectionSummary] = (),
         evidence: ToolResult | None = None,
+        confirmed_params: Mapping[str, object] | None = None,
     ) -> ModelContext:
         tools = (
             []
@@ -71,14 +73,15 @@ class MinimalContextBuilder:
             analysis_capabilities=build_analysis_capabilities(self.analysis_specs) if is_analysis else [],
             available_tools=tools,
             evidence=evidence,
+            confirmed_params=dict(confirmed_params or {}),
         )
 
 
 def build_conversation_summary(
     messages: Sequence[AgentMessageRecord],
     *,
-    max_messages: int = 12,
-    max_chars: int = 3600,
+    max_messages: int = 16,
+    max_chars: int = 4000,
 ) -> str | None:
     """构建有界的历史摘要；不携带原始文件内容或旧证据数字。"""
 

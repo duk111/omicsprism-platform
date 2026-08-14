@@ -13,7 +13,11 @@ class Router(Protocol):
 
 
 class RuleRouter:
-    """基于意图和当前 focus 的确定性路由器，不访问业务工具。"""
+    """基于意图和当前 focus 的确定性路由器，不访问业务工具。
+
+    检查顺序即优先级：更具体的意图（解释计划、能力、帮助、重跑、查状态）
+    必须先于宽泛的分析/解读意图，避免「分析」等词吞掉其它意图。
+    """
 
     def route(self, user_message: str, state: RunState) -> RouteDecision:
         text = user_message.strip().lower()
@@ -31,6 +35,14 @@ class RuleRouter:
             "上传", "传了", "文件已传", "uploaded", "attached",
         )
         interpret_terms = ("结果", "解释", "解读", "火山图", "富集", "evidence", "interpret")
+        status_terms = (
+            "进度", "状态", "跑完了", "完成了吗", "好了吗", "结束了吗",
+            "出结果了吗", "结果出来了吗", "结果好了吗", "progress", "status", "done",
+        )
+        # 参数调整必须有明确的修改动作 + 分析参数语境，避免把「描述对照组」等吞掉。
+        adjust_terms = ("改成", "改为", "换成", "换一下", "换一个", "调整为", "设为", "改一下", "重设", "调整")
+        param_context_terms = ("比较", "对照", "实验组", "对照组", "阈值", "padj", "log2fc", "min_replicates", "min_total_count")
+        param_answer_terms = ("比较列", "实验组", "对照组", "分组列", "组别", "阈值", "padj", "log2fc")
         continuation_terms = ("继续", "下一步", "好的", "可以", "continue")
         attached_capability_terms = (
             "这个数据能做什么", "这些数据能做什么", "这两个数据能做什么",
@@ -51,15 +63,23 @@ class RuleRouter:
             return RouteDecision(intent=RouteIntent.HELP, target_profile=RouteTargetProfile.ANALYSIS, reason="capability help")
         if any(term in text for term in rerun_terms):
             return RouteDecision(intent=RouteIntent.RERUN, target_profile=RouteTargetProfile.ANALYSIS, reason="rerun intent")
-        if any(term in text for term in describe_terms) and not any(term in text for term in analysis_terms):
-            return RouteDecision(intent=RouteIntent.DESCRIBE_ONLY, target_profile=RouteTargetProfile.ANALYSIS, reason="analysis consultation")
+        if any(term in text for term in status_terms):
+            return RouteDecision(intent=RouteIntent.CHECK_STATUS, target_profile=RouteTargetProfile.ANALYSIS, reason="job status intent")
         if any(term in text for term in interpret_terms) and state.focus.in_scope_job_ids:
             return RouteDecision(intent=RouteIntent.INTERPRET, target_profile=RouteTargetProfile.INTERPRETATION, reason="focused result intent")
+        if any(term in text for term in describe_terms) and not any(term in text for term in analysis_terms):
+            return RouteDecision(intent=RouteIntent.DESCRIBE_ONLY, target_profile=RouteTargetProfile.ANALYSIS, reason="analysis consultation")
+        if any(term in text for term in adjust_terms) and any(term in text for term in param_context_terms):
+            return RouteDecision(intent=RouteIntent.ANALYZE, target_profile=RouteTargetProfile.ANALYSIS, reason="parameter adjustment intent")
+        # 参数答案（多轮协商里用户补充比较列/实验组/对照组/阈值）应回到计划生成流程，
+        # 而不是被当作普通咨询丢给聊天回答。
+        if any(term in text for term in param_answer_terms):
+            return RouteDecision(intent=RouteIntent.ANALYZE, target_profile=RouteTargetProfile.ANALYSIS, reason="parameter answer intent")
         if any(term in text for term in analysis_terms):
             return RouteDecision(intent=RouteIntent.ANALYZE, target_profile=RouteTargetProfile.ANALYSIS, reason="analysis intent")
         if any(term in text for term in interpret_terms):
             return RouteDecision(intent=RouteIntent.INTERPRET, target_profile=RouteTargetProfile.ASK_USER, reason="no result in focus")
-        if any(term in text for term in continuation_terms):
+        if any(term in text for term in continuation_terms) and len(text) <= 8:
             target = RouteTargetProfile(state.active_profile.value)
             intent = RouteIntent.ANALYZE if state.active_profile is ActiveProfile.ANALYSIS else RouteIntent.INTERPRET
             return RouteDecision(intent=intent, target_profile=target, reason="continue current profile")

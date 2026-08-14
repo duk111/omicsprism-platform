@@ -79,7 +79,7 @@ def test_router_rules_cover_analysis_interpretation_description_and_unclear() ->
     assert router.route(
         "我有盐胁迫的转录组和代谢组",
         _state(),
-    ).target_profile is RouteTargetProfile.ASK_USER
+    ).target_profile is RouteTargetProfile.ANALYSIS
     assert router.route(
         "帮我看看这个结果",
         _state(focus_ids=["fixture-job-1"]),
@@ -89,7 +89,7 @@ def test_router_rules_cover_analysis_interpretation_description_and_unclear() ->
         "按新参数重跑",
         _state(focus_ids=["fixture-job-1"]),
     ).target_profile is RouteTargetProfile.ANALYSIS
-    assert router.route("随便聊聊", _state()).target_profile is RouteTargetProfile.ASK_USER
+    assert router.route("随便聊聊", _state()).target_profile is RouteTargetProfile.ANALYSIS
 
 
 def test_profile_policy_is_structurally_closed() -> None:
@@ -233,11 +233,14 @@ def test_context_builder_only_emits_minimal_serializable_context() -> None:
         "active_profile",
         "state",
         "in_scope_job_ids",
+        "available_result_artifacts",
         "conversation_summary",
         "available_tools",
         "available_input_roles",
+        "input_summaries",
         "analysis_capabilities",
         "evidence",
+        "confirmed_params",
     }
     assert "database_url" not in context.model_dump()
     assert "raw_file_path" not in context.model_dump()
@@ -344,7 +347,7 @@ def test_stub_harness_runs_analysis_approval_resume_and_interpretation_without_j
     assert state.model_calls == 3
 
 
-def test_need_user_input_is_not_mistaken_for_approval_suspend() -> None:
+def test_bounded_consultation_is_not_mistaken_for_approval_suspend() -> None:
     from backend.app.agent.runtime import FixtureRunCoordinator
 
     model = ScriptedModelAdapter([])
@@ -356,8 +359,5 @@ def test_need_user_input_is_not_mistaken_for_approval_suspend() -> None:
     )
 
     state = coordinator.run_step(run_id="run-1", user_id="user-1", user_message="随便聊聊")
-    assert state.state is AgentState.NEED_USER_INPUT
-    assert state.status is RunStatus.RUNNING
-
-    state = coordinator.run_step(run_id="run-1", user_id="user-1", user_message="我想做差异分析")
     assert state.state is AgentState.CHECK_INPUTS
+    assert state.status is RunStatus.RUNNING

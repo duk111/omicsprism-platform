@@ -10,7 +10,7 @@ from typing import Protocol
 
 import httpx
 
-from .app.agent.approvals import PostgresApprovalGate
+from .app.agent.approvals import ApprovalExpired, ApprovalMismatch, PostgresApprovalGate
 from .app.agent.audit import PostgresAgentEventStore
 from .app.agent.model import (
     ModelBoundaryError,
@@ -270,7 +270,7 @@ def create_worker(settings: AppSettings | None = None) -> AgentWorker:
             base_url=config.agent_model_url,
             model=config.agent_model_name,
             api_key=config.agent_model_api_key,
-            timeout_seconds=config.agent_turn_timeout_seconds,
+            timeout_seconds=config.agent_model_request_timeout_seconds,
         ),
         job_store=jobs,
         files=files,
@@ -366,6 +366,18 @@ def _classify_error(exc: Exception) -> tuple[str, str, bool]:
             "模型回复与当前会话状态不一致，因此系统没有执行写操作，也未创建任务。"
             "会话上下文、上传文件和已有任务均保留；请重试或明确当前要分析还是解读结果。",
             True,
+        )
+    if isinstance(exc, ApprovalExpired):
+        return (
+            "approval_expired",
+            "该计划的审批已过期，未创建任务。请重新生成计划后再执行。",
+            False,
+        )
+    if isinstance(exc, ApprovalMismatch):
+        return (
+            "approval_required",
+            "当前操作需要先完成计划审批；请在计划卡片上批准或拒绝后再继续。",
+            False,
         )
     if isinstance(exc, ValueError):
         return "agent_decision_invalid", "当前请求缺少可安全执行的信息，且未创建任务。请补充分析目标或参数。", True
