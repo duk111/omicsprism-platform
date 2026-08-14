@@ -46,7 +46,7 @@ from .schemas import (
     ToolResult,
 )
 from .store import StateNotFound, StateStore
-from .tools import AgentToolRuntime, PolicyToolExecutor, ToolRegistry
+from .tools import AgentToolRuntime, PolicyToolExecutor, ToolConfigurationError, ToolRegistry
 from .validator import DecisionValidator
 
 
@@ -204,6 +204,11 @@ class ProductionRunCoordinator:
                         blocks.append(AgentTextBlock(text=_STATUS_NOT_RUNNING_TEXT))
                         state.state = AgentState.AWAIT_FOLLOWUP
                     break
+                if route.intent in {RouteIntent.ANALYZE, RouteIntent.RERUN} and route.reason != "parameter answer intent":
+                    # 新一轮分析请求：放弃未完成的参数协商（保留长期偏好），
+                    # 避免旧一轮的 compare_field 污染新的、可能是不同类型的计划。
+                    state.focus.draft_params = {}
+                    state.focus.draft_analysis_type = None
                 if route.target_profile is RouteTargetProfile.ANALYSIS:
                     state.active_profile = ActiveProfile.ANALYSIS
                     if route.intent is RouteIntent.EXPLAIN_PLAN:
@@ -271,6 +276,7 @@ class ProductionRunCoordinator:
                 break
 
             if state.state is AgentState.CHECK_INPUTS:
+                self._reset_params_if_source_changed(state)
                 executor = self._executor(ActiveProfile.ANALYSIS)
                 inspected = call_tool(executor, ToolName.INSPECT_UPLOADED_INPUTS)
                 available_input_roles = [str(row.get("field")) for row in inspected.rows]
@@ -329,7 +335,13 @@ class ProductionRunCoordinator:
                     display_label=self.context_builder.analysis_specs.get(analysis_type).display_label,
                     reasons=reasons,
                 )]))
-                merged_requested = {**state.focus.draft_params, **decision.requested_params}
+                # 只合并同分析类型的 draft：换了分析类型，旧一轮的比较参数不适用。
+                draft_for_type = (
+                    state.focus.draft_params
+                    if state.focus.draft_analysis_type == analysis_type.value
+                    else {}
+                )
+                merged_requested = {**draft_for_type, **decision.requested_params}
                 requested_params, contrast_question = _complete_contrast_params(
                     analysis_type,
                     merged_requested,
@@ -337,6 +349,7 @@ class ProductionRunCoordinator:
                 )
                 if contrast_question:
                     state.focus.draft_params = dict(requested_params)
+                    state.focus.draft_analysis_type = analysis_type.value
                     state.state = AgentState.NEED_USER_INPUT
                     blocks.append(AgentTextBlock(text=contrast_question))
                     break
@@ -397,6 +410,7 @@ class ProductionRunCoordinator:
                 state.plan_hash = plan.plan_hash
                 state.pending_approval_id = approval_id
                 state.focus.draft_params = {}
+                state.focus.draft_analysis_type = None
                 state.focus.preferences.update(_preference_params(plan.effective_params))
                 state.state = AgentState.WAIT_EXECUTION_CONFIRMATION
                 state.status = RunStatus.SUSPENDED
@@ -607,6 +621,20 @@ class ProductionRunCoordinator:
                 plan_hash=state.plan_hash,
             )
         )
+
+    def _reset_params_if_source_changed(self, state: RunState) -> None:
+        """输入来源变化时清空参数记忆：旧列名/阈值不能沿用到新数据集。"""
+        try:
+            current = self.tool_runtime.input_source_ref
+        except ToolConfigurationError:
+            # 没有输入来源时无参数记忆可用，也不需要校验作用域。
+            return
+        current_ref = current.model_dump_json()
+        if state.focus.params_source_ref != current_ref:
+            state.focus.draft_params = {}
+            state.focus.draft_analysis_type = None
+            state.focus.preferences = {}
+            state.focus.params_source_ref = current_ref
 
     def _poll_jobs(self, state: RunState, call_tool) -> list[AgentMessageBlock]:
         """轮询任务状态；返回状态卡片，并在全部终态时切换状态/给出失败诊断。"""
@@ -963,7 +991,8 @@ _STATUS_NOT_RUNNING_TEXT = (
 )
 
 
-_PREFERENCE_KEYS = ("compare_field", "padj_cutoff", "log2fc_cutoff", "min_total_count", "min_replicates")
+# 比较列与水平是数据集相关的，不能跨输入沿用；这里只保留阈值类偏好。
+_PREFERENCE_KEYS = ("padj_cutoff", "log2fc_cutoff", "min_total_count", "min_replicates")
 
 
 def _preference_params(effective_params: dict[str, Any]) -> dict[str, Any]:

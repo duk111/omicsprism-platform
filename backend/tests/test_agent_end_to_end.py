@@ -15,7 +15,7 @@ from backend.app.agent.approvals import InMemoryApprovalGate
 from backend.app.agent.audit import InMemoryAgentEventStore
 from backend.app.agent.model import ModelAdapter
 from backend.app.agent.plans import InMemoryPlanStore
-from backend.app.agent.runtime import ProductionRunCoordinator
+from backend.app.agent.runtime import ProductionRunCoordinator, _preference_params
 from backend.app.agent.schemas import (
     ActiveProfile,
     AgentAction,
@@ -525,3 +525,74 @@ def test_e2e_status_query_without_tasks_returns_guidance_without_tools() -> None
     assert [block.type for block in result.blocks] == ["text"]
     assert "本会话还没有创建过分析任务" in result.blocks[0].text
     assert result.state.tool_calls == 0
+
+
+def test_preference_params_excludes_compare_field() -> None:
+    """任务 C：比较列是数据集相关的，不进入长期偏好。"""
+    assert _preference_params({"compare_field": "x", "padj_cutoff": 0.05, "log2fc_cutoff": 1.0}) == {
+        "padj_cutoff": 0.05,
+        "log2fc_cutoff": 1.0,
+    }
+
+
+def test_e2e_draft_scoped_to_analysis_type() -> None:
+    """任务 C：第一轮 DEG 协商留下 draft，第二轮换 GMA 后 compare_field 不再进模型。"""
+    model = _RecordingModel([
+        _analysis_decision(params={"compare_field": "condition"}),
+        AgentDecision(
+            action=AgentAction.PROPOSE_PLAN,
+            reasoning_summary="输入可进行关联分析",
+            feasibility=Feasibility(
+                verdict=FeasibilityVerdict.ANSWERABLE,
+                reasons=["three omics inputs present"],
+                missing_information=[],
+            ),
+            analysis_recommendations=[AnalysisType.CORRELATION],
+            requires_approval=True,
+            requested_params={},
+            grounded_answer=None,
+        ),
+    ])
+    inputs = {
+        "counts": COUNTS,
+        "metadata": METADATA_AMBIGUOUS,
+        "transcriptome": AgentInputFile("DEAT.csv", b"gene,s1,s2\ng1,1,2\n"),
+        "metabolome": AgentInputFile("DEAM.csv", b"met,s1,s2\nm1,3,4\n"),
+        "group": AgentInputFile("group.csv", b"sample_id,group\ns1,a\ns2,b\n"),
+    }
+    coordinator, _store, _plans, _approvals, _jobs, _executor = _make_coordinator(
+        model=model,
+        inputs=inputs,
+    )
+
+    first = coordinator.execute_turn(turn=_turn("deg"), user_message="分析一下")
+    assert first.state.state is AgentState.NEED_USER_INPUT
+    assert first.state.focus.draft_params == {"compare_field": "condition"}
+    assert first.state.focus.draft_analysis_type == AnalysisType.DIFFERENTIAL.value
+
+    coordinator.execute_turn(turn=_turn("gma"), user_message="我要做 GMA 关联分析")
+
+    assert model.contexts[1].confirmed_params == {}
+
+
+def test_e2e_source_change_clears_preferences() -> None:
+    """任务 C：换输入来源后 preferences 清空，模型拿到的 confirmed_params 为空。"""
+    model = _RecordingModel([_analysis_decision(), _analysis_decision()])
+    coordinator, _store, _plans, _approvals, _jobs, _executor = _make_coordinator(
+        model=model,
+        inputs={"counts": COUNTS, "metadata": METADATA_TREATMENT},
+    )
+
+    first = coordinator.execute_turn(turn=_turn("first"), user_message="比较 salt 和 control")
+    assert first.state.state is AgentState.WAIT_EXECUTION_CONFIRMATION
+    assert first.state.focus.preferences  # 阈值类偏好已种子化
+
+    # 模拟用户拒绝计划回到 NEED_USER_INPUT，再换一个输入来源。
+    first.state.pending_approval_id = None
+    first.state.state = AgentState.NEED_USER_INPUT
+    coordinator.state_store.save(first.state, expected_version=first.state.version)
+    coordinator.tool_runtime.input_source_job_id = "source-2"
+
+    coordinator.execute_turn(turn=_turn("second"), user_message="分析一下")
+
+    assert model.contexts[1].confirmed_params == {}

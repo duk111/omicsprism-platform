@@ -282,8 +282,11 @@ class RunFocus(ContractModel):
     in_scope_job_ids: list[str]
     resolved_entities: dict[str, str]
     last_citation: Citation | None
-    draft_params: dict[str, Any] = Field(default_factory=dict, max_length=32)
-    preferences: dict[str, Any] = Field(default_factory=dict, max_length=32)
+    # 参数记忆限定在「输入来源 + 分析类型」作用域内：换数据或换分析都要重谈。
+    draft_params: dict[str, AgentParamValue] = Field(default_factory=dict, max_length=32)
+    preferences: dict[str, AgentParamValue] = Field(default_factory=dict, max_length=32)
+    draft_analysis_type: str | None = None
+    params_source_ref: str | None = None
 
 
 class RunState(ContractModel):
