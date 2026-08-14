@@ -741,7 +741,8 @@ class ProductionRunCoordinator:
                 blocks.append(AgentErrorBlock(
                     code="job_failed",
                     user_message=_job_failure_diagnosis(statuses.rows),
-                    retryable=True,
+                    # 前端 Retry 是重发同一条消息，对已失败的任务无意义，置 False 避免误导。
+                    retryable=False,
                 ))
             else:
                 state.state = AgentState.AWAIT_FOLLOWUP
@@ -1167,7 +1168,10 @@ def _job_failure_diagnosis(rows: list[dict[str, Any]]) -> str:
     detail = "；".join(failed) or "分析任务未成功完成。"
     # 建议文案在脱敏前的原文上判定关键词，避免路径被替换后丢失线索。
     advice = _job_failure_advice(first_error_raw) if first_error_raw else "建议查看任务日志确认失败步骤后重新运行。"
-    return f"以下任务未能成功完成：{detail}。{advice}"
+    return (
+        f"以下任务未能成功完成：{detail}。{advice}"
+        "下一步：请修正输入后重新发起分析；如需帮助，我可以解释失败原因。"
+    )
 
 
 def _job_failure_advice(error_text: str) -> str:

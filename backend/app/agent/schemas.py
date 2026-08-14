@@ -48,7 +48,6 @@ class AgentAction(str, Enum):
     RUN_PREFLIGHT = "run_preflight"
     REQUEST_APPROVAL = "request_approval"
     ANSWER = "answer"
-    DIAGNOSE_FAILURE = "diagnose_failure"
 
 
 class FeasibilityVerdict(str, Enum):
@@ -61,9 +60,8 @@ class AgentState(str, Enum):
     COLLECT_INTENT = "COLLECT_INTENT"
     ADVISE = "ADVISE"
     CHECK_INPUTS = "CHECK_INPUTS"
-    PROPOSE_PLAN = "PROPOSE_PLAN"
+    # 仅 fixture 协调器使用；生产协调器直接生成审批进入 WAIT_EXECUTION_CONFIRMATION。
     WAIT_PLAN_CONFIRMATION = "WAIT_PLAN_CONFIRMATION"
-    PREFLIGHT = "PREFLIGHT"
     WAIT_EXECUTION_CONFIRMATION = "WAIT_EXECUTION_CONFIRMATION"
     SUBMIT_JOBS = "SUBMIT_JOBS"
     MONITOR_JOBS = "MONITOR_JOBS"
