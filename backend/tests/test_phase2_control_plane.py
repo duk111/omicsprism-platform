@@ -20,6 +20,7 @@ from backend.app.agent.schemas import (
     RunFocus,
     RunState,
     RunStatus,
+    RouteIntent,
     RouteTargetProfile,
     ToolName,
 )
@@ -90,6 +91,41 @@ def test_router_rules_cover_analysis_interpretation_description_and_unclear() ->
         _state(focus_ids=["fixture-job-1"]),
     ).target_profile is RouteTargetProfile.ANALYSIS
     assert router.route("随便聊聊", _state()).target_profile is RouteTargetProfile.ANALYSIS
+
+
+def test_router_parameter_answer_and_status_rules_respect_context() -> None:
+    """任务 B：宽词规则只在有意义的语境里生效，不吞掉纯咨询意图。"""
+    router = RuleRouter()
+
+    # 实验设计咨询（COLLECT_INTENT、draft 为空）不被参数答案规则吞掉。
+    consult = "实验组和对照组各设几个重复比较好？"
+    assert router.route(consult, _state()).intent is not RouteIntent.ANALYZE
+    assert router.route(consult, _state()).intent is RouteIntent.UNCLEAR
+    # 同一句话在待补参数时回到计划生成。
+    assert router.route(consult, _state(state=AgentState.NEED_USER_INPUT)).intent is RouteIntent.ANALYZE
+
+    # 参数补充答案在协商语境里回到计划生成。
+    assert router.route(
+        "比较列=treatment，实验组=salt，对照组=control",
+        _state(state=AgentState.NEED_USER_INPUT),
+    ).intent is RouteIntent.ANALYZE
+
+    # 弱状态词（状态/进度）在没有任务时不是状态查询。
+    assert router.route(
+        "这个分析的状态机是怎么设计的", _state(),
+    ).intent is not RouteIntent.CHECK_STATUS
+    # 强状态词即使没有任务也仍是状态查询（由运行时给出正确文案）。
+    assert router.route("任务跑完了吗", _state()).intent is RouteIntent.CHECK_STATUS
+
+    # 解读动词优先于状态词。
+    assert router.route(
+        "结果好了吗，顺便解读一下 top 基因",
+        _state(focus_ids=["job-1"]),
+    ).intent is RouteIntent.INTERPRET
+
+    # continuation 改为完全匹配：长句不再命中，单字「继续」命中。
+    assert router.route("好的，那就继续吧", _state()).intent is RouteIntent.UNCLEAR
+    assert router.route("继续", _state()).intent is RouteIntent.ANALYZE
 
 
 def test_profile_policy_is_structurally_closed() -> None:
