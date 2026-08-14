@@ -107,6 +107,7 @@ class VllmModelAdapter(StructuredModelAdapter):
         self.api_key = api_key
         self.max_output_tokens = max_output_tokens
         self.client = client or httpx.Client(timeout=timeout_seconds)
+        self.request_count = 0  # 真实 HTTP 次数，供协调器按次数计费
         super().__init__(self._complete_live)
 
     def decide(self, context: ModelContext) -> AgentDecision:
@@ -134,6 +135,7 @@ class VllmModelAdapter(StructuredModelAdapter):
         context: Mapping[str, JsonValue],
         invalid_response: Mapping[str, Any] | str | None = None,
     ) -> Mapping[str, Any] | str:
+        self.request_count += 1
         headers = {"Content-Type": "application/json"}
         if self.api_key:
             headers["Authorization"] = f"Bearer {self.api_key}"

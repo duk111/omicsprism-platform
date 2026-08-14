@@ -253,6 +253,16 @@ def create_worker(settings: AppSettings | None = None) -> AgentWorker:
         raise RuntimeError("agent worker requires OMICS_PRISM_EXECUTOR=redis")
     if not config.agent_model_url or not config.agent_model_name:
         raise RuntimeError("OMICS_PRISM_AGENT_MODEL_URL and OMICS_PRISM_AGENT_MODEL_NAME are required")
+    if config.agent_model_request_timeout_seconds * 2 > config.agent_turn_timeout_seconds:
+        # 单次模型请求超时 × 2（含一次 schema 修复的第二次请求）应当小于 turn 预算，
+        # 否则慢模型的一次修复就能耗尽整个 turn。只告警不 raise，避免配置漂移起不来。
+        LOGGER.warning(
+            "agent model request timeout (%.0fs) x2 exceeds the turn budget (%.0fs); "
+            "raise OMICS_PRISM_AGENT_TURN_TIMEOUT_SECONDS or lower "
+            "OMICS_PRISM_AGENT_MODEL_REQUEST_TIMEOUT_SECONDS.",
+            config.agent_model_request_timeout_seconds,
+            config.agent_turn_timeout_seconds,
+        )
 
     files = FileStorageService(config)
     jobs = JobStorageService(PostgresJobRepository(config.runtime_database_url))

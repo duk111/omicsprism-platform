@@ -10,6 +10,7 @@ from __future__ import annotations
 import re
 from datetime import datetime, timedelta, timezone
 
+import pytest
 from fastapi import HTTPException
 
 from backend.app.agent.approvals import InMemoryApprovalGate
@@ -17,6 +18,7 @@ from backend.app.agent.audit import InMemoryAgentEventStore
 from backend.app.agent.model import ModelAdapter
 from backend.app.agent.plans import InMemoryPlanStore
 from backend.app.agent.runtime import (
+    CoordinatorBudgetExceeded,
     ProductionRunCoordinator,
     _job_failure_diagnosis,
     _preference_params,
@@ -192,6 +194,32 @@ def _answer_decision(*, params: dict | None = None, answer: GroundedAnswer | Non
     )
 
 
+def _advisory_decision(answer: str) -> AgentDecision:
+    return AgentDecision(
+        action=AgentAction.ANSWER,
+        reasoning_summary="Bounded biological guidance",
+        feasibility=None,
+        analysis_recommendations=[],
+        requires_approval=False,
+        requested_params={},
+        grounded_answer=None,
+        advisory_answer=answer,
+    )
+
+
+class _HttpCountingModel:
+    """一次 decide 模拟发出 2 次 HTTP（含 schema 修复的第二次请求）。"""
+
+    request_count = 0
+
+    def __init__(self, decisions) -> None:
+        self.decisions = list(decisions)
+
+    def decide(self, context: ModelContext) -> AgentDecision:
+        self.request_count += 2
+        return self.decisions.pop(0).model_copy(deep=True)
+
+
 def _make_coordinator(
     *,
     model: ModelAdapter,
@@ -202,6 +230,7 @@ def _make_coordinator(
     plans: InMemoryPlanStore | None = None,
     approvals: InMemoryApprovalGate | None = None,
     state_store: InMemoryStateStore | None = None,
+    max_model_calls: int = 3,
 ) -> tuple[ProductionRunCoordinator, InMemoryStateStore, InMemoryPlanStore, InMemoryApprovalGate, _Jobs, _Executor]:
     state_store = state_store or InMemoryStateStore()
     try:
@@ -230,6 +259,7 @@ def _make_coordinator(
         event_store=InMemoryAgentEventStore(),
         model=model,
         tool_runtime=runtime,
+        max_model_calls=max_model_calls,
     )
     return coordinator, state_store, plans, approvals, jobs, executor
 
@@ -435,6 +465,55 @@ def test_e2e_bad_artifact_query_retries_with_hint_then_succeeds() -> None:
     assert model.contexts[1].retry_hint
     assert artifact in model.contexts[1].retry_hint
     assert model.decisions == []
+
+
+def test_e2e_call_model_counts_real_http_requests() -> None:
+    """任务 F：一次 decide 内发出多次 HTTP，turn_model_calls 按真实次数累加。"""
+    model = _HttpCountingModel([_advisory_decision("盐胁迫下 ABA 参与气孔调控。")])
+    state_store = InMemoryStateStore()
+    state_store.save(_state(state=AgentState.COLLECT_INTENT), expected_version=0)
+    coordinator, _store, _plans, _approvals, _jobs, _executor = _make_coordinator(
+        model=model,
+        inputs={},
+        state_store=state_store,
+    )
+
+    result = coordinator.execute_turn(turn=_turn("advise"), user_message="随便聊聊")
+
+    assert result.state.model_calls == 2  # 一次 decide() 对应 2 次 HTTP
+    assert model.request_count == 2
+
+
+def test_e2e_http_count_exceeds_budget_raises() -> None:
+    """任务 F：HTTP 计费口径下越过 max_model_calls 即抛预算异常。"""
+    now = datetime.now(timezone.utc)
+    artifact, job = _evidence_job(now)
+    draft = GroundedAnswer(claims=[GroundedClaim(
+        text="GeneA 的 PearsonR 为 0.71",
+        citation=Citation(artifact=artifact, checksum="sha256:evidence", row_ids=[1]),
+    )])
+    state_store = InMemoryStateStore()
+    state_store.save(_state(
+        profile=ActiveProfile.INTERPRETATION,
+        state=AgentState.ANSWER_WITH_EVIDENCE,
+        focus=["job-1"],
+    ), expected_version=0)
+    model = _HttpCountingModel([
+        _answer_decision(params={"job_id": "job-1", "artifact": artifact}),
+        _answer_decision(answer=draft),
+    ])
+    coordinator, _store, _plans, _approvals, _jobs, _executor = _make_coordinator(
+        model=model,
+        inputs={},
+        jobs=_Jobs(job),
+        files=_Files("Source,Target,EdgeWeight,PearsonR\nGeneA,M0123,0.82,0.71\n"),
+        state_store=state_store,
+        max_model_calls=1,
+    )
+
+    # 查询决策一次 decide 就计 2 次 HTTP，第二次 call_model 在进入前即被预算挡住。
+    with pytest.raises(CoordinatorBudgetExceeded):
+        coordinator.execute_turn(turn=_turn("budget"), user_message="解释这个结果")
 
 
 def test_e2e_bad_artifact_query_both_attempts_fail_then_degrades() -> None:

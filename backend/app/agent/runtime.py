@@ -74,7 +74,12 @@ AGENT_EVIDENCE_MAX_BYTES = 12 * 1024
 
 
 class ProductionRunCoordinator:
-    """生产 turn 的有界协调器；所有 I/O 都经注入的 store、model 与 tool 接口。"""
+    """生产 turn 的有界协调器；所有 I/O 都经注入的 store、model 与 tool 接口。
+
+    max_model_calls 按真实模型 HTTP 次数计费：暴露 request_count 的 adapter
+    （vLLM，一次 decide 可能触发 schema 修复的第二次请求）按增量累加，
+    Scripted/Fixture adapter 无 request_count，每次 decide 按 1 次计。
+    """
 
     def __init__(
         self,
@@ -129,8 +134,15 @@ class ProductionRunCoordinator:
                 raise CoordinatorBudgetExceeded("agent model call budget exceeded")
             if monotonic() - started > self.timeout_seconds:
                 raise CoordinatorBudgetExceeded("agent turn time budget exceeded")
-            turn_model_calls += 1
-            return self._model(context)
+            # 按真实 HTTP 次数计费：暴露 request_count 的 adapter（vLLM，一次 decide
+            # 可能含 schema 修复的第二次请求）按增量累加；Scripted/Fixture 按 1 次计。
+            before = getattr(self.model, "request_count", None)
+            result = self._model(context)
+            if before is None:
+                turn_model_calls += 1
+            else:
+                turn_model_calls += getattr(self.model, "request_count", before) - before
+            return result
 
         def call_tool(executor: PolicyToolExecutor, name: ToolName, **kwargs: Any) -> ToolResult:
             nonlocal turn_tool_calls
