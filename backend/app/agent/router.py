@@ -21,6 +21,9 @@ class RuleRouter:
 
     新增关键词规则时必须说明它在什么状态下生效：宽词（如「状态」「进度」）一律
     要有状态门（state.focus / state.state），避免把纯咨询意图吞进分析/状态流程。
+
+    表达「补充/修改分析参数」的规则必须置 is_param_negotiation=True：下游用它
+    （而不是 reason 文案）决定是否作废待批计划、是否保留 draft_params。
     """
 
     def route(self, user_message: str, state: RunState) -> RouteDecision:
@@ -49,7 +52,6 @@ class RuleRouter:
         param_context_terms = ("比较", "对照", "实验组", "对照组", "阈值", "padj", "log2fc", "min_replicates", "min_total_count")
         # 参数答案只在本轮协商中生效（待补参数或已有 draft），否则是实验设计咨询。
         param_answer_terms = ("比较列", "实验组", "对照组", "分组列", "组别", "阈值", "padj", "log2fc")
-        continuation_matches = {"继续", "继续吧", "下一步", "好的", "好", "可以", "ok", "continue", "go on"}
         attached_capability_terms = (
             "这个数据能做什么", "这些数据能做什么", "这两个数据能做什么",
             "这个文件能做什么", "这些文件能做什么", "这两个文件能做什么",
@@ -81,13 +83,23 @@ class RuleRouter:
         if any(term in text for term in describe_terms) and not _has_analysis_terms(text):
             return RouteDecision(intent=RouteIntent.DESCRIBE_ONLY, target_profile=RouteTargetProfile.ANALYSIS, reason="analysis consultation")
         if any(term in text for term in adjust_terms) and any(term in text for term in param_context_terms):
-            return RouteDecision(intent=RouteIntent.ANALYZE, target_profile=RouteTargetProfile.ANALYSIS, reason="parameter adjustment intent")
+            return RouteDecision(
+                intent=RouteIntent.ANALYZE,
+                target_profile=RouteTargetProfile.ANALYSIS,
+                reason="parameter adjustment intent",
+                is_param_negotiation=True,
+            )
         # 参数答案（多轮协商里用户补充比较列/实验组/对照组/阈值）应回到计划生成流程，
         # 但只在协商语境（待补参数或已有 draft）里生效，避免吞掉实验设计咨询。
         if any(term in text for term in param_answer_terms) and (
             state.state is AgentState.NEED_USER_INPUT or bool(state.focus.draft_params)
         ):
-            return RouteDecision(intent=RouteIntent.ANALYZE, target_profile=RouteTargetProfile.ANALYSIS, reason="parameter answer intent")
+            return RouteDecision(
+                intent=RouteIntent.ANALYZE,
+                target_profile=RouteTargetProfile.ANALYSIS,
+                reason="parameter answer intent",
+                is_param_negotiation=True,
+            )
         if _has_analysis_terms(text):
             return RouteDecision(intent=RouteIntent.ANALYZE, target_profile=RouteTargetProfile.ANALYSIS, reason="analysis intent")
         if any(term in text for term in interpret_terms):
@@ -99,10 +111,13 @@ class RuleRouter:
         return RouteDecision(intent=RouteIntent.UNCLEAR, target_profile=RouteTargetProfile.ANALYSIS, reason="bounded biology consultation")
 
 
+_CONTINUATION_MATCHES = {"继续", "继续吧", "下一步", "好的", "好", "可以", "ok", "continue", "go on"}
+
+
 def _is_continuation(text: str) -> bool:
     """完全匹配的延续词；去掉首尾标点/空白，内部标点不算（避免吞掉长句）。"""
     stripped = text.strip(" \t\r\n，。！？、；：,.!?;:'\"()（）[]【】")
-    return stripped in {"继续", "继续吧", "下一步", "好的", "好", "可以", "ok", "continue", "go on"}
+    return stripped in _CONTINUATION_MATCHES
 
 
 # 「比较」单独做边界匹配：避免「比较好/比较合适」等比较级误命中分析意图。

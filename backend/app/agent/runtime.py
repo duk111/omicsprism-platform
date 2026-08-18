@@ -13,7 +13,7 @@ from .approvals import ApprovalExpired, ApprovalGate, ApprovalMismatch, Approval
 from .audit import AgentEventStore, InMemoryAgentEventStore
 from .context import MinimalContextBuilder, build_input_summaries
 from .grounding import GroundedAnswerPipeline
-from .model import ModelAdapter
+from .model import ModelAdapter, ModelBoundaryError
 from .plans import PlanNotFound, PlanStore, compute_plan_hash
 from .policy import ProfilePolicyGuard
 from .router import RuleRouter
@@ -36,6 +36,7 @@ from .schemas import (
     ActiveProfile,
     AdvisoryCategory,
     ApprovalStatus,
+    GroundedAnswer,
     InputInspectionSummary,
     PlanRecord,
     RouteIntent,
@@ -47,7 +48,7 @@ from .schemas import (
 )
 from .store import StateNotFound, StateStore
 from .tools import AgentToolRuntime, PolicyToolExecutor, ToolConfigurationError, ToolRegistry
-from .validator import DecisionValidator
+from .validator import DecisionValidator, InvalidDecision
 
 
 class RunCoordinator(Protocol):
@@ -79,6 +80,10 @@ class ProductionRunCoordinator:
     max_model_calls 按真实模型 HTTP 次数计费：暴露 request_count 的 adapter
     （vLLM，一次 decide 可能触发 schema 修复的第二次请求）按增量累加，
     Scripted/Fixture adapter 无 request_count，每次 decide 按 1 次计。
+
+    默认值 6 是按 HTTP 口径算出来的：解读 turn 最多 3 次 decide
+    （查询 + 查询重试 + 答案），每次 decide 最多 2 次 HTTP（含一次 schema 修复）。
+    改这个数值时必须同时看这两个乘数，不要沿用「决策次数」的直觉。
     """
 
     def __init__(
@@ -91,7 +96,7 @@ class ProductionRunCoordinator:
         model: ModelAdapter,
         tool_runtime: AgentToolRuntime,
         max_transitions: int = 8,
-        max_model_calls: int = 3,
+        max_model_calls: int = 6,
         max_tool_calls: int = 6,
         timeout_seconds: float = 90.0,
     ) -> None:
@@ -187,7 +192,10 @@ class ProductionRunCoordinator:
                             category=AdvisoryCategory.ANALYSIS_GUIDANCE,
                             text=_input_receipt_text(roles, self.context_builder),
                         ))
-                    elif route.intent in {RouteIntent.ANALYZE, RouteIntent.RERUN}:
+                    elif route.is_param_negotiation or route.intent is RouteIntent.RERUN:
+                        # 作废是破坏性动作，只认明确的参数修改/重跑信号。宽泛的分析意图
+                        # （「这个分析大概要跑多久」也会命中 ANALYZE）不能作废待批计划，
+                        # 否则用户问一句话就凭空多出一张审批卡片。
                         # 改参数/重新分析必然要重新生成计划、重新审批；作废旧审批后
                         # 在同一 turn 内继续走 CHECK_INPUTS，避免让用户多拒绝一步。
                         old_plan_id = state.plan_id
@@ -246,9 +254,11 @@ class ProductionRunCoordinator:
                         blocks.append(AgentTextBlock(text=_STATUS_NOT_RUNNING_TEXT))
                         state.state = AgentState.AWAIT_FOLLOWUP
                     break
-                if route.intent in {RouteIntent.ANALYZE, RouteIntent.RERUN} and route.reason != "parameter answer intent":
+                if route.intent in {RouteIntent.ANALYZE, RouteIntent.RERUN} and not route.is_param_negotiation:
                     # 新一轮分析请求：放弃未完成的参数协商（保留长期偏好），
                     # 避免旧一轮的 compare_field 污染新的、可能是不同类型的计划。
+                    # 判据必须是 is_param_negotiation：参数补充与参数修改是同一件事，
+                    # 「对照组改成 control」不能因为命中的是另一条规则就被当成新一轮。
                     state.focus.draft_params = {}
                     state.focus.draft_analysis_type = None
                 if route.target_profile is RouteTargetProfile.ANALYSIS:
@@ -453,7 +463,11 @@ class ProductionRunCoordinator:
                 state.pending_approval_id = approval_id
                 state.focus.draft_params = {}
                 state.focus.draft_analysis_type = None
-                state.focus.preferences.update(_preference_params(plan.effective_params))
+                # 整体赋值而不是 dict.update()：原地修改会绕过 validate_assignment。
+                state.focus.preferences = {
+                    **state.focus.preferences,
+                    **_preference_params(plan.effective_params),
+                }
                 state.state = AgentState.WAIT_EXECUTION_CONFIRMATION
                 state.status = RunStatus.SUSPENDED
                 warnings = [_issue_text(item) for item in list(row.get("warnings") or [])]
@@ -570,7 +584,13 @@ class ProductionRunCoordinator:
                         repaired_decision = call_model(repair_context)
                         self.validator.validate(state, repaired_decision)
                         return repaired_decision.grounded_answer or candidate
-                    except CoordinatorBudgetExceeded:
+                    except (
+                        CoordinatorBudgetExceeded,
+                        ModelBoundaryError,
+                        InvalidDecision,
+                    ):
+                        # 修复请求本身返回坏 JSON 或与状态冲突时，退回原草稿让
+                        # pipeline 走既有 fallback；容错通道不能新增硬失败入口。
                         return candidate
 
                 if evidence.rows:
@@ -606,8 +626,12 @@ class ProductionRunCoordinator:
 
         if transitions >= self.max_transitions and not blocks:
             raise CoordinatorBudgetExceeded("agent transition budget exceeded")
-        if turn_model_calls > self.max_model_calls or turn_tool_calls > self.max_tool_calls:
-            raise CoordinatorBudgetExceeded("agent call budget exceeded")
+        # 模型预算只在调用前拦截（call_model 里的预检查）。这里不再做收尾判定：
+        # HTTP 计费口径下最后一次 decide 可能一次记 2 笔而略微越界，此时 turn 的
+        # 结果已经产出，再抛异常会把用户已经算好的答案整个丢掉。工具调用没有这个
+        # 「一次调用记多笔」的问题，仍保留收尾校验。
+        if turn_tool_calls > self.max_tool_calls:
+            raise CoordinatorBudgetExceeded("agent tool call budget exceeded")
         state.model_calls += turn_model_calls
         state.tool_calls += turn_tool_calls
         state.step_no += transitions
@@ -703,7 +727,7 @@ class ProductionRunCoordinator:
             return {}, None
         params = plan.effective_params
         compare = {
-            key: params[key]
+            key: _as_param_value(params[key])
             for key in ("compare_field", "tested_levels", "reference_level")
             if params.get(key)
         }
@@ -718,7 +742,9 @@ class ProductionRunCoordinator:
         except ToolConfigurationError:
             # 没有输入来源时无参数记忆可用，也不需要校验作用域。
             return
-        current_ref = current.model_dump_json()
+        # 只存指纹：这里唯一需要的语义是「来源变没变」，没必要把 source_id
+        # 原样留在 focus 里。
+        current_ref = sha256(current.model_dump_json().encode("utf-8")).hexdigest()[:16]
         if state.focus.params_source_ref != current_ref:
             state.focus.draft_params = {}
             state.focus.draft_analysis_type = None
@@ -1126,7 +1152,25 @@ _PREFERENCE_KEYS = ("padj_cutoff", "log2fc_cutoff", "min_total_count", "min_repl
 
 def _preference_params(effective_params: dict[str, Any]) -> dict[str, Any]:
     """从最近一次计划中提炼跨会话保留的分析偏好（阈值类）。"""
-    return {key: effective_params[key] for key in _PREFERENCE_KEYS if key in effective_params}
+    return {
+        key: _as_param_value(effective_params[key])
+        for key in _PREFERENCE_KEYS
+        if key in effective_params
+    }
+
+
+def _as_param_value(value: Any) -> Any:
+    """收敛成 AgentParamValue 允许的标量。
+
+    RunFocus 的参数字典是强类型的，而 effective_params 来自预检结果、
+    未来可能出现多水平 list。这里统一按下游 `_complete_contrast_params` 的
+    读法（一律 str()）折成文本，避免在写入 focus 的地方抛 ValidationError。
+    """
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    if isinstance(value, (list, tuple, set)):
+        return ",".join(str(item) for item in value)[:200]
+    return str(value)[:200]
 
 
 def _sanitize_error_text(text: str, *, limit: int) -> str:

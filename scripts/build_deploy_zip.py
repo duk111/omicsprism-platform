@@ -38,7 +38,8 @@ def _excluded_file(name: str, rel: str) -> bool:
         return True
     if name in {".env"} or (name.startswith(".env.") and name != ".env.example"):
         return True
-    if rel.replace(os.sep, "/").endswith("frontend/public/examples/"):
+    # 判的是文件相对路径，永远不会以 "/" 结尾；必须按目录前缀匹配。
+    if rel.replace(os.sep, "/").startswith(("omicsprism-platform/frontend/public/examples/",)):
         return True
     return False
 

@@ -139,6 +139,10 @@ class RouteDecision(ContractModel):
     intent: RouteIntent
     target_profile: RouteTargetProfile
     reason: str = Field(min_length=1)
+    # 显式的「本条消息在补充/修改分析参数」信号。reason 只是给人看的说明，
+    # 不能用于控制流：改一句文案就会改变行为。待批期是否作废旧计划、
+    # 是否清空 draft_params 都以这个布尔为准。
+    is_param_negotiation: bool = False
 
 
 BriefModelText = Annotated[str, Field(min_length=1, max_length=240)]
@@ -281,6 +285,10 @@ class Citation(ContractModel):
 
 
 class RunFocus(ContractModel):
+    # 参数记忆的类型门只有在赋值时校验才有意义：否则脏值写得进去、
+    # 下一 turn 读库时才在一个与写入点无关的地方抛 ValidationError。
+    model_config = ConfigDict(extra="forbid", validate_assignment=True)
+
     in_scope_job_ids: list[str]
     resolved_entities: dict[str, str]
     last_citation: Citation | None

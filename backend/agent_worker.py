@@ -167,7 +167,8 @@ class ProductionTurnProcessor:
                  plan_store: PostgresPlanStore, approvals: PostgresApprovalGate,
                  events: PostgresAgentEventStore, model: VllmModelAdapter,
                  job_store: JobStorageService, files: FileStorageService,
-                 executor: RedisJobExecutor, timeout_seconds: float = 90.0) -> None:
+                 executor: RedisJobExecutor, timeout_seconds: float = 90.0,
+                 max_model_calls: int = 6) -> None:
         self.product_store = product_store
         self.state_store = state_store
         self.plan_store = plan_store
@@ -178,6 +179,7 @@ class ProductionTurnProcessor:
         self.files = files
         self.executor = executor
         self.timeout_seconds = timeout_seconds
+        self.max_model_calls = max_model_calls
 
     def process(self, turn: AgentTurnRecord) -> AgentTurnExecutionResult:
         state = self.state_store.get(run_id=turn.run_id, user_id=turn.user_id)
@@ -235,6 +237,7 @@ class ProductionTurnProcessor:
             model=self.model,
             tool_runtime=tool_runtime,
             timeout_seconds=self.timeout_seconds,
+            max_model_calls=self.max_model_calls,
         ).execute_turn(
             turn=turn,
             user_message=user_message,
@@ -263,6 +266,14 @@ def create_worker(settings: AppSettings | None = None) -> AgentWorker:
             config.agent_model_request_timeout_seconds,
             config.agent_turn_timeout_seconds,
         )
+    if config.agent_max_model_calls < 6:
+        # 计费口径是真实 HTTP 次数：解读 turn 最多 3 次 decide（查询 + 重试 + 答案），
+        # 每次 decide 在 schema 修复时会发 2 次 HTTP。低于 6 时证据重试链路必然被截断。
+        LOGGER.warning(
+            "agent max model calls (%d) is below the 6 HTTP requests a full interpretation "
+            "turn can need; evidence retry or schema repair will be cut short.",
+            config.agent_max_model_calls,
+        )
 
     files = FileStorageService(config)
     jobs = JobStorageService(PostgresJobRepository(config.runtime_database_url))
@@ -286,6 +297,7 @@ def create_worker(settings: AppSettings | None = None) -> AgentWorker:
         files=files,
         executor=executor,
         timeout_seconds=config.agent_turn_timeout_seconds,
+        max_model_calls=config.agent_max_model_calls,
     )
     worker_id = os.getenv("OMICS_PRISM_AGENT_WORKER_ID") or f"{socket.gethostname()}-{os.getpid()}"
     return AgentWorker(

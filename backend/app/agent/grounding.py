@@ -111,13 +111,21 @@ class GroundedAnswerPipeline:
         draft: GroundedAnswer | None = None,
         repair: Callable[[GroundedAnswer, Any], GroundedAnswer] | None = None,
     ) -> GroundedAnswer:
-        candidate = self.grounder.ground(evidence, draft)
+        # 模型草稿引用非法（错 artifact/checksum、行号不在本轮证据里）是常见的
+        # 语义错误，不是系统故障：降级到原始证据展示，不要把整个 turn 打掉。
+        try:
+            candidate = self.grounder.ground(evidence, draft)
+        except EvidenceGroundingError:
+            return self.grounder.fallback(evidence)
         verdict = self.verifier.verify(candidate, [evidence])
         if verdict.verdict.value == "approved":
             return candidate
         if repair is not None:
-            repaired = self.grounder.ground(evidence, repair(candidate, verdict))
-            if self.verifier.verify(repaired, [evidence]).verdict.value == "approved":
+            try:
+                repaired = self.grounder.ground(evidence, repair(candidate, verdict))
+            except EvidenceGroundingError:
+                repaired = None
+            if repaired is not None and self.verifier.verify(repaired, [evidence]).verdict.value == "approved":
                 return repaired
         return self.grounder.fallback(evidence)
 
