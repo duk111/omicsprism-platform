@@ -1,17 +1,18 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+from decimal import Decimal
 from hashlib import sha256
 import json
 import re
 from time import monotonic
-from typing import Any, Protocol, Sequence
+from typing import Any, Mapping, Protocol, Sequence
 from uuid import uuid4
 
 from ..models import AnalysisType, JobStatus
 from .approvals import ApprovalExpired, ApprovalGate, ApprovalMismatch, ApprovalNotFound, InMemoryApprovalGate
 from .audit import AgentEventStore, InMemoryAgentEventStore
-from .context import MinimalContextBuilder, build_input_summaries
+from .context import MinimalContextBuilder, build_analysis_capabilities, build_input_summaries
 from .grounding import GroundedAnswerPipeline
 from .model import ModelAdapter, ModelBoundaryError
 from .plans import PlanNotFound, PlanStore, compute_plan_hash
@@ -26,6 +27,7 @@ from .schemas import (
     AgentEvidenceBlock,
     AgentJobBlock,
     AgentMessageBlock,
+    AgentNarrationDecision,
     AgentPlanBlock,
     AgentRecommendationBlock,
     AgentRecommendationItem,
@@ -81,8 +83,8 @@ class ProductionRunCoordinator:
     （vLLM，一次 decide 可能触发 schema 修复的第二次请求）按增量累加，
     Scripted/Fixture adapter 无 request_count，每次 decide 按 1 次计。
 
-    默认值 6 是按 HTTP 口径算出来的：解读 turn 最多 3 次 decide
-    （查询 + 查询重试 + 答案），每次 decide 最多 2 次 HTTP（含一次 schema 修复）。
+    默认值 8 是按 HTTP 口径算出来的：1 次路由 decide 加解读 turn 最多 3 次
+    decide（查询 + 查询重试 + 答案），每次 decide 最多 2 次 HTTP（含一次 schema 修复）。
     改这个数值时必须同时看这两个乘数，不要沿用「决策次数」的直觉。
     """
 
@@ -96,9 +98,10 @@ class ProductionRunCoordinator:
         model: ModelAdapter,
         tool_runtime: AgentToolRuntime,
         max_transitions: int = 8,
-        max_model_calls: int = 6,
+        max_model_calls: int = 8,
         max_tool_calls: int = 6,
         timeout_seconds: float = 90.0,
+        router: Any | None = None,
     ) -> None:
         self.state_store = state_store
         self.plan_store = plan_store
@@ -106,7 +109,7 @@ class ProductionRunCoordinator:
         self.events = event_store
         self.model = model
         self.tool_runtime = tool_runtime
-        self.router = RuleRouter()
+        self.router = router or RuleRouter()
         self.context_builder = MinimalContextBuilder()
         self.validator = DecisionValidator()
         self.grounded_answers = GroundedAnswerPipeline()
@@ -128,6 +131,7 @@ class ProductionRunCoordinator:
         turn_model_calls = 0
         turn_tool_calls = 0
         pending_events: list[AgentEvent] = []
+        tool_history: list[ToolResult] = []
         advisory_category = AdvisoryCategory.GENERAL_BIOLOGY
         advisory_input_roles: list[str] = []
         advisory_input_summaries = []
@@ -142,12 +146,14 @@ class ProductionRunCoordinator:
             # 按真实 HTTP 次数计费：暴露 request_count 的 adapter（vLLM，一次 decide
             # 可能含 schema 修复的第二次请求）按增量累加；Scripted/Fixture 按 1 次计。
             before = getattr(self.model, "request_count", None)
-            result = self._model(context)
-            if before is None:
-                turn_model_calls += 1
-            else:
-                turn_model_calls += getattr(self.model, "request_count", before) - before
-            return result
+            try:
+                return self._model(context)
+            finally:
+                if before is None:
+                    turn_model_calls += 1
+                else:
+                    delta = getattr(self.model, "request_count", before) - before
+                    turn_model_calls += max(1, delta)
 
         def call_tool(executor: PolicyToolExecutor, name: ToolName, **kwargs: Any) -> ToolResult:
             nonlocal turn_tool_calls
@@ -156,7 +162,10 @@ class ProductionRunCoordinator:
             if monotonic() - started > self.timeout_seconds:
                 raise CoordinatorBudgetExceeded("agent turn time budget exceeded")
             turn_tool_calls += 1
-            return self._tool(executor, name, **kwargs)
+            result = self._tool(executor, name, **kwargs)
+            tool_history.append(_bounded_tool_result(result))
+            del tool_history[:-4]
+            return result
 
         while transitions < self.max_transitions:
             if monotonic() - started > self.timeout_seconds:
@@ -175,12 +184,12 @@ class ProductionRunCoordinator:
                     if route.intent is RouteIntent.EXPLAIN_PLAN:
                         blocks.append(AgentAdvisoryBlock(
                             category=AdvisoryCategory.ANALYSIS_GUIDANCE,
-                            text=self._explain_current_plan(state),
+                            text=self._explain_plan_narration(state, self._explain_current_plan(state), call_model),
                         ))
                     elif route.intent is RouteIntent.HELP:
                         blocks.append(AgentAdvisoryBlock(
                             category=AdvisoryCategory.ANALYSIS_GUIDANCE,
-                            text=_CAPABILITY_HELP,
+                            text=self._capability_help_narration(state, _CAPABILITY_HELP, call_model),
                         ))
                     elif route.intent is RouteIntent.DESCRIBE_ONLY and self.tool_runtime.inputs:
                         inspected = call_tool(
@@ -190,7 +199,7 @@ class ProductionRunCoordinator:
                         roles = [str(row.get("field")) for row in inspected.rows]
                         blocks.append(AgentAdvisoryBlock(
                             category=AdvisoryCategory.ANALYSIS_GUIDANCE,
-                            text=_input_receipt_text(roles, self.context_builder),
+                            text=self._input_receipt_narration(state, inspected.rows, call_model),
                         ))
                     elif route.is_param_negotiation or route.intent is RouteIntent.RERUN:
                         # 作废是破坏性动作，只认明确的参数修改/重跑信号。宽泛的分析意图
@@ -223,10 +232,42 @@ class ProductionRunCoordinator:
                             "approval_id": old_approval_id,
                             "plan_id": old_plan_id,
                         }))
-                        blocks.append(AgentTextBlock(text=_PLAN_SUPERSEDED_TEXT))
+                        blocks.append(AgentTextBlock(text=self._narrate(
+                            state=state,
+                            system_facts=_plan_superseded_facts(old_analysis_type, None, old_params),
+                            fallback=_PLAN_SUPERSEDED_TEXT,
+                            call_model=call_model,
+                        )))
                         continue
                     else:
-                        blocks.append(AgentTextBlock(text=_PENDING_PLAN_TEXT))
+                        try:
+                            approval = self.approvals.get_owned(
+                                approval_id=state.pending_approval_id or "",
+                                user_id=state.user_id,
+                            )
+                            plan = self.plan_store.get(
+                                plan_id=state.plan_id or "",
+                                user_id=state.user_id,
+                            )
+                            remaining_seconds = (
+                                approval.expires_at - datetime.now(timezone.utc)
+                            ).total_seconds()
+                            facts = {
+                                "situation": "pending_approval",
+                                "analysis_type": plan.analysis_type.value,
+                                "contrast_count": len(plan.contrasts),
+                                "expires_in_minutes": max(0, int(remaining_seconds + 59) // 60),
+                                "user_options": ["approve", "reject", "modify_params", "explain_plan"],
+                            }
+                            text = self._narrate(
+                                state=state,
+                                system_facts=facts,
+                                fallback=_PENDING_PLAN_TEXT,
+                                call_model=call_model,
+                            )
+                        except Exception:
+                            text = _PENDING_PLAN_TEXT
+                        blocks.append(AgentTextBlock(text=text))
                     break
 
             # 终止/阻塞状态仍允许用户在同一会话继续提问或修正输入。
@@ -249,9 +290,14 @@ class ProductionRunCoordinator:
                     # 判据是 focus 里有没有任务，而不是当前状态：任务成功后是
                     # AWAIT_FOLLOWUP、失败后是 JOB_FAILED，此时仍应能查到任务。
                     if state.focus.in_scope_job_ids:
-                        blocks.extend(self._poll_jobs(state, call_tool))
+                        blocks.extend(self._poll_jobs(state, call_tool, call_model))
                     else:
-                        blocks.append(AgentTextBlock(text=_STATUS_NOT_RUNNING_TEXT))
+                        blocks.append(AgentTextBlock(text=self._narrate(
+                            state=state,
+                            system_facts={"situation": "status_not_running", "has_inputs": bool(self.tool_runtime.inputs), "has_pending_plan": bool(state.pending_approval_id)},
+                            fallback=_STATUS_NOT_RUNNING_TEXT,
+                            call_model=call_model,
+                        )))
                         state.state = AgentState.AWAIT_FOLLOWUP
                     break
                 if route.intent in {RouteIntent.ANALYZE, RouteIntent.RERUN} and not route.is_param_negotiation:
@@ -266,14 +312,14 @@ class ProductionRunCoordinator:
                     if route.intent is RouteIntent.EXPLAIN_PLAN:
                         blocks.append(AgentAdvisoryBlock(
                             category=AdvisoryCategory.ANALYSIS_GUIDANCE,
-                            text=self._explain_current_plan(state),
+                            text=self._explain_plan_narration(state, self._explain_current_plan(state), call_model),
                         ))
                         state.state = AgentState.AWAIT_FOLLOWUP
                         break
                     if route.intent is RouteIntent.HELP:
                         blocks.append(AgentAdvisoryBlock(
                             category=AdvisoryCategory.ANALYSIS_GUIDANCE,
-                            text=_CAPABILITY_HELP,
+                            text=self._capability_help_narration(state, _CAPABILITY_HELP, call_model),
                         ))
                         state.state = AgentState.AWAIT_FOLLOWUP
                         break
@@ -285,7 +331,7 @@ class ProductionRunCoordinator:
                         roles = [str(row.get("field")) for row in inspected.rows]
                         blocks.append(AgentAdvisoryBlock(
                             category=AdvisoryCategory.ANALYSIS_GUIDANCE,
-                            text=_input_receipt_text(roles, self.context_builder),
+                            text=self._input_receipt_narration(state, inspected.rows, call_model),
                         ))
                         state.state = AgentState.AWAIT_FOLLOWUP
                         break
@@ -343,7 +389,7 @@ class ProductionRunCoordinator:
                     if available_input_roles:
                         blocks.append(AgentAdvisoryBlock(
                             category=AdvisoryCategory.ANALYSIS_GUIDANCE,
-                            text=_input_receipt_text(available_input_roles, self.context_builder),
+                            text=self._input_receipt_narration(state, inspected.rows, call_model),
                         ))
                         state.state = AgentState.NEED_USER_INPUT
                         break
@@ -353,17 +399,44 @@ class ProductionRunCoordinator:
                     advisory_needs_inputs = True
                     state.state = AgentState.ADVISE
                     continue
-                context = self.context_builder.build(
-                    state=state,
-                    active_profile=ActiveProfile.ANALYSIS,
-                    user_message=user_message,
-                    conversation_summary=conversation_summary,
-                    available_input_roles=available_input_roles,
-                    input_summaries=input_summaries,
-                    confirmed_params={**state.focus.preferences, **state.focus.draft_params},
-                )
-                decision = call_model(context)
-                self.validator.validate(state, decision)
+                retry_hint = None
+                readonly_steps = 0
+                decision = None
+                while True:
+                    context = self.context_builder.build(
+                        state=state,
+                        active_profile=ActiveProfile.ANALYSIS,
+                        user_message=user_message,
+                        conversation_summary=conversation_summary,
+                        available_input_roles=available_input_roles,
+                        input_summaries=input_summaries,
+                        confirmed_params={**state.focus.preferences, **state.focus.draft_params},
+                        retry_hint=retry_hint,
+                        tool_history=tool_history,
+                        allow_tool_calls=True,
+                    )
+                    decision = call_model(context)
+                    try:
+                        self.validator.validate(state, decision)
+                    except InvalidDecision:
+                        if getattr(decision, "action", None) is AgentAction.CALL_TOOL and readonly_steps < 4:
+                            readonly_steps += 1
+                            retry_hint = self._readonly_retry_hint(decision)
+                            continue
+                        raise
+                    if decision.action is not AgentAction.CALL_TOOL:
+                        break
+                    if readonly_steps >= 4:
+                        decision = None
+                        break
+                    readonly_steps += 1
+                    tool_name, tool_kwargs = self._readonly_tool_kwargs(decision, state)
+                    call_tool(executor, tool_name, **tool_kwargs)
+                    retry_hint = None
+                if decision is None:
+                    state.state = AgentState.NEED_USER_INPUT
+                    blocks.append(AgentTextBlock(text="只读查询已达到本轮上限，请缩小问题范围后继续。"))
+                    break
                 if decision.action is AgentAction.REQUEST_MORE_DATA:
                     state.state = AgentState.NEED_USER_INPUT
                     missing = decision.feasibility.missing_information if decision.feasibility else []
@@ -405,16 +478,21 @@ class ProductionRunCoordinator:
                     state.state = AgentState.NEED_USER_INPUT
                     blocks.append(AgentTextBlock(text=contrast_question))
                     break
-                preflight = call_tool(
-                    executor,
-                    ToolName.RUN_PREFLIGHT,
-                    analysis_type=analysis_type,
-                    params=requested_params,
+                preflight = next(
+                    (item for item in reversed(tool_history) if item.tool is ToolName.RUN_PREFLIGHT),
+                    None,
                 )
+                if preflight is None:
+                    preflight = call_tool(
+                        executor,
+                        ToolName.RUN_PREFLIGHT,
+                        analysis_type=analysis_type,
+                        params=requested_params,
+                    )
                 if not preflight.ok or not preflight.rows:
                     state.state = AgentState.PREFLIGHT_BLOCKED
                     errors = (
-                        [_issue_text(item) for item in list(preflight.rows[0].get("errors") or [])]
+                        [_issue_text(item)[:200] for item in list(preflight.rows[0].get("errors") or [])]
                         if preflight.rows else []
                     )
                     detail = "；".join(errors[:3])
@@ -423,7 +501,20 @@ class ProductionRunCoordinator:
                         message += f"{detail}"
                     else:
                         message += "请检查文件角色、样本名、分组列和比较参数。"
-                    blocks.append(AgentTextBlock(text=message))
+                    facts = {
+                        "situation": "preflight_blocked",
+                        "analysis_type": analysis_type.value,
+                        "error_count": len(errors),
+                        "errors": errors[:3],
+                        "roles_present": sorted(available_input_roles)[:20],
+                        "alignment": preflight.rows[0].get("alignment"),
+                    }
+                    blocks.append(AgentTextBlock(text=self._narrate(
+                        state=state,
+                        system_facts=facts,
+                        fallback=message,
+                        call_model=call_model,
+                    )))
                     break
                 row = preflight.rows[0]
                 plan = PlanRecord(
@@ -480,6 +571,7 @@ class ProductionRunCoordinator:
                         effective_params=plan.effective_params,
                         contrasts=plan.contrasts,
                         warnings=warnings,
+                        inference_note=(getattr(decision, "inference_note", None) or _inference_note(requested_params, input_summaries))[:200] or None,
                         expires_at=expires_at,
                     ),
                     AgentApprovalBlock(
@@ -517,7 +609,7 @@ class ProductionRunCoordinator:
                 break
 
             if state.state is AgentState.MONITOR_JOBS:
-                blocks.extend(self._poll_jobs(state, call_tool))
+                blocks.extend(self._poll_jobs(state, call_tool, call_model))
                 break
 
             if state.state is AgentState.ANSWER_WITH_EVIDENCE:
@@ -538,7 +630,7 @@ class ProductionRunCoordinator:
                     blocks.append(AgentTextBlock(text=_missing_result_artifacts_text(statuses.rows)))
                     state.state = AgentState.AWAIT_FOLLOWUP
                     break
-                evidence, failure = self._evidence_query_once(
+                evidence, failure, answer_draft = self._evidence_query_once(
                     state=state,
                     user_message=user_message,
                     conversation_summary=conversation_summary,
@@ -547,12 +639,13 @@ class ProductionRunCoordinator:
                     executor=executor,
                     call_model=call_model,
                     call_tool=call_tool,
+                    tool_history=tool_history,
                 )
                 if failure is not None:
                     # 预算内自动重试一次；仍失败或预算耗尽时才降级给用户。
                     hint = _evidence_retry_hint(result_artifacts, failure)
                     try:
-                        evidence, failure = self._evidence_query_once(
+                        evidence, failure, answer_draft = self._evidence_query_once(
                             state=state,
                             user_message=user_message,
                             conversation_summary=conversation_summary,
@@ -561,6 +654,7 @@ class ProductionRunCoordinator:
                             executor=executor,
                             call_model=call_model,
                             call_tool=call_tool,
+                            tool_history=tool_history,
                         )
                     except CoordinatorBudgetExceeded:
                         failure = "budget_exceeded"
@@ -579,6 +673,7 @@ class ProductionRunCoordinator:
                             user_message=user_message,
                             available_result_artifacts=result_artifacts,
                             evidence=evidence,
+                            tool_history=tool_history,
                             retry_hint=_answer_repair_hint(),
                         )
                         repaired_decision = call_model(repair_context)
@@ -601,15 +696,19 @@ class ProductionRunCoordinator:
                         user_message=user_message,
                         available_result_artifacts=result_artifacts,
                         evidence=evidence,
+                        tool_history=tool_history,
                     )
-                    answer_decision = call_model(answer_context)
-                    self.validator.validate(state, answer_decision)
-                    if answer_decision.grounded_answer is None:
+                    answer_decision = None
+                    if answer_draft is None:
+                        answer_decision = call_model(answer_context)
+                        self.validator.validate(state, answer_decision)
+                    grounded_draft = answer_draft or getattr(answer_decision, "grounded_answer", None)
+                    if grounded_draft is None:
                         answer = self.grounded_answers.answer(evidence)
                     else:
                         answer = self.grounded_answers.answer(
                             evidence,
-                            answer_decision.grounded_answer,
+                            grounded_draft,
                             repair=_repair_answer_draft,
                         )
                 else:
@@ -751,7 +850,7 @@ class ProductionRunCoordinator:
             state.focus.preferences = {}
             state.focus.params_source_ref = current_ref
 
-    def _poll_jobs(self, state: RunState, call_tool) -> list[AgentMessageBlock]:
+    def _poll_jobs(self, state: RunState, call_tool, call_model) -> list[AgentMessageBlock]:
         """轮询任务状态；返回状态卡片，并在全部终态时切换状态/给出失败诊断。"""
         statuses = call_tool(
             self._executor(state.active_profile),
@@ -764,9 +863,21 @@ class ProductionRunCoordinator:
         if statuses.rows and all(row.get("status") in {"succeeded", "failed", "cancelled"} for row in statuses.rows):
             if any(row.get("status") in {"failed", "cancelled"} for row in statuses.rows):
                 state.state = AgentState.JOB_FAILED
+                fallback = _job_failure_diagnosis(statuses.rows)
+                analysis_type = "unknown"
+                if state.plan_id:
+                    try:
+                        analysis_type = self.plan_store.get(plan_id=state.plan_id, user_id=state.user_id).analysis_type.value
+                    except PlanNotFound:
+                        pass
                 blocks.append(AgentErrorBlock(
                     code="job_failed",
-                    user_message=_job_failure_diagnosis(statuses.rows),
+                    user_message=self._narrate(
+                        state=state,
+                        system_facts=_job_failure_facts(statuses.rows, analysis_type=analysis_type),
+                        fallback=fallback,
+                        call_model=call_model,
+                    ),
                     # 前端 Retry 是重发同一条消息，对已失败的任务无意义，置 False 避免误导。
                     retryable=False,
                 ))
@@ -788,35 +899,154 @@ class ProductionRunCoordinator:
         executor: PolicyToolExecutor,
         call_model,
         call_tool,
-    ) -> tuple[ToolResult | None, str | None]:
+        tool_history: list[ToolResult] | None = None,
+    ) -> tuple[ToolResult | None, str | None, GroundedAnswer | None]:
         """单次证据查询（模型决策 + 工具执行）；返回 (证据, 失败原因)。"""
-        query_context = self.context_builder.build(
-            state=state,
-            active_profile=ActiveProfile.INTERPRETATION,
-            user_message=user_message,
-            conversation_summary=conversation_summary,
-            available_result_artifacts=result_artifacts,
-            retry_hint=retry_hint,
-        )
-        query_decision = call_model(query_context)
-        self.validator.validate(state, query_decision)
-        if query_decision.grounded_answer is not None:
-            return None, "grounded_answer_before_query"
-        try:
-            query = _safe_evidence_query(query_decision.requested_params, state.focus.in_scope_job_ids)
-        except ValueError:
-            return None, "invalid_evidence_query"
-        evidence = call_tool(executor, ToolName.QUERY_RESULT_EVIDENCE, **query)
-        if not evidence.ok:
-            return None, "evidence_query_failed"
-        return evidence, None
+        history = tool_history if tool_history is not None else []
+        local_hint = retry_hint
+        readonly_steps = 0
+        latest_evidence: ToolResult | None = None
+        while readonly_steps <= 4:
+            query_context = self.context_builder.build(
+                state=state,
+                active_profile=ActiveProfile.INTERPRETATION,
+                user_message=user_message,
+                conversation_summary=conversation_summary,
+                available_result_artifacts=result_artifacts,
+                retry_hint=local_hint,
+                tool_history=history,
+                evidence=latest_evidence,
+                allow_tool_calls=True,
+            )
+            query_decision = call_model(query_context)
+            try:
+                self.validator.validate(state, query_decision)
+            except InvalidDecision:
+                if getattr(query_decision, "action", None) is AgentAction.CALL_TOOL and readonly_steps < 4:
+                    readonly_steps += 1
+                    local_hint = self._readonly_retry_hint(query_decision)
+                    continue
+                return None, "invalid_evidence_query", None
+            if query_decision.action is AgentAction.CALL_TOOL:
+                if readonly_steps >= 4:
+                    return latest_evidence, None, None
+                readonly_steps += 1
+                try:
+                    tool_name, tool_kwargs = self._readonly_tool_kwargs(query_decision, state)
+                    result = call_tool(executor, tool_name, **tool_kwargs)
+                except (InvalidDecision, ValueError):
+                    local_hint = "Choose a job_id and artifact from the supplied focus and available_result_artifacts."
+                    continue
+                if result.tool is ToolName.QUERY_RESULT_EVIDENCE:
+                    if not result.ok:
+                        return None, "evidence_query_failed", None
+                    latest_evidence = result
+                    local_hint = None
+                    continue
+                local_hint = None
+                continue
+            if getattr(query_decision, "grounded_answer", None) is not None:
+                if latest_evidence is not None and getattr(query_decision, "grounded_answer", None) is not None:
+                    return latest_evidence, None, query_decision.grounded_answer
+                return None, "grounded_answer_before_query", None
+            try:
+                params = getattr(query_decision, "requested_params", {})
+                query = _safe_evidence_query(params, state.focus.in_scope_job_ids)
+            except ValueError:
+                if latest_evidence is not None:
+                    return latest_evidence, None, None
+                return None, "invalid_evidence_query", None
+            evidence = call_tool(executor, ToolName.QUERY_RESULT_EVIDENCE, **query)
+            if not evidence.ok:
+                return None, "evidence_query_failed", None
+            return evidence, None, None
+        if latest_evidence is not None:
+            return latest_evidence, None, None
+        return None, "tool_budget_exceeded", None
 
     def _model(self, context):
         return self.model.decide(context)
 
+    def _explain_plan_narration(self, state: RunState, fallback: str, call_model) -> str:
+        try:
+            plan = self.plan_store.get(plan_id=state.plan_id or "", user_id=state.user_id)
+            expires = 0
+            if state.pending_approval_id:
+                approval = self.approvals.get_owned(approval_id=state.pending_approval_id, user_id=state.user_id)
+                expires = max(0, int((approval.expires_at - datetime.now(timezone.utc)).total_seconds() + 59) // 60)
+            facts = {
+                "situation": "explain_plan",
+                "analysis_type": plan.analysis_type.value,
+                "contrasts": [
+                    {key: str(item.get(key) or "")[:60] for key in ("compare_field", "tested_level", "reference_level")}
+                    for item in plan.contrasts[:5]
+                ],
+                "effective_params": {str(key)[:50]: _as_param_value(value) for key, value in list(plan.effective_params.items())[:20]},
+                "expires_in_minutes": expires,
+            }
+            return self._narrate(state=state, system_facts=facts, fallback=fallback, call_model=call_model)
+        except Exception:
+            return fallback
+
+    def _capability_help_narration(self, state: RunState, fallback: str, call_model) -> str:
+        facts = {
+            "situation": "capability_help",
+            "analysis_capabilities": [
+                {"analysis_type": item.analysis_type.value, "required_inputs": list(item.required_inputs)}
+                for item in build_analysis_capabilities(self.context_builder.analysis_specs)
+            ],
+            "roles_present": sorted(self.tool_runtime.inputs),
+        }
+        return self._narrate(state=state, system_facts=facts, fallback=fallback, call_model=call_model)
+
+    def _input_receipt_narration(self, state: RunState, rows: list[dict[str, Any]], call_model) -> str:
+        roles = [str(row.get("field")) for row in rows]
+        fallback = _input_receipt_text(roles, self.context_builder)
+        facts = _input_receipt_facts(rows, self.context_builder)
+        return self._narrate(state=state, system_facts=facts, fallback=fallback, call_model=call_model)
+
+    def _narrate(self, *, state: RunState, system_facts: dict[str, Any], fallback: str, call_model) -> str:
+        """尝试生成受事实约束的提示；任何异常都回退到既有服务端文案。"""
+        try:
+            context = self.context_builder.build_narration(state=state, system_facts=system_facts)
+            decision = call_model(context)
+            if not isinstance(decision, AgentNarrationDecision):
+                return fallback
+            if not _narration_numbers_grounded(decision.narration, system_facts):
+                return fallback
+            return decision.narration
+        except Exception:
+            return fallback
+
     @staticmethod
     def _tool(executor: PolicyToolExecutor, name: ToolName, **kwargs: Any) -> ToolResult:
         return executor.execute(name, **kwargs)
+
+    @staticmethod
+    def _readonly_tool_kwargs(decision: Any, state: RunState) -> tuple[ToolName, dict[str, Any]]:
+        tool = getattr(decision, "tool", None)
+        arguments = getattr(decision, "arguments", None)
+        if not isinstance(tool, ToolName) or arguments is None:
+            raise InvalidDecision("call_tool requires structured arguments")
+        payload = arguments.model_dump(exclude_none=True)
+        if tool is ToolName.INSPECT_UPLOADED_INPUTS:
+            return tool, {}
+        if tool is ToolName.GET_ANALYSIS_SPEC:
+            return tool, {"analysis_type": payload.get("analysis_type")}
+        if tool is ToolName.RUN_PREFLIGHT:
+            params = payload.get("params") or {}
+            return tool, {"analysis_type": payload.get("analysis_type"), "params": params}
+        if tool is ToolName.GET_JOBS_STATUS:
+            return tool, {"job_ids": payload.get("job_ids", [])}
+        if tool is ToolName.QUERY_RESULT_EVIDENCE:
+            query = {key: payload[key] for key in ("job_id", "artifact", "sort", "limit", "resolve_entity") if key in payload}
+            return tool, _safe_evidence_query(query, state.focus.in_scope_job_ids)
+        raise InvalidDecision("write tools are unavailable inside the read-only loop")
+
+    @staticmethod
+    def _readonly_retry_hint(decision: Any) -> str:
+        tool = getattr(decision, "tool", None)
+        return f"The requested tool is not available in this profile. Choose one of the read-only tools listed in available_tools; do not call {getattr(tool, 'value', tool)}."
 
     @staticmethod
     def _event(state: RunState, event_type: str, payload: dict[str, Any]) -> AgentEvent:
@@ -1001,9 +1231,61 @@ def _bounded_model_evidence(evidence: ToolResult) -> ToolResult:
     raise CoordinatorBudgetExceeded("evidence rows exceed the model context budget")
 
 
+def _bounded_tool_result(result: ToolResult) -> ToolResult:
+    """工具历史统一限行/限字节；空结果也必须可进入上下文。"""
+    rows = list(result.rows[:AGENT_EVIDENCE_MAX_ROWS])
+    rows = [_strip_tool_metadata(row) for row in rows]
+    while True:
+        bounded = result.model_copy(update={
+            "rows": rows,
+            "truncated": result.truncated or len(rows) < len(result.rows),
+        })
+        if len(bounded.model_dump_json().encode("utf-8")) <= 32 * 1024:
+            return bounded
+        if not rows:
+            return result.model_copy(update={"rows": [], "truncated": True})
+        rows.pop()
+
+
+def _strip_tool_metadata(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {
+            key: _strip_tool_metadata(child)
+            for key, child in value.items()
+            if key not in {"filename", "size_bytes", "storage_key"}
+        }
+    if isinstance(value, list):
+        return [_strip_tool_metadata(item) for item in value]
+    return value
+
+
 def _is_explicit_approval(user_message: str) -> bool:
     text = user_message.strip().lower()
     return any(term in text for term in ("批准", "同意执行", "approve", "confirm execution"))
+
+
+def _narration_numbers_grounded(text: str, facts: dict[str, Any]) -> bool:
+    numbers = re.findall(r"(?<![A-Za-z])\d+(?:\.\d+)?", text)
+    if not numbers:
+        return True
+    allowed: set[str] = set()
+
+    def collect(value: Any) -> None:
+        if isinstance(value, bool):
+            return
+        if isinstance(value, (int, float, Decimal)):
+            allowed.add(str(value))
+            if float(value).is_integer():
+                allowed.add(str(int(value)))
+        elif isinstance(value, list):
+            for item in value:
+                collect(item)
+        elif isinstance(value, dict):
+            for item in value.values():
+                collect(item)
+
+    collect(facts)
+    return all(number in allowed for number in numbers)
 
 
 def _input_receipt_text(roles: list[str], context_builder: MinimalContextBuilder) -> str:
@@ -1025,6 +1307,55 @@ def _input_receipt_text(roles: list[str], context_builder: MinimalContextBuilder
         "DEG 需要 counts + metadata，DEM 需要 metabs + metadata，"
         "GMA 需要 transcriptome + metabolome + group。"
     )
+
+
+def _input_receipt_facts(rows: Sequence[Mapping[str, Any]], context_builder: MinimalContextBuilder) -> dict[str, Any]:
+    """本 facts 不含路径/DSN/堆栈；只传输入角色和有界统计。"""
+    present = sorted({str(row.get("field") or "") for row in rows if row.get("field")})
+    required = sorted({
+        rule.name
+        for analysis_type in context_builder.analysis_specs.analysis_types()
+        for rule in context_builder.analysis_specs.get(analysis_type).input_rules
+        if rule.required
+    })
+    return {
+        "situation": "input_receipt",
+        "roles_present": present[:20],
+        "roles_missing": [item for item in required if item not in present][:20],
+        "role_summaries": [
+            {"role": str(row.get("field")), "row_count": max(0, int(row.get("row_count") or 0)), "column_count": max(0, int(row.get("column_count") or 0))}
+            for row in list(rows)[:6]
+        ],
+    }
+
+
+def _plan_superseded_facts(old_analysis_type: str | None, new_analysis_type: str | None, old_params: Mapping[str, Any]) -> dict[str, Any]:
+    """本 facts 不含路径/DSN/堆栈；只描述计划类型和参数键变化。"""
+    return {
+        "situation": "plan_superseded",
+        "old_analysis_type": old_analysis_type or "unknown",
+        "new_analysis_type": new_analysis_type or "unknown",
+        "changed_param_keys": sorted(str(key)[:50] for key in old_params)[:20],
+    }
+
+
+def _job_failure_facts(rows: Sequence[Mapping[str, Any]], *, analysis_type: str = "unknown") -> dict[str, Any]:
+    """本 facts 不含路径/DSN/堆栈；错误文本沿用脱敏结果。"""
+    items = []
+    for row in rows[:12]:
+        if str(row.get("status") or "") not in {"failed", "cancelled"}:
+            continue
+        raw = str(row.get("error") or "").strip() or str(row.get("log_excerpt") or "").strip()
+        sanitized = _sanitize_error_text(raw, limit=300)
+        sanitized = re.sub(r"Traceback \(most recent call last\):?", "<stack>", sanitized, flags=re.I)
+        sanitized = re.sub(r"File \"[^\"]+\", line \d+", "<stack>", sanitized, flags=re.I)
+        items.append({
+            "job_id": str(row.get("job_id") or "")[:100],
+            "analysis_type": str(row.get("analysis_type") or analysis_type)[:50],
+            "error_text": sanitized,
+            "advice_category": _job_failure_advice_category(raw),
+        })
+    return {"situation": "job_failed", "errors": items[:3]}
 
 
 def _issue_text(item: Any) -> str:
@@ -1050,15 +1381,22 @@ def _complete_contrast_params(
     if analysis_type not in {AnalysisType.DIFFERENTIAL, AnalysisType.DEM}:
         return params, None
     required = ("compare_field", "tested_levels", "reference_level")
-    if all(str(params.get(name) or "").strip() for name in required):
-        return params, None
-
     metadata = next((item for item in summaries if item.field == "metadata"), None)
     groups = list(metadata.group_levels) if metadata is not None else []
     min_replicates = _positive_int(params.get("min_replicates"), 2)
     compare_field = str(params.get("compare_field") or "").strip()
     tested = str(params.get("tested_levels") or "").strip()
     reference = str(params.get("reference_level") or "").strip()
+
+    if all((compare_field, tested, reference)):
+        selected = next((group for group in groups if group.column == compare_field), None)
+        observed = {item.value for item in selected.values} if selected else set()
+        tested_values = {item.strip() for item in tested.split(",") if item.strip()}
+        if not selected or not tested_values.issubset(observed) or reference not in observed:
+            return params, "metadata 中不存在模型给出的比较列或分组水平，请重新确认。"
+        if any(item.value in tested_values and item.count < min_replicates for item in selected.values) or next((item.count for item in selected.values if item.value == reference), 0) < min_replicates:
+            return params, "模型给出的分组样本数不足 min_replicates，请重新选择分组。"
+        return params, None
 
     candidates = []
     for group in groups:
@@ -1103,6 +1441,17 @@ def _complete_contrast_params(
         f"当前输入支持 {label}，但生成可审批计划前需要确认比较设置。"
         f"metadata 中识别到：{option_text}。"
         "请回复比较列、实验组和对照组，例如：比较列=treatment，实验组=salt，对照组=control。"
+    )
+
+
+def _inference_note(params: Mapping[str, Any], summaries: Sequence[InputInspectionSummary]) -> str:
+    """仅在参数来自 metadata 观察时生成可审阅的推断说明。"""
+    metadata = next((item for item in summaries if item.field == "metadata"), None)
+    if metadata is None or not all(params.get(key) for key in ("compare_field", "tested_levels", "reference_level")):
+        return ""
+    return (
+        f"参数依据 metadata 的 {params['compare_field']} 分组水平 "
+        f"{params['tested_levels']} 与 {params['reference_level']}；请在审批前确认。"
     )
 
 
@@ -1229,6 +1578,19 @@ def _job_failure_advice(error_text: str) -> str:
     if any(term in text for term in ("csv", "parse", "could not convert", "nan", "numeric")):
         return "建议检查 CSV 格式，确保数值矩阵中不包含文本值。"
     return "建议查看任务日志确认具体失败步骤后重新提交。"
+
+
+def _job_failure_advice_category(error_text: str) -> str:
+    text = error_text.lower()
+    if any(term in text for term in ("memory", "killed", "out of memory", "cannot allocate")):
+        return "memory"
+    if any(term in text for term in ("sample", "index", "shape", "length", "align")):
+        return "sample_alignment"
+    if any(term in text for term in ("group", "compare", "level", "metadata", "column")):
+        return "group_metadata"
+    if any(term in text for term in ("csv", "parse", "could not convert", "nan", "numeric")):
+        return "csv_numeric"
+    return "other"
 
 
 def _artifact_list(result_artifacts: Sequence[str]) -> str:

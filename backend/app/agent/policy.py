@@ -33,6 +33,13 @@ class ProfilePolicyGuard:
         ToolName.GET_JOBS_STATUS,
     })
     INTERPRETATION_TOOLS = frozenset({ToolName.QUERY_RESULT_EVIDENCE, ToolName.GET_JOBS_STATUS})
+    READ_ONLY_TOOLS = frozenset({
+        ToolName.INSPECT_UPLOADED_INPUTS,
+        ToolName.GET_ANALYSIS_SPEC,
+        ToolName.RUN_PREFLIGHT,
+        ToolName.GET_JOBS_STATUS,
+        ToolName.QUERY_RESULT_EVIDENCE,
+    })
 
     @classmethod
     def allowed_tools(cls, active_profile: ActiveProfile) -> frozenset[ToolName]:

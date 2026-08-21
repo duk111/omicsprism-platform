@@ -225,6 +225,42 @@ def test_submit_is_idempotent_for_replayed_key() -> None:
     assert executor.enqueued == [first.rows[0]["job_ids"][0]]
 
 
+def test_approved_gma_plan_submits_once_and_replay_is_idempotent() -> None:
+    now = datetime.now(timezone.utc)
+    source = JobRecord(
+        id="source-1", project_name="source", analysis_type=AnalysisType.CORRELATION,
+        status=JobStatus.SUCCEEDED, created_at=now, updated_at=now, owner_id="user-1",
+    )
+    jobs, executor, gate = _FakeJobs(source), _FakeExecutor(), InMemoryApprovalGate()
+    plan = _plan().model_copy(update={
+        "analysis_type": AnalysisType.CORRELATION, "requested_params": {},
+        "effective_params": {}, "contrasts": [], "plan_hash": "pending",
+    })
+    plan.plan_hash = compute_plan_hash(plan)
+    plan.approval_id = gate.suspend(
+        run_id=plan.run_id, user_id=plan.user_id, plan_hash=plan.plan_hash,
+        expires_at=now + timedelta(minutes=5),
+    )
+    gate.resume(
+        approval_id=plan.approval_id, run_id=plan.run_id, user_id=plan.user_id,
+        plan_hash=plan.plan_hash, now=now,
+    )
+    runtime = _submit_runtime(plan, gate, jobs, executor)
+    runtime.inputs = {
+        "transcriptome": AgentInputFile("transcriptome.csv", b"gene,s1,s2\ng1,1,2\n"),
+        "metabolome": AgentInputFile("metabolome.csv", b"metabolite,s1,s2\nm1,3,4\n"),
+        "group": AgentInputFile("group.csv", b"sample_id,group1,group2\ns1,a,x\ns2,b,y\n"),
+    }
+
+    first = runtime.submit_approved_plan(plan.plan_id, "gma-key")
+    second = runtime.submit_approved_plan(plan.plan_id, "gma-key")
+
+    assert first.ok and second.ok
+    assert first.rows[0]["job_ids"] == second.rows[0]["job_ids"]
+    assert len(jobs.saved) == 1
+    assert executor.enqueued == first.rows[0]["job_ids"]
+
+
 @pytest.mark.parametrize(("mutation", "error_code"), [
     ("empty_contrasts", "preflight_blocked"),
     ("changed_params", "plan_hash_mismatch"),

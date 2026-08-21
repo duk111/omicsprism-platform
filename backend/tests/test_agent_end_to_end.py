@@ -27,6 +27,7 @@ from backend.app.agent.schemas import (
     ActiveProfile,
     AgentAction,
     AgentDecision,
+    AgentNarrationDecision,
     AgentState,
     AgentTurnRecord,
     ApprovalStatus,
@@ -208,6 +209,19 @@ def _advisory_decision(answer: str) -> AgentDecision:
     )
 
 
+def _narration_decision(text: str) -> AgentNarrationDecision:
+    return AgentNarrationDecision(
+        action="answer",
+        narration=text,
+        feasibility=None,
+        analysis_recommendations=[],
+        requires_approval=False,
+        requested_params={},
+        grounded_answer=None,
+        advisory_answer=None,
+    )
+
+
 class _HttpCountingModel:
     """一次 decide 模拟发出 2 次 HTTP（含 schema 修复的第二次请求）。"""
 
@@ -323,12 +337,13 @@ def test_e2e_pending_plan_answers_questions_and_stays_pending() -> None:
     assert "treatment" in explained.blocks[0].text
     assert "salt" in explained.blocks[0].text
     assert explained.state.state is AgentState.WAIT_EXECUTION_CONFIRMATION
-    assert explained.state.model_calls == 1  # 计划协商用了一次，问答本身不再调模型
+    assert explained.state.model_calls == 2  # 叙述尝试计入模型预算，失败时仍回退原文
 
     generic = coordinator.execute_turn(turn=_turn("generic"), user_message="帮我看看我的数据")
     assert [block.type for block in generic.blocks] == ["text"]
     assert "待审批" in generic.blocks[0].text
     assert generic.state.state is AgentState.WAIT_EXECUTION_CONFIRMATION
+    assert generic.state.model_calls == 3  # 失败的叙述尝试也计入模型预算
 
     # 审批生效后，下一 turn 仍能正常提交（锚点未被普通消息消费）。
     approvals.resume(
@@ -340,6 +355,48 @@ def test_e2e_pending_plan_answers_questions_and_stays_pending() -> None:
     submitted = coordinator.execute_turn(turn=_turn("approve"), user_message="")
     assert submitted.state.state is AgentState.MONITOR_JOBS
     assert len(plans.get(plan_id=proposed.state.plan_id or "", user_id="user-1").submitted_job_ids) == 1
+
+
+def test_pending_plan_narration_uses_only_system_facts_and_keeps_approval_pending() -> None:
+    model = _RecordingModel([
+        _analysis_decision(),
+        _narration_decision("该差异分析有 1 个对比，审批将在 30 分钟内到期。"),
+    ])
+    coordinator, _store, _plans, _approvals, jobs, executor = _make_coordinator(
+        model=model,
+        inputs={"counts": COUNTS, "metadata": METADATA_TREATMENT},
+    )
+    proposed = coordinator.execute_turn(turn=_turn("narration-propose"), user_message="比较 salt 和 control")
+
+    narrated = coordinator.execute_turn(turn=_turn("narration-pending"), user_message="下一步怎么办")
+
+    assert narrated.blocks[0].text.startswith("该差异分析有 1 个对比")
+    assert narrated.state.state is AgentState.WAIT_EXECUTION_CONFIRMATION
+    assert narrated.state.pending_approval_id == proposed.state.pending_approval_id
+    assert narrated.state.model_calls == 2
+    context = model.contexts[-1]
+    assert context.available_tools == []
+    assert context.system_facts is not None
+    assert context.system_facts["situation"] == "pending_approval"
+    assert context.system_facts["contrast_count"] == 1
+    assert jobs.saved == [] and executor.enqueued == []
+
+
+def test_pending_plan_narration_budget_exhaustion_returns_existing_fallback() -> None:
+    model = _RecordingModel([_analysis_decision()])
+    coordinator, _store, _plans, _approvals, jobs, executor = _make_coordinator(
+        model=model,
+        inputs={"counts": COUNTS, "metadata": METADATA_TREATMENT},
+        max_model_calls=1,
+    )
+    coordinator.execute_turn(turn=_turn("budget-propose"), user_message="比较 salt 和 control")
+    coordinator.max_model_calls = 0
+    result = coordinator.execute_turn(turn=_turn("budget-pending"), user_message="下一步怎么办")
+    assert "待审批" in result.blocks[0].text
+    assert result.state.state is AgentState.WAIT_EXECUTION_CONFIRMATION
+    assert result.state.model_calls == 1
+    assert len(model.contexts) == 1
+    assert jobs.saved == [] and executor.enqueued == []
 
 
 def test_e2e_contrast_negotiation_remembers_partial_params() -> None:
@@ -435,6 +492,7 @@ def test_e2e_pending_plan_param_change_supersedes_and_regenerates() -> None:
     """任务 G：待批期改参数 → 同一 turn 内作废旧计划并重新生成、重新审批。"""
     model = _RecordingModel([
         _analysis_decision(),
+        _narration_decision("原计划已作废，将根据新要求重新生成计划并再次请你确认。"),
         _analysis_decision(params={"padj_cutoff": 0.01}),
     ])
     coordinator, _store, plans, approvals, _jobs, _executor = _make_coordinator(
@@ -461,7 +519,7 @@ def test_e2e_pending_plan_param_change_supersedes_and_regenerates() -> None:
     assert any(event.event_type == "approval.superseded" for event in superseded.events)
     assert any(block.type == "text" and "原计划已作废" in block.text for block in superseded.blocks)
     # 沿用旧计划的比较设置：第二次进模型的 confirmed_params 含 compare_field。
-    assert model.contexts[1].confirmed_params.get("compare_field") == "treatment"
+    assert model.contexts[2].confirmed_params.get("compare_field") == "treatment"
 
 
 def test_e2e_bad_artifact_query_retries_with_hint_then_succeeds() -> None:

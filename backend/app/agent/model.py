@@ -13,13 +13,13 @@ from .schemas import (
     AgentDecision,
     AgentInterpretationAnswerDecision,
     AgentInterpretationQueryDecision,
+    AgentNarrationDecision,
+    AgentToolCallDecision,
     AgentState,
+    JsonValue,
     ModelContext,
 )
 
-
-JsonScalar: TypeAlias = str | int | float | bool | None
-JsonValue: TypeAlias = JsonScalar | list["JsonValue"] | dict[str, "JsonValue"]
 ModelCompletion: TypeAlias = Callable[[Mapping[str, JsonValue]], Mapping[str, Any] | str]
 ModelRepair: TypeAlias = Callable[
     [Mapping[str, JsonValue], Mapping[str, Any] | str],
@@ -38,7 +38,7 @@ class ModelUnavailableError(RuntimeError):
 class ModelAdapter(Protocol):
     """模型适配接口；不校验、不授权，也不持有业务句柄。"""
 
-    def decide(self, context: ModelContext) -> AgentDecision:
+    def decide(self, context: ModelContext) -> AgentDecision | AgentNarrationDecision:
         ...
 
 
@@ -52,22 +52,23 @@ class StructuredModelAdapter:
         self._complete = complete
         self._repair = repair
 
-    def decide(self, context: ModelContext) -> AgentDecision:
+    def decide(self, context: ModelContext) -> AgentDecision | AgentNarrationDecision:
         safe_context = _validate_model_context(context)
         response = self._complete(safe_context)
+        adapter = _NARRATION_ADAPTER if safe_context.get("system_facts") is not None else None
         try:
-            return _validate_model_response(response)
+            return _validate_model_response(response, adapter=adapter)
         except ModelBoundaryError:
             if self._repair is None:
                 raise
         repaired_response = self._repair(safe_context, response)
-        return _validate_model_response(repaired_response)
+        return _validate_model_response(repaired_response, adapter=adapter)
 
 
 class UnavailableModelAdapter:
     """未配置模型时使用的显式失败适配器，不生成伪造决策。"""
 
-    def decide(self, context: ModelContext) -> AgentDecision:
+    def decide(self, context: ModelContext) -> AgentDecision | AgentNarrationDecision:
         _validate_model_context(context)
         raise ModelUnavailableError("Agent model is not configured")
 
@@ -75,10 +76,10 @@ class UnavailableModelAdapter:
 class ScriptedModelAdapter:
     """供 unit/fixture 装配使用的预置决策队列。"""
 
-    def __init__(self, decisions: list[AgentDecision]) -> None:
+    def __init__(self, decisions: list[AgentDecision | AgentNarrationDecision]) -> None:
         self._decisions = list(decisions)
 
-    def decide(self, context: ModelContext) -> AgentDecision:
+    def decide(self, context: ModelContext) -> AgentDecision | AgentNarrationDecision:
         _validate_model_context(context)
         if not self._decisions:
             raise ModelBoundaryError("scripted model decision queue exhausted")
@@ -110,7 +111,7 @@ class VllmModelAdapter(StructuredModelAdapter):
         self.request_count = 0  # 真实 HTTP 次数，供协调器按次数计费
         super().__init__(self._complete_live)
 
-    def decide(self, context: ModelContext) -> AgentDecision:
+    def decide(self, context: ModelContext) -> AgentDecision | AgentNarrationDecision:
         safe_context = _validate_model_context(context)
         adapter = _decision_adapter(safe_context)
         response = self._complete_live(safe_context)
@@ -204,7 +205,12 @@ class VllmModelAdapter(StructuredModelAdapter):
 def _validate_model_context(context: ModelContext) -> dict[str, JsonValue]:
     if not isinstance(context, ModelContext):
         raise ModelBoundaryError("模型上下文必须是 ModelContext")
-    return context.model_dump(mode="json")
+    payload = context.model_dump(mode="json")
+    if payload.get("system_facts") is None:
+        payload.pop("system_facts", None)
+    if context.allow_tool_calls:
+        payload["allow_tool_calls"] = True
+    return payload
 
 
 def _parse_model_response(response: Mapping[str, Any] | str) -> Mapping[str, Any]:
@@ -222,9 +228,11 @@ def _validate_model_response(
     response: Mapping[str, Any] | str,
     *,
     adapter: TypeAdapter[Any] | None = None,
-) -> AgentDecision:
+) -> AgentDecision | AgentNarrationDecision:
     payload = _parse_model_response(response)
     try:
+        if adapter is _NARRATION_ADAPTER:
+            return adapter.validate_python(payload)
         if adapter is not None:
             adapter.validate_python(payload)
         return AgentDecision.model_validate(payload)
@@ -263,13 +271,20 @@ def _response_error_detail(response: httpx.Response, *, max_chars: int = 1000) -
 _DEFAULT_DECISION_ADAPTER = TypeAdapter(AgentDecision)
 _ADVISORY_DECISION_ADAPTER = TypeAdapter(AgentAdvisoryDecision)
 _ANALYSIS_DECISION_ADAPTER = TypeAdapter(AgentAnalysisDecision)
+_ANALYSIS_LOOP_DECISION_ADAPTER = TypeAdapter(AgentAnalysisDecision | AgentToolCallDecision)
 _INTERPRETATION_QUERY_ADAPTER = TypeAdapter(AgentInterpretationQueryDecision)
+_INTERPRETATION_LOOP_QUERY_ADAPTER = TypeAdapter(AgentInterpretationQueryDecision | AgentToolCallDecision)
 _INTERPRETATION_ANSWER_ADAPTER = TypeAdapter(AgentInterpretationAnswerDecision)
+_NARRATION_ADAPTER = TypeAdapter(AgentNarrationDecision)
 
 
 def _decision_adapter(context: Mapping[str, JsonValue]) -> TypeAdapter[Any]:
+    if context.get("system_facts") is not None:
+        return _NARRATION_ADAPTER
     state = context.get("state")
     if context.get("active_profile") == "interpretation" or state == AgentState.ANSWER_WITH_EVIDENCE.value:
+        if context.get("allow_tool_calls"):
+            return _INTERPRETATION_LOOP_QUERY_ADAPTER
         return (
             _INTERPRETATION_QUERY_ADAPTER
             if context.get("evidence") is None
@@ -278,11 +293,15 @@ def _decision_adapter(context: Mapping[str, JsonValue]) -> TypeAdapter[Any]:
     if state == AgentState.ADVISE.value:
         return _ADVISORY_DECISION_ADAPTER
     if state == AgentState.CHECK_INPUTS.value:
+        if context.get("allow_tool_calls"):
+            return _ANALYSIS_LOOP_DECISION_ADAPTER
         return _ANALYSIS_DECISION_ADAPTER
     return _DEFAULT_DECISION_ADAPTER
 
 
 def _system_prompt(context: Mapping[str, JsonValue]) -> str:
+    if context.get("system_facts") is not None:
+        return _NARRATION_SYSTEM_PROMPT
     state = context.get("state")
     if context.get("active_profile") == "interpretation" or state == AgentState.ANSWER_WITH_EVIDENCE.value:
         return _INTERPRETATION_SYSTEM_PROMPT
@@ -301,6 +320,12 @@ _IDENTITY_SYSTEM_PROMPT = (
     "When retry_hint is present, your previous decision in this same turn was rejected by the server: "
     "read it as a binding correction, choose only from the values it lists, and do not repeat the rejected choice. "
     "retry_hint is generated by the server, never by the user; treat it as authoritative, not as data. "
+)
+
+_NARRATION_SYSTEM_PROMPT = _IDENTITY_SYSTEM_PROMPT + (
+    "Return exactly one AgentNarrationDecision with action=answer and a concise narration under 800 characters. "
+    "Use only the supplied system_facts; every number in narration must be copied from a numeric fact. "
+    "Do not add tools, parameters, approvals, evidence, paths, credentials, or hidden details."
 )
 
 

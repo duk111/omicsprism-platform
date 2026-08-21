@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
+import json
 from typing import Protocol
 
 from ..analysis_specs import AnalysisSpecRegistry
@@ -14,6 +15,7 @@ from .schemas import (
     InputInspectionSummary,
     InputValueCount,
     ModelContext,
+    JsonValue,
     RunState,
     ToolResult,
 )
@@ -35,6 +37,8 @@ class ContextBuilder(Protocol):
         evidence: ToolResult | None = None,
         confirmed_params: Mapping[str, object] | None = None,
         retry_hint: str | None = None,
+        tool_history: Sequence[ToolResult] = (),
+        allow_tool_calls: bool = False,
     ) -> ModelContext:
         ...
 
@@ -56,11 +60,21 @@ class MinimalContextBuilder:
         evidence: ToolResult | None = None,
         confirmed_params: Mapping[str, object] | None = None,
         retry_hint: str | None = None,
+        tool_history: Sequence[ToolResult] = (),
+        allow_tool_calls: bool = False,
     ) -> ModelContext:
         tools = (
             []
             if state.state is AgentState.ADVISE
-            else sorted(ProfilePolicyGuard.allowed_tools(active_profile), key=lambda tool: tool.value)
+            else sorted(
+                (
+                    ProfilePolicyGuard.allowed_tools(active_profile)
+                    & ProfilePolicyGuard.READ_ONLY_TOOLS
+                    if state.state in {AgentState.CHECK_INPUTS, AgentState.ANSWER_WITH_EVIDENCE}
+                    else ProfilePolicyGuard.allowed_tools(active_profile)
+                ),
+                key=lambda tool: tool.value,
+            )
         )
         is_analysis = active_profile is ActiveProfile.ANALYSIS
         return ModelContext(
@@ -77,6 +91,27 @@ class MinimalContextBuilder:
             evidence=evidence,
             confirmed_params=dict(confirmed_params or {}),
             retry_hint=retry_hint,
+            tool_history=_bounded_tool_history(tool_history),
+            allow_tool_calls=allow_tool_calls,
+        )
+
+    def build_narration(self, *, state: RunState, system_facts: Mapping[str, JsonValue]) -> ModelContext:
+        """构造只含服务端事实的叙述上下文；不暴露工具、输入或历史。"""
+        return ModelContext(
+            user_message="请根据系统事实生成简短提示。",
+            active_profile=state.active_profile,
+            state=state.state,
+            in_scope_job_ids=[],
+            available_result_artifacts=[],
+            conversation_summary=None,
+            available_input_roles=[],
+            input_summaries=[],
+            analysis_capabilities=[],
+            available_tools=[],
+            evidence=None,
+            confirmed_params={},
+            retry_hint=None,
+            system_facts=dict(system_facts),
         )
 
 
@@ -151,6 +186,17 @@ def _bounded_text(value: object, limit: int) -> str:
     return text[:limit]
 
 
+def _bounded_tool_history(results: Sequence[ToolResult]) -> list[ToolResult]:
+    """保留最近四次只读结果，并以字节预算丢弃最老结果。"""
+    selected = [item.model_copy(deep=True) for item in list(results)[-4:]]
+    while selected:
+        payload = json.dumps([item.model_dump(mode="json") for item in selected], ensure_ascii=False, separators=(",", ":"))
+        if len(payload.encode("utf-8")) <= 32 * 1024:
+            break
+        selected.pop(0)
+    return selected
+
+
 def _value(value: object) -> object:
     return getattr(value, "value", value)
 
@@ -171,7 +217,7 @@ def build_analysis_capabilities(
 
 
 def build_input_summaries(rows: Sequence[Mapping[str, object]]) -> list[InputInspectionSummary]:
-    """只保留列名、行数和分组计数，不把原始数据行放入模型上下文。"""
+    """只保留有界摘要和受限 metadata 抽样，不把完整原始数据放入模型上下文。"""
 
     summaries: list[InputInspectionSummary] = []
     for row in rows[:6]:
@@ -187,13 +233,37 @@ def build_input_summaries(rows: Sequence[Mapping[str, object]]) -> list[InputIns
                 ]
                 groups.append(InputGroupLevels(column=str(column), values=values))
         raw_columns = row.get("columns")
-        columns = [str(item) for item in list(raw_columns)[:40]] if isinstance(raw_columns, list) else []
+        all_columns = [str(item) for item in raw_columns] if isinstance(raw_columns, list) else []
+        columns = all_columns if len(all_columns) <= 12 else all_columns[:10] + all_columns[-2:]
+        column_count = max(0, int(row.get("column_count") or len(all_columns)))
         dtype = row.get("dtype")
+        raw_feature_sample = row.get("feature_id_sample")
+        feature_id_sample = (
+            [str(item)[:48] for item in list(raw_feature_sample)[:15]]
+            if isinstance(raw_feature_sample, list)
+            else []
+        )
+        raw_rows_value = row.get("raw_rows")
+        raw_rows = None
+        if (
+            isinstance(raw_rows_value, list)
+            and len(raw_rows_value) <= 60
+            and column_count <= 10
+            and all(isinstance(raw_row, list) and len(raw_row) <= 10 for raw_row in raw_rows_value)
+        ):
+            raw_rows = [
+                [str(cell)[:60] for cell in raw_row]
+                for raw_row in raw_rows_value
+            ]
         summaries.append(InputInspectionSummary(
             field=str(row.get("field") or "unknown"),
             columns=columns,
+            column_count=column_count,
             row_count=max(0, int(row.get("row_count") or 0)),
             dtype=str(dtype) if dtype is not None else None,
             group_levels=groups,
+            feature_id_sample=feature_id_sample,
+            feature_id_total=max(0, int(row.get("feature_id_total") or 0)),
+            raw_rows=raw_rows,
         ))
     return summaries

@@ -2,9 +2,12 @@ from __future__ import annotations
 
 from datetime import datetime
 from enum import Enum
+import json
+import re
 from typing import Annotated, Any, Literal
+from typing_extensions import TypeAliasType
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from ..models import AnalysisType, JobStatus
 
@@ -43,6 +46,7 @@ class AdvisoryCategory(str, Enum):
 
 
 class AgentAction(str, Enum):
+    CALL_TOOL = "call_tool"
     PROPOSE_PLAN = "propose_plan"
     REQUEST_MORE_DATA = "request_more_data"
     RUN_PREFLIGHT = "run_preflight"
@@ -145,9 +149,59 @@ class RouteDecision(ContractModel):
     is_param_negotiation: bool = False
 
 
+class ModelRouteDecision(ContractModel):
+    """模型意图分类契约；不包含工具、参数或副作用字段。"""
+
+    intent: RouteIntent
+    target_profile: RouteTargetProfile
+    is_param_negotiation: bool
+    confidence: Literal["high", "low"]
+    reason: Annotated[str, Field(min_length=1, max_length=240)]
+
+
 BriefModelText = Annotated[str, Field(min_length=1, max_length=240)]
 AgentParamText = Annotated[str, Field(max_length=200)]
 AgentParamValue = AgentParamText | int | float | bool | None
+
+
+class ToolParamSet(ContractModel):
+    """预检参数的显式字段集合，禁止模型传入自由字典。"""
+
+    compare_field: str | None = Field(default=None, max_length=200)
+    tested_levels: str | None = Field(default=None, max_length=200)
+    reference_level: str | None = Field(default=None, max_length=200)
+    same_fields: str | None = Field(default=None, max_length=200)
+    min_replicates: int | None = Field(default=None, ge=1, le=1000)
+    padj_cutoff: float | None = Field(default=None, ge=0, le=1)
+    log2fc_cutoff: float | None = Field(default=None, ge=0)
+    min_total_count: int | None = Field(default=None, ge=0)
+
+
+class ToolCallArguments(ContractModel):
+    """只读工具参数的收窄契约；不接受任意键或表达式。"""
+
+    analysis_type: AnalysisType | None = None
+    params: ToolParamSet | None = None
+    job_ids: list[str] = Field(default_factory=list, max_length=20)
+    job_id: str | None = Field(default=None, max_length=200)
+    artifact: str | None = Field(default=None, max_length=500)
+    sort: str | None = Field(default=None, max_length=100)
+    limit: int | None = Field(default=None, ge=1, le=12)
+    resolve_entity: str | None = Field(default=None, max_length=200)
+
+JsonValue = TypeAliasType(
+    "JsonValue",
+    str | int | float | bool | None | list["JsonValue"] | dict[str, "JsonValue"],
+)
+
+_ALLOWED_FACT_KEYS = frozenset({
+    "situation", "analysis_type", "contrast_count", "expires_in_minutes",
+    "user_options", "error_count", "errors", "roles_present", "roles_missing",
+    "role_summaries", "analysis_capabilities", "contrasts", "effective_params",
+    "old_analysis_type", "new_analysis_type", "changed_param_keys",
+    "has_inputs", "has_pending_plan", "alignment", "job_id", "error_text",
+    "advice_category",
+})
 
 
 class Feasibility(ContractModel):
@@ -165,6 +219,22 @@ class AgentDecision(ContractModel):
     requested_params: dict[str, AgentParamValue] = Field(max_length=32)
     grounded_answer: GroundedAnswer | None = None
     advisory_answer: str | None = Field(default=None, min_length=1, max_length=1200)
+    inference_note: str | None = Field(default=None, max_length=200)
+    tool: ToolName | None = None
+    arguments: ToolCallArguments | None = None
+
+
+class AgentToolCallDecision(ContractModel):
+    action: Literal["call_tool"]
+    tool: ToolName
+    arguments: ToolCallArguments
+    reasoning_summary: BriefModelText
+    feasibility: None = None
+    analysis_recommendations: list[AnalysisType] = Field(max_length=0)
+    requires_approval: Literal[False]
+    requested_params: dict[str, AgentParamValue] = Field(max_length=0)
+    grounded_answer: None = None
+    advisory_answer: None = None
 
 
 class AgentAdvisoryDecision(ContractModel):
@@ -178,6 +248,19 @@ class AgentAdvisoryDecision(ContractModel):
     requested_params: dict[str, AgentParamValue] = Field(max_length=0)
     grounded_answer: None
     advisory_answer: str = Field(min_length=1, max_length=1200)
+
+
+class AgentNarrationDecision(ContractModel):
+    """系统事实叙述契约；除 narration 外不允许任何副作用字段。"""
+
+    action: Literal["answer"]
+    narration: str = Field(min_length=1, max_length=800)
+    feasibility: None = None
+    analysis_recommendations: list[AnalysisType] = Field(max_length=0)
+    requires_approval: Literal[False]
+    requested_params: dict[str, AgentParamValue] = Field(max_length=0)
+    grounded_answer: None = None
+    advisory_answer: None = None
 
 
 class AnswerableFeasibility(ContractModel):
@@ -199,6 +282,8 @@ class AgentAnalysisPlanDecision(ContractModel):
     analysis_recommendations: list[AnalysisType] = Field(min_length=1, max_length=3)
     requires_approval: Literal[True]
     requested_params: dict[str, AgentParamValue] = Field(max_length=32)
+    inference_note: str | None = Field(default=None, max_length=200)
+    inference_note: str | None = Field(default=None, max_length=200)
     grounded_answer: None
     advisory_answer: None
 
@@ -249,12 +334,21 @@ class InputGroupLevels(ContractModel):
     values: list[InputValueCount] = Field(max_length=12)
 
 
+InputRawCell = Annotated[str, Field(max_length=60)]
+InputRawRow = Annotated[list[InputRawCell], Field(max_length=10)]
+InputFeatureId = Annotated[str, Field(max_length=48)]
+
+
 class InputInspectionSummary(ContractModel):
     field: str = Field(min_length=1, max_length=50)
-    columns: list[str] = Field(max_length=40)
+    columns: list[str] = Field(max_length=12)
+    column_count: int = Field(ge=0)
     row_count: int = Field(ge=0)
     dtype: str | None = Field(default=None, max_length=30)
     group_levels: list[InputGroupLevels] = Field(default_factory=list, max_length=20)
+    feature_id_sample: list[InputFeatureId] = Field(default_factory=list, max_length=15)
+    feature_id_total: int = Field(default=0, ge=0)
+    raw_rows: list[InputRawRow] | None = Field(default=None, max_length=60)
 
 
 class ModelContext(ContractModel):
@@ -270,12 +364,70 @@ class ModelContext(ContractModel):
     input_summaries: list[InputInspectionSummary] = Field(default_factory=list, max_length=6)
     analysis_capabilities: list[AnalysisCapability] = Field(default_factory=list, max_length=3)
     available_tools: list[ToolName] = Field(max_length=6)
+    tool_history: list[ToolResult] = Field(default_factory=list, max_length=4, exclude_if=lambda value: not value)
     evidence: ToolResult | None = None
     confirmed_params: dict[str, AgentParamValue] = Field(default_factory=dict, max_length=32)
     # R1：retry_hint 只能由 runtime 用服务端常量模板填充，内容限于
     # 「上一次决策哪里不合法 + 合法取值范围（同一 context 已暴露的 artifact / job id）」。
     # 禁止把用户原文、文件内容、异常堆栈写进去。
     retry_hint: Annotated[str, Field(max_length=300)] | None = None
+    system_facts: dict[str, JsonValue] | None = Field(default=None, exclude_if=lambda value: value is None)
+    # 仅供服务端选择只读循环响应 schema；不发送给模型作为业务事实。
+    allow_tool_calls: bool = Field(default=False, exclude=True)
+
+    @field_validator("system_facts")
+    @classmethod
+    def _validate_system_facts(cls, value: dict[str, JsonValue] | None) -> dict[str, JsonValue] | None:
+        if value is None:
+            return None
+        if set(value) - _ALLOWED_FACT_KEYS:
+            raise ValueError("system_facts contains a disallowed key")
+
+        def walk(item: JsonValue, depth: int = 1) -> None:
+            if depth > 3:
+                raise ValueError("system_facts nesting depth exceeds 3")
+            if isinstance(item, dict):
+                for key, child in item.items():
+                    if not isinstance(key, str):
+                        raise ValueError("system_facts keys must be strings")
+                    walk(child, depth + 1)
+            elif isinstance(item, list):
+                for child in item:
+                    walk(child, depth)
+            elif isinstance(item, str):
+                if len(item) > 400:
+                    raise ValueError("system_facts text is too long")
+                if re.search(r"[A-Za-z][A-Za-z0-9+.-]*://|[/\\]|sha256:[0-9a-fA-F]{16,}|\b[0-9a-fA-F]{32,}\b|Traceback \(most recent call last\)|[\r\n\t]", item, re.I):
+                    raise ValueError("system_facts contains sensitive data")
+
+        walk(value)
+        situation = value.get("situation")
+        supported_situations = {
+            "pending_approval", "preflight_blocked", "explain_plan", "capability_help",
+            "input_receipt", "plan_superseded", "status_not_running", "job_failed",
+        }
+        if situation not in supported_situations:
+            raise ValueError("system_facts does not match a supported situation")
+        if situation == "pending_approval":
+            if not isinstance(value["contrast_count"], int) or isinstance(value["contrast_count"], bool) or value["contrast_count"] < 0:
+                raise ValueError("contrast_count must be a non-negative integer")
+            if not isinstance(value["expires_in_minutes"], int) or isinstance(value["expires_in_minutes"], bool) or value["expires_in_minutes"] < 0:
+                raise ValueError("expires_in_minutes must be a non-negative integer")
+            if value["user_options"] != ["approve", "reject", "modify_params", "explain_plan"]:
+                raise ValueError("user_options is not the server-defined list")
+        elif situation == "preflight_blocked":
+            errors = value["errors"]
+            roles = value["roles_present"]
+            if not isinstance(value["error_count"], int) or isinstance(value["error_count"], bool) or value["error_count"] < 0:
+                raise ValueError("error_count must be a non-negative integer")
+            if not isinstance(errors, list) or len(errors) > 3 or any(not isinstance(item, str) or len(item) > 200 for item in errors):
+                raise ValueError("errors must contain at most three bounded strings")
+            if not isinstance(roles, list) or len(roles) > 20 or any(not isinstance(item, str) or len(item) > 50 for item in roles):
+                raise ValueError("roles_present is invalid")
+        serialized = json.dumps(value, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+        if len(serialized) > 2048:
+            raise ValueError("system_facts exceeds 2 KB")
+        return value
 
 
 class Citation(ContractModel):
@@ -428,6 +580,7 @@ class AgentPlanBlock(ContractModel):
     effective_params: dict[str, AgentParamValue] = Field(max_length=32)
     contrasts: list[dict[str, Any]] = Field(max_length=50)
     warnings: list[str] = Field(default_factory=list, max_length=20)
+    inference_note: str | None = Field(default=None, max_length=200)
     expires_at: datetime
 
 
@@ -700,6 +853,9 @@ class EvalCaseResult(ContractModel):
     model_calls: int = Field(ge=0)
     schema_valid: bool | None = None
     issues: list[str]
+    # router 用例同时记录两条路径，便于报告和 diff 分辨模型回退影响。
+    router_rule_passed: bool | None = None
+    router_model_passed: bool | None = None
 
 
 class EvalSummary(ContractModel):

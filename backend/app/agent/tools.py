@@ -4,6 +4,7 @@ import csv
 import hashlib
 import io
 import json
+import re
 from pathlib import Path
 from datetime import datetime, timezone
 from uuid import NAMESPACE_URL, uuid5
@@ -305,6 +306,7 @@ class AgentToolRuntime:
             "files": [_bounded_preflight_file(item) for item in response.files],
             "errors": errors,
             "warnings": warnings,
+            "alignment": _alignment_diagnostic(atype, self.inputs),
         }
         return _tool_result(
             ToolName.RUN_PREFLIGHT,
@@ -324,7 +326,8 @@ class AgentToolRuntime:
             return _tool_result(ToolName.SUBMIT_APPROVED_PLAN, rows=[], ok=False, error_code="not_found")
         if plan.submitted_job_ids:
             return _tool_result(ToolName.SUBMIT_APPROVED_PLAN, rows=[{"job_ids": list(plan.submitted_job_ids), "idempotent": True}])
-        if not plan.contrasts:
+        # correlation 不产生 contrasts，其可提交性由 run_preflight 的 can_submit 保证。
+        if plan.analysis_type in {AnalysisType.DIFFERENTIAL, AnalysisType.DEM} and not plan.contrasts:
             return _tool_result(ToolName.SUBMIT_APPROVED_PLAN, rows=[], ok=False, error_code="preflight_blocked")
         if compute_plan_hash(plan) != plan.plan_hash:
             return _tool_result(ToolName.SUBMIT_APPROVED_PLAN, rows=[], ok=False, error_code="plan_hash_mismatch")
@@ -595,16 +598,37 @@ def _inspect_input(field: str, item: AgentInputFile) -> dict[str, Any]:
     parsed = list(csv.reader(io.StringIO(item.content.decode("utf-8-sig", errors="replace"))))
     headers = parsed[0] if parsed else []
     data_rows = parsed[1:]
+    column_count = len(headers)
+    columns = headers if column_count <= 12 else headers[:10] + headers[-2:]
     row = {
         "field": field,
         "filename": item.filename,
-        "columns": headers,
+        "columns": columns,
+        "column_count": column_count,
         "row_count": len(data_rows),
         "size_bytes": len(item.content),
     }
     if field in {"counts", "metabs", "transcriptome", "metabolome"}:
         values = [cell.strip() for cells in data_rows for cell in cells[1:]]
         present = [cell for cell in values if cell]
+        feature_ids = [
+            cells[0].strip()
+            for cells in data_rows
+            if cells and cells[0].strip()
+        ]
+        feature_id_total = len(feature_ids)
+        sample_positions = list(range(min(10, feature_id_total)))
+        for position in (
+            feature_id_total // 4,
+            feature_id_total // 2,
+            (3 * feature_id_total) // 4,
+            (7 * feature_id_total) // 8,
+            feature_id_total - 1,
+        ):
+            if 0 <= position < feature_id_total and position not in sample_positions:
+                sample_positions.append(position)
+        sample_positions.sort()
+        feature_id_sample = [feature_ids[position][:48] for position in sample_positions]
         numeric: list[float] = []
         for cell in present:
             try:
@@ -618,6 +642,8 @@ def _inspect_input(field: str, item: AgentInputFile) -> dict[str, Any]:
             "has_negative": any(value < 0 for value in numeric),
             "integer_ratio": (sum(value.is_integer() for value in numeric) / len(numeric)) if numeric else 0.0,
             "missing_rate": ((len(values) - len(present)) / len(values)) if values else 0.0,
+            "feature_id_sample": feature_id_sample,
+            "feature_id_total": feature_id_total,
         })
     else:
         records = _dict_rows(item.content)
@@ -631,6 +657,11 @@ def _inspect_input(field: str, item: AgentInputFile) -> dict[str, Any]:
                 counts[value] = counts.get(value, 0) + 1
             group_replicates[header] = counts
         row["group_replicates"] = group_replicates
+        if field in {"metadata", "group"} and len(data_rows) <= 60 and column_count <= 10:
+            row["raw_rows"] = [
+                [str(cell).strip()[:60] for cell in cells[:10]]
+                for cells in data_rows[:60]
+            ]
     return row
 
 
@@ -650,6 +681,55 @@ def _bounded_preflight_file(item: Any) -> dict[str, Any]:
         "non_numeric_cells": item.non_numeric_cells,
         "row_length_issues": item.row_length_issues,
     }
+
+
+def _alignment_diagnostic(analysis_type: AnalysisType, inputs: Mapping[str, AgentInputFile]) -> dict[str, Any] | None:
+    """基于已解析的样本名生成有界对齐诊断；不含路径、DSN 或原始内容。"""
+    matrix_fields = {
+        AnalysisType.DIFFERENTIAL: "counts",
+        AnalysisType.DEM: "metabs",
+        AnalysisType.CORRELATION: "transcriptome",
+    }
+    matrix_field = matrix_fields[analysis_type]
+    other_field = "metadata" if analysis_type in {AnalysisType.DIFFERENTIAL, AnalysisType.DEM} else "metabolome"
+    matrix = inputs.get(matrix_field)
+    other = inputs.get(other_field)
+    if matrix is None or other is None:
+        return None
+    matrix_rows = list(csv.reader(io.StringIO(matrix.content.decode("utf-8-sig", errors="replace"))))
+    matrix_ids = [str(item).strip() for item in (matrix_rows[0][1:] if matrix_rows else []) if str(item).strip()]
+    if other_field == "metadata":
+        other_ids = [str(row.get("sample_id") or "").strip() for row in _dict_rows(other.content)]
+    else:
+        other_rows = list(csv.reader(io.StringIO(other.content.decode("utf-8-sig", errors="replace"))))
+        other_ids = [str(item).strip() for item in (other_rows[0][1:] if other_rows else []) if str(item).strip()]
+    matrix_set, other_set = set(matrix_ids), set(other_ids)
+    missing = sorted(matrix_set - other_set)
+    extra = sorted(other_set - matrix_set)
+    return {
+        "matched": len(matrix_set & other_set),
+        "missing_from_metadata": [item[:60] for item in missing[:10]],
+        "extra_in_metadata": [item[:60] for item in extra[:10]],
+        "pattern_hint": _alignment_pattern_hint(matrix_set, other_set) if missing or extra else None,
+    }
+
+
+def _alignment_pattern_hint(left: set[str], right: set[str]) -> str | None:
+    if {item.lower() for item in left} == {item.lower() for item in right}:
+        return "大小写差异"
+    normalize = lambda value: re.sub(r"[-_]", "", value).lower()
+    if {normalize(item) for item in left} == {normalize(item) for item in right}:
+        return "分隔符差异（- 与 _）"
+    if len(left) == len(right) and left and right:
+        left_parts = [re.match(r"^(.*?)(\d+)$", item) for item in left]
+        right_parts = [re.match(r"^(.*?)(\d+)$", item) for item in right]
+        if all(left_parts) and all(right_parts):
+            left_suffixes = {match.group(2) for match in left_parts if match}
+            right_suffixes = {match.group(2) for match in right_parts if match}
+            prefixes = {match.group(1).lower() for match in [*left_parts, *right_parts] if match}
+            if left_suffixes == right_suffixes and len(prefixes) > 1:
+                return "统一前缀差异"
+    return None
 
 
 def _sort_value(value: str | None) -> tuple[int, object]:

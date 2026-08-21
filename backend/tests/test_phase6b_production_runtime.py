@@ -14,6 +14,7 @@ from backend.app.agent.schemas import (
     ActiveProfile,
     AgentAction,
     AgentDecision,
+    AgentNarrationDecision,
     AgentState,
     AgentTurnRecord,
     Citation,
@@ -315,9 +316,9 @@ def test_capability_question_is_answered_deterministically_without_model_or_tool
     assert [block.type for block in result.blocks] == ["advisory"]
     assert "差异表达" in result.blocks[0].text
     assert "结果解读" in result.blocks[0].text
-    assert result.state.model_calls == 0
+    assert result.state.model_calls == 1
     assert result.state.tool_calls == 0
-    assert model.contexts == []
+    assert len(model.contexts) == 1
 
 
 def test_followup_after_preflight_block_is_routed_instead_of_empty_response() -> None:
@@ -338,8 +339,8 @@ def test_followup_after_preflight_block_is_routed_instead_of_empty_response() ->
     assert result.state.state is AgentState.AWAIT_FOLLOWUP
     assert [block.type for block in result.blocks] == ["advisory"]
     assert result.blocks[0].text
-    assert result.state.model_calls == 0
-    assert model.contexts == []
+    assert result.state.model_calls == 1
+    assert len(model.contexts) == 1
 
 
 def test_attached_inputs_with_unclear_message_are_summarized_without_plan_or_model() -> None:
@@ -371,10 +372,10 @@ def test_attached_inputs_with_unclear_message_are_summarized_without_plan_or_mod
     assert "counts" in result.blocks[0].text
     assert "metadata" in result.blocks[0].text
     assert "DEG" in result.blocks[0].text
-    assert result.state.model_calls == 0
+    assert result.state.model_calls == 1
     assert result.state.tool_calls == 1
     assert result.state.plan_id is None
-    assert model.contexts == []
+    assert len(model.contexts) == 1
 
 
 def test_attached_capability_question_reports_missing_gma_role_without_model() -> None:
@@ -406,8 +407,8 @@ def test_attached_capability_question_reports_missing_gma_role_without_model() -
     assert "transcriptome" in result.blocks[0].text
     assert "group" in result.blocks[0].text
     assert "metabolome" in result.blocks[0].text
-    assert result.state.model_calls == 0
-    assert model.contexts == []
+    assert result.state.model_calls == 1
+    assert len(model.contexts) == 1
 
 
 def test_partial_gma_inputs_are_not_reinterpreted_as_deg_by_model() -> None:
@@ -438,8 +439,8 @@ def test_partial_gma_inputs_are_not_reinterpreted_as_deg_by_model() -> None:
     assert [block.type for block in result.blocks] == ["advisory"]
     assert "metabolome" in result.blocks[0].text
     assert "DEG 需要 counts + metadata" in result.blocks[0].text
-    assert result.state.model_calls == 0
-    assert model.contexts == []
+    assert result.state.model_calls == 1
+    assert len(model.contexts) == 1
 
 
 def test_claimed_upload_and_execution_injection_cannot_bypass_input_gate() -> None:
@@ -687,9 +688,9 @@ def test_rejected_plan_can_be_explained_without_model_or_tool_calls() -> None:
     assert "salt（55 个样本）" in explanation
     assert "control（56 个样本）" in explanation
     assert "不会执行" in explanation
-    assert result.state.model_calls == 0
+    assert result.state.model_calls == 1
     assert result.state.tool_calls == 0
-    assert model.contexts == []
+    assert len(model.contexts) == 1
 
 
 def test_monitor_jobs_does_not_drop_a_plan_followup_after_submission() -> None:
@@ -737,7 +738,7 @@ def test_monitor_jobs_does_not_drop_a_plan_followup_after_submission() -> None:
     assert [block.type for block in result.blocks] == ["advisory"]
     assert "treatment" in result.blocks[0].text
     assert result.state.state is AgentState.AWAIT_FOLLOWUP
-    assert model.contexts == []
+    assert len(model.contexts) == 1
 
 
 def test_wrong_file_roles_return_specific_preflight_errors_without_plan() -> None:
@@ -745,7 +746,19 @@ def test_wrong_file_roles_return_specific_preflight_errors_without_plan() -> Non
     state_store.save(_state(), expected_version=0)
     jobs = _Jobs()
     executor = _Executor()
-    model = _RecordingModel([_analysis_decision()])
+    model = _RecordingModel([
+        _analysis_decision(),
+        AgentNarrationDecision(
+            action="answer",
+            narration="预检发现输入问题，请先修正文件角色。",
+            feasibility=None,
+            analysis_recommendations=[],
+            requires_approval=False,
+            requested_params={},
+            grounded_answer=None,
+            advisory_answer=None,
+        ),
+    ])
     coordinator = ProductionRunCoordinator(
         state_store=state_store,
         plan_store=InMemoryPlanStore(),
@@ -775,10 +788,12 @@ def test_wrong_file_roles_return_specific_preflight_errors_without_plan() -> Non
         user_message="按 treatment 比较 salt 和 control",
     )
 
-    assert result.state.state is AgentState.PREFLIGHT_BLOCKED
+    # S7 在生成预检前先做 metadata 存在性校验，无法确认推断时进入追问。
+    assert result.state.state is AgentState.NEED_USER_INPUT
     assert result.state.plan_id is None
     assert [block.type for block in result.blocks] == ["recommendation", "text"]
-    assert "sample_id" in result.blocks[-1].text
+    assert result.blocks[-1].type == "text"
+    assert "不存在" in result.blocks[-1].text
     assert jobs.saved == []
     assert executor.enqueued == []
 
@@ -811,7 +826,7 @@ def test_model_budget_is_enforced_before_calling_the_model() -> None:
     with pytest.raises(CoordinatorBudgetExceeded, match="model call budget"):
         coordinator.execute_turn(turn=_turn(), user_message="比较 salt 和 control")
 
-    assert model.contexts == []
+    assert len(model.contexts) == 0
     assert jobs.saved == []
 
 
@@ -974,7 +989,7 @@ def test_interpretation_without_supported_artifact_returns_status_message_withou
     assert "未发现" in result.blocks[0].text
     assert result.state.state is AgentState.AWAIT_FOLLOWUP
     assert result.state.model_calls == 0
-    assert model.contexts == []
+    assert len(model.contexts) == 0
 
 
 def test_interpretation_caps_model_evidence_rows_even_when_model_requests_more() -> None:

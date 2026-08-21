@@ -1,9 +1,18 @@
 from __future__ import annotations
 
 import re
-from typing import Protocol
+from typing import Any, Callable, Protocol
 
-from .schemas import ActiveProfile, AgentState, RouteDecision, RouteIntent, RouteTargetProfile, RunState
+from .schemas import (
+    ActiveProfile,
+    AgentState,
+    ModelContext,
+    ModelRouteDecision,
+    RouteDecision,
+    RouteIntent,
+    RouteTargetProfile,
+    RunState,
+)
 
 
 class Router(Protocol):
@@ -109,6 +118,81 @@ class RuleRouter:
             intent = RouteIntent.ANALYZE if state.active_profile is ActiveProfile.ANALYSIS else RouteIntent.INTERPRET
             return RouteDecision(intent=intent, target_profile=target, reason="continue current profile")
         return RouteDecision(intent=RouteIntent.UNCLEAR, target_profile=RouteTargetProfile.ANALYSIS, reason="bounded biology consultation")
+
+
+class ModelRouter:
+    """模型主路由；失败、低置信度和破坏性信号不确定时回退 RuleRouter。"""
+
+    def __init__(self, model: Any = None, fallback: RuleRouter | None = None,
+                 has_inputs: Callable[[RunState], bool] | None = None,
+                 *, classify: Callable[[str, RunState], Any] | None = None) -> None:
+        # `classify` 保留给 unit fixture；生产注入使用 model adapter。两者都只能返回
+        # ModelRouteDecision，不携带工具、参数或资源句柄。
+        self.model = model if model is not None else classify
+        if self.model is None:
+            raise TypeError("ModelRouter requires a model or classify callable")
+        self.fallback = fallback or RuleRouter()
+        self.has_inputs = has_inputs or _available_input_roles
+
+    def route(self, user_message: str, state: RunState) -> RouteDecision:
+        fallback = self.fallback.route(user_message, state)
+        try:
+            model_route = ModelRouteDecision.model_validate(self._classify(user_message, state))
+        except Exception:
+            return fallback
+        if model_route.confidence == "low":
+            return fallback
+        target = model_route.target_profile
+        intent = model_route.intent
+        if intent is RouteIntent.INTERPRET and not state.focus.in_scope_job_ids:
+            target = RouteTargetProfile.ASK_USER
+        if intent is RouteIntent.ANALYZE and not self.has_inputs(state):
+            intent = RouteIntent.DESCRIBE_ONLY
+            target = RouteTargetProfile.ANALYSIS
+        negotiation = model_route.is_param_negotiation
+        if state.state is AgentState.WAIT_EXECUTION_CONFIRMATION:
+            negotiation = negotiation and fallback.is_param_negotiation
+        return RouteDecision(
+            intent=intent,
+            target_profile=target,
+            reason=model_route.reason,
+            is_param_negotiation=negotiation,
+        )
+
+    def _classify(self, user_message: str, state: RunState) -> Any:
+        if callable(self.model):
+            return self.model(user_message, state)
+        classify = getattr(self.model, "classify", None)
+        if callable(classify):
+            return classify(user_message, state)
+        # Adapter implementations may expose a dedicated route method. A normal
+        # AgentDecision from `decide` is deliberately rejected by schema validation.
+        route = getattr(self.model, "route", None)
+        if callable(route):
+            return route(user_message, state)
+        decide = getattr(self.model, "decide", None)
+        if callable(decide):
+            context = ModelContext(
+                user_message=user_message,
+                active_profile=state.active_profile,
+                state=state.state,
+                in_scope_job_ids=list(state.focus.in_scope_job_ids),
+                conversation_summary=None,
+                available_input_roles=[],
+                available_tools=[],
+            )
+            return decide(context)
+        raise TypeError("model adapter does not expose route classification")
+
+
+def _available_input_roles(state: RunState) -> bool:
+    """路由态只持有来源指纹/草稿；有输入来源指纹即可认为输入已绑定。"""
+    return bool(
+        state.focus.params_source_ref
+        or state.focus.draft_params
+        or state.plan_id
+        or state.pending_approval_id
+    )
 
 
 _CONTINUATION_MATCHES = {"继续", "继续吧", "下一步", "好的", "好", "可以", "ok", "continue", "go on"}

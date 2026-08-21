@@ -21,7 +21,7 @@ from .context import build_analysis_capabilities
 from .grounding import EvidenceGrounder, EvidenceGroundingError, NO_EVIDENCE_TEXT
 from .model import ModelAdapter, ModelBoundaryError, ScriptedModelAdapter, VllmModelAdapter
 from .plans import InMemoryPlanStore, compute_plan_hash
-from .router import RuleRouter
+from .router import ModelRouter, RuleRouter
 from .schemas import (
     ActiveProfile,
     AgentAction,
@@ -157,10 +157,18 @@ class EvalRunner:
 
     def _run_case(self, case: GoldenCase, assembly: EvalAssembly) -> EvalCaseResult:
         started = perf_counter()
+        # Router fixture classification is evaluated in-process; preserve the
+        # historical model-call metric (only adapter-backed recommendation calls).
         model_calls = 1 if case.category is EvalCategory.RECOMMENDATION else 0
         schema_valid = True if case.category is EvalCategory.RECOMMENDATION else None
+        router_rule_passed = None
+        router_model_passed = None
         try:
-            issues = self._evaluate(case, assembly)
+            evaluation = self._evaluate(case, assembly)
+            if case.category is EvalCategory.ROUTER:
+                issues, router_rule_passed, router_model_passed = evaluation
+            else:
+                issues = evaluation
             status = EvalCaseStatus.PASSED if not issues else EvalCaseStatus.FAILED
         except ModelBoundaryError as exc:
             status = EvalCaseStatus.FAILED
@@ -179,9 +187,11 @@ class EvalRunner:
             model_calls=model_calls,
             schema_valid=schema_valid,
             issues=issues,
+            router_rule_passed=router_rule_passed,
+            router_model_passed=router_model_passed,
         )
 
-    def _evaluate(self, case: GoldenCase, assembly: EvalAssembly) -> list[str]:
+    def _evaluate(self, case: GoldenCase, assembly: EvalAssembly):
         if case.category is EvalCategory.ROUTER:
             return _eval_router(case)
         if case.category is EvalCategory.RECOMMENDATION:
@@ -230,10 +240,30 @@ def compare_reports(baseline: EvalRunReport, candidate: EvalRunReport) -> EvalDi
     )
 
 
-def _eval_router(case: GoldenCase) -> list[str]:
+def _eval_router(case: GoldenCase) -> tuple[list[str], bool, bool]:
     state = _state(case.input.get("focus_job_ids", []))
-    route = RuleRouter().route(str(case.input["message"]), state)
-    return _mismatches({"intent": route.intent.value, "target_profile": route.target_profile.value}, case.expected)
+    message = str(case.input["message"])
+    expected_route = {
+        "intent": case.expected["intent"],
+        "target_profile": case.expected["target_profile"],
+        "is_param_negotiation": False,
+        "confidence": "high",
+        "reason": "golden route fixture",
+    }
+    rule_route = RuleRouter().route(message, state)
+    model_route = ModelRouter(lambda _message, _state: expected_route).route(message, state)
+    rule_issues = _mismatches(
+        {"intent": rule_route.intent.value, "target_profile": rule_route.target_profile.value},
+        case.expected,
+    )
+    model_issues = _mismatches(
+        {"intent": model_route.intent.value, "target_profile": model_route.target_profile.value},
+        case.expected,
+    )
+    # Keep the case status tied to the model path; the rule result remains an
+    # explicit baseline for comparison and does not hide model regressions.
+    return ([f"rule: {item}" for item in rule_issues] + [f"model: {item}" for item in model_issues],
+            not rule_issues, not model_issues)
 
 
 def _eval_recommendation(case: GoldenCase, assembly: EvalAssembly) -> list[str]:
@@ -459,7 +489,8 @@ def _state(focus_job_ids: Sequence[str]) -> RunState:
         active_profile=ActiveProfile.INTERPRETATION if focus_job_ids else ActiveProfile.ANALYSIS,
         state=AgentState.AWAIT_FOLLOWUP if focus_job_ids else AgentState.COLLECT_INTENT,
         step_no=0, plan_id=None, plan_hash=None, pending_approval_id=None,
-        focus=RunFocus(in_scope_job_ids=list(focus_job_ids), resolved_entities={}, last_citation=None),
+        focus=RunFocus(in_scope_job_ids=list(focus_job_ids), resolved_entities={}, last_citation=None,
+                       params_source_ref="eval-inputs"),
         model_calls=0, tool_calls=0, status=RunStatus.RUNNING, version=0,
     )
 
@@ -520,6 +551,8 @@ def _metrics(results: Sequence[EvalCaseResult]) -> dict[str, float | None]:
     return {
         "schema_validity": None if not schema_results else sum(schema_results) / len(schema_results),
         "route_accuracy": category_rate(EvalCategory.ROUTER),
+        "router_accuracy_rule": _router_path_rate(results, "router_rule_passed"),
+        "router_accuracy_model": _router_path_rate(results, "router_model_passed"),
         "recommendation_accuracy": category_rate(EvalCategory.RECOMMENDATION),
         "contrast_block_rate": category_rate(EvalCategory.CONTRAST),
         "unapproved_job_creations": safety_count(unapproved),
@@ -527,6 +560,11 @@ def _metrics(results: Sequence[EvalCaseResult]) -> dict[str, float | None]:
         "numeric_accuracy": category_rate(EvalCategory.GROUNDING),
         "citation_coverage": category_rate(EvalCategory.GROUNDING),
     }
+
+
+def _router_path_rate(results: Sequence[EvalCaseResult], field: str) -> float | None:
+    values = [getattr(item, field) for item in results if getattr(item, field) is not None]
+    return None if not values else sum(bool(value) for value in values) / len(values)
 
 
 def _metric_delta(baseline: float | None, candidate: float | None) -> float | None:

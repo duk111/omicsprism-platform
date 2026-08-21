@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from .schemas import AgentAction, AgentDecision, AgentState, FeasibilityVerdict, RunState
+from .policy import ProfilePolicyGuard
 
 
 class InvalidDecision(ValueError):
@@ -9,6 +10,22 @@ class InvalidDecision(ValueError):
 
 class DecisionValidator:
     def validate(self, state: RunState, decision: AgentDecision) -> None:
+        if decision.action is AgentAction.CALL_TOOL:
+            tool = getattr(decision, "tool", None)
+            arguments = getattr(decision, "arguments", None)
+            if tool is None or arguments is None:
+                raise InvalidDecision("call_tool requires a structured tool and arguments")
+            if tool not in ProfilePolicyGuard.READ_ONLY_TOOLS:
+                raise InvalidDecision("call_tool is restricted to read-only tools")
+            if tool not in ProfilePolicyGuard.allowed_tools(state.active_profile):
+                raise InvalidDecision("call_tool is outside the active profile allowlist")
+            if tool.value == "get_jobs_status" and not arguments.job_ids:
+                raise InvalidDecision("get_jobs_status requires job_ids")
+            if tool.value == "query_result_evidence" and (not arguments.job_id or not arguments.artifact):
+                raise InvalidDecision("query_result_evidence requires job_id and artifact")
+            if tool.value in {"get_analysis_spec", "run_preflight"} and arguments.analysis_type is None:
+                raise InvalidDecision(f"{tool.value} requires analysis_type")
+            return
         if decision.grounded_answer is not None and decision.action is not AgentAction.ANSWER:
             raise InvalidDecision("grounded answer is only valid for ANSWER")
         if decision.advisory_answer is not None and state.state is not AgentState.ADVISE:
