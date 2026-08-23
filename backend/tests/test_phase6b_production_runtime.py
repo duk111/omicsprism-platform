@@ -630,9 +630,9 @@ def test_ambiguous_contrast_lists_real_metadata_choices_instead_of_preflight_err
 
     assert result.state.state is AgentState.NEED_USER_INPUT
     assert [block.type for block in result.blocks] == ["recommendation", "text"]
-    assert "treatment=[control(2)、salt(2)]" in result.blocks[-1].text
-    assert "genotype=[wt(2)、mutant(2)]" in result.blocks[-1].text
-    assert "比较列" in result.blocks[-1].text
+    assert "需要选择包含实验分组" in result.blocks[-1].text
+    assert "treatment" in result.blocks[-1].text
+    assert "genotype" in result.blocks[-1].text
     assert result.state.plan_id is None
 
 

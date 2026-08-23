@@ -14,6 +14,19 @@ from .approvals import InMemoryApprovalGate, JsonApprovalGate, PostgresApprovalG
 from .audit import PostgresAgentEventStore
 from .context import MinimalContextBuilder
 from .dataset_profile import DatasetProfile, MatrixProfile, MetadataProfile, build_dataset_profiles
+from .fingerprint import compute_input_fingerprint
+from .param_resolver import (
+    AnalysisParams,
+    AnalysisProposal,
+    ContrastSpec,
+    DEGParams,
+    DEMParams,
+    GMAParams,
+    MissingParam,
+    ResolvedRequest,
+    resolve_analysis_request,
+)
+from .validation import DatasetRef, Issue, ValidationReport, validate_analysis_request
 from .eval import EvalAssembly, EvalAssemblyFactory, EvalRunner, compare_reports, load_golden_cases
 from .model import ScriptedModelAdapter, VllmModelAdapter
 from .policy import ProfilePolicyGuard
@@ -49,6 +62,20 @@ __all__ = [
     "MatrixProfile",
     "MetadataProfile",
     "build_dataset_profiles",
+    "AnalysisParams",
+    "AnalysisProposal",
+    "ContrastSpec",
+    "DEGParams",
+    "DEMParams",
+    "GMAParams",
+    "MissingParam",
+    "ResolvedRequest",
+    "resolve_analysis_request",
+    "DatasetRef",
+    "Issue",
+    "ValidationReport",
+    "validate_analysis_request",
+    "compute_input_fingerprint",
     "ScriptedModelAdapter",
     "VllmModelAdapter",
     "EvalAssembly",

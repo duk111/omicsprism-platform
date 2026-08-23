@@ -15,6 +15,7 @@ from .audit import AgentEventStore, InMemoryAgentEventStore
 from .context import MinimalContextBuilder, build_analysis_capabilities, build_input_summaries
 from .grounding import GroundedAnswerPipeline
 from .model import ModelAdapter, ModelBoundaryError
+from .param_resolver import AnalysisProposal, profiles_from_input_summaries, resolve_analysis_request
 from .plans import PlanNotFound, PlanStore, compute_plan_hash
 from .policy import ProfilePolicyGuard
 from .router import RuleRouter
@@ -486,6 +487,7 @@ class ProductionRunCoordinator:
                     analysis_type,
                     merged_requested,
                     input_summaries,
+                    user_message=user_message,
                 )
                 if contrast_question:
                     state.focus.draft_params = dict(requested_params)
@@ -1389,74 +1391,17 @@ def _complete_contrast_params(
     analysis_type: AnalysisType,
     requested: dict[str, Any],
     summaries: list[InputInspectionSummary],
+    *,
+    user_message: str = "",
 ) -> tuple[dict[str, Any], str | None]:
-    """仅从真实 metadata 二水平分组补齐安全 contrast；歧义时请求用户确认。"""
+    """Compatibility adapter for the extracted deterministic resolver."""
 
-    params = dict(requested)
-    if analysis_type not in {AnalysisType.DIFFERENTIAL, AnalysisType.DEM}:
-        return params, None
-    required = ("compare_field", "tested_levels", "reference_level")
-    metadata = next((item for item in summaries if item.field == "metadata"), None)
-    groups = list(metadata.group_levels) if metadata is not None else []
-    min_replicates = _positive_int(params.get("min_replicates"), 2)
-    compare_field = str(params.get("compare_field") or "").strip()
-    tested = str(params.get("tested_levels") or "").strip()
-    reference = str(params.get("reference_level") or "").strip()
-
-    if all((compare_field, tested, reference)):
-        selected = next((group for group in groups if group.column == compare_field), None)
-        observed = {item.value for item in selected.values} if selected else set()
-        tested_values = {item.strip() for item in tested.split(",") if item.strip()}
-        if not selected or not tested_values.issubset(observed) or reference not in observed:
-            return params, "metadata 中不存在模型给出的比较列或分组水平，请重新确认。"
-        if any(item.value in tested_values and item.count < min_replicates for item in selected.values) or next((item.count for item in selected.values if item.value == reference), 0) < min_replicates:
-            return params, "模型给出的分组样本数不足 min_replicates，请重新选择分组。"
-        return params, None
-
-    candidates = []
-    for group in groups:
-        values = [item for item in group.values if item.value.strip()]
-        if len(values) != 2 or any(item.count < min_replicates for item in values):
-            continue
-        observed = {item.value for item in values}
-        if compare_field and group.column != compare_field:
-            continue
-        if tested and tested not in observed:
-            continue
-        if reference and reference not in observed:
-            continue
-        refs = [item.value for item in values if _is_reference_level(item.value)]
-        if not reference and len(refs) != 1:
-            continue
-        inferred_reference = reference or refs[0]
-        remaining = [item.value for item in values if item.value != inferred_reference]
-        inferred_tested = tested or (remaining[0] if len(remaining) == 1 else "")
-        if not inferred_tested or inferred_tested == inferred_reference:
-            continue
-        candidates.append((group.column, inferred_tested, inferred_reference))
-
-    if len(candidates) == 1:
-        field, inferred_tested, inferred_reference = candidates[0]
-        if not str(params.get("compare_field") or "").strip():
-            params["compare_field"] = field
-        if not str(params.get("tested_levels") or "").strip():
-            params["tested_levels"] = inferred_tested
-        if not str(params.get("reference_level") or "").strip():
-            params["reference_level"] = inferred_reference
-        return params, None
-
-    label = "DEG" if analysis_type is AnalysisType.DIFFERENTIAL else "DEM"
-    options = []
-    for group in groups[:8]:
-        values = "、".join(f"{item.value}({item.count})" for item in group.values[:8] if item.value.strip())
-        if values:
-            options.append(f"{group.column}=[{values}]")
-    option_text = "；".join(options) or "未识别到可用的二水平分组列"
-    return params, (
-        f"当前输入支持 {label}，但生成可审批计划前需要确认比较设置。"
-        f"metadata 中识别到：{option_text}。"
-        "请回复比较列、实验组和对照组，例如：比较列=treatment，实验组=salt，对照组=control。"
+    request = resolve_analysis_request(
+        user_message=user_message,
+        profiles=profiles_from_input_summaries(summaries),
+        llm_proposal=AnalysisProposal.from_legacy(analysis_type, requested),
     )
+    return request.legacy_params(), request.clarification
 
 
 def _inference_note(params: Mapping[str, Any], summaries: Sequence[InputInspectionSummary]) -> str:
