@@ -2,6 +2,13 @@
 
 from __future__ import annotations
 
+from .analysis import DatasetLoadError, analysis_node
 from .main import main_node, route_after_main, specialist_placeholder
 
-__all__ = ["main_node", "route_after_main", "specialist_placeholder"]
+__all__ = [
+    "DatasetLoadError",
+    "analysis_node",
+    "main_node",
+    "route_after_main",
+    "specialist_placeholder",
+]

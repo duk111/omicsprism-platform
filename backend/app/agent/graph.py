@@ -6,8 +6,8 @@ from typing import Annotated, Literal
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from .dataset_profile import DatasetProfile
-from .param_resolver import AnalysisParams, AnalysisProposal
-from .validation import ContrastPreview
+from .param_resolver import AnalysisParams, AnalysisProposal, ResolvedRequest
+from .validation import ContrastPreview, DatasetRef, ValidationReport
 
 
 AnalysisTypeName = Literal["DEG", "DEM", "GMA"]
@@ -63,6 +63,12 @@ class ClarificationPayload(BaseModel):
     kind: Literal["clarification"] = "clarification"
     missing: list[ClarificationItem] = Field(default_factory=list, max_length=3)
     question: str = Field(min_length=1, max_length=1000)
+
+
+class ClarificationResume(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    answer: str = Field(min_length=1, max_length=1000)
 
 
 class ConfirmationPayload(BaseModel):
@@ -141,6 +147,18 @@ class MainModelOutput(BaseModel):
 MainDecisionModel = Callable[[MainModelContext], object]
 
 
+class DatasetLoadRequest(BaseModel):
+    """Ownership-scoped request for validation inputs; it carries no file bytes."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    user_id: str = Field(min_length=1, max_length=200)
+    dataset_ids: list[str] = Field(default_factory=list, max_length=6)
+
+
+DatasetLoader = Callable[[DatasetLoadRequest], list[DatasetRef]]
+
+
 class GraphState(BaseModel):
     """Compact state shared by the v3 semantic graph nodes."""
 
@@ -155,6 +173,9 @@ class GraphState(BaseModel):
     recent_jobs: list[JobRef] = Field(default_factory=list, max_length=20)
     decision: AgentDecision | None = None
     response_text: str | None = Field(default=None, max_length=1200)
+    clarification_answer: str | None = Field(default=None, max_length=1000)
+    resolved_request: ResolvedRequest | None = None
+    validation_report: ValidationReport | None = None
     pending_interrupt: PendingInterrupt | None = None
     step_budget: StepBudget = Field(default_factory=StepBudget)
 
@@ -168,16 +189,26 @@ class GraphState(BaseModel):
         return self
 
 
-def build_agent_graph(model: MainDecisionModel):
-    """Compile the Phase 4.2 graph skeleton around an injected model boundary."""
+def build_agent_graph(
+    model: MainDecisionModel,
+    dataset_loader: DatasetLoader,
+    *,
+    checkpointer: object | None = None,
+):
+    """Compile the v3 graph around injected model and deterministic data boundaries."""
 
     from langgraph.graph import END, START, StateGraph
 
+    from .nodes.analysis import analysis_node
     from .nodes.main import main_node, route_after_main, specialist_placeholder
 
     builder = StateGraph(GraphState)
     builder.add_node("main", main_node(model))
-    builder.add_node("analysis", specialist_placeholder)
+    builder.add_node(
+        "analysis",
+        analysis_node(dataset_loader),
+        destinations=("analysis", END),
+    )
     builder.add_node("result_qa", specialist_placeholder)
     builder.add_edge(START, "main")
     builder.add_conditional_edges(
@@ -185,6 +216,5 @@ def build_agent_graph(model: MainDecisionModel):
         route_after_main,
         {"analysis": "analysis", "result_qa": "result_qa", "end": END},
     )
-    builder.add_edge("analysis", END)
     builder.add_edge("result_qa", END)
-    return builder.compile()
+    return builder.compile(checkpointer=checkpointer)
