@@ -7,7 +7,12 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from .dataset_profile import DatasetProfile
 from .param_resolver import AnalysisParams, AnalysisProposal, ResolvedRequest
-from .schemas import GroundedAnswer, ToolResult
+from .schemas import (
+    AgentMessageResponse,
+    AgentTurnResponse,
+    GroundedAnswer,
+    ToolResult,
+)
 from .validation import ContrastPreview, DatasetRef, Issue, ValidationReport
 
 
@@ -165,6 +170,57 @@ PendingInterrupt = Annotated[
     ClarificationPayload | ConfirmationPayload,
     Field(discriminator="kind"),
 ]
+
+
+class GraphInterrupt(BaseModel):
+    """Public resumable interrupt paired with its LangGraph interrupt id."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    interrupt_id: str = Field(min_length=1, max_length=200)
+    payload: PendingInterrupt
+
+
+class GraphClarificationResumeRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    kind: Literal["clarification"] = "clarification"
+    interrupt_id: str = Field(min_length=1, max_length=200)
+    answer: str = Field(min_length=1, max_length=1000)
+
+
+class GraphConfirmationResumeRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    kind: Literal["confirmation"] = "confirmation"
+    interrupt_id: str = Field(min_length=1, max_length=200)
+    action: Literal["run", "modify", "cancel"]
+    modification: str | None = Field(default=None, min_length=1, max_length=1000)
+
+    @model_validator(mode="after")
+    def _modify_requires_text(self) -> "GraphConfirmationResumeRequest":
+        if self.action == "modify" and self.modification is None:
+            raise ValueError("modify action requires modification")
+        if self.action != "modify" and self.modification is not None:
+            raise ValueError("modification is only valid for modify action")
+        return self
+
+
+GraphResumeRequest = Annotated[
+    GraphClarificationResumeRequest | GraphConfirmationResumeRequest,
+    Field(discriminator="kind"),
+]
+
+
+class GraphTurnResult(BaseModel):
+    """Public result of an inline graph invoke or resume operation."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    checkpoint_turn_id: str = Field(min_length=1, max_length=200)
+    turn: AgentTurnResponse
+    message: AgentMessageResponse | None = None
+    interrupt: GraphInterrupt | None = None
 
 
 class AgentDecision(BaseModel):

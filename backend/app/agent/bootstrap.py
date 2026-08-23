@@ -18,6 +18,7 @@ from .product_store import AgentProductStore, PostgresAgentProductStore
 from .graph import (
     AnalysisExecutionRequest,
     DatasetLoadRequest,
+    DatasetLoader,
     JobLookupRequest,
     JobRef,
     JobSummary,
@@ -43,6 +44,7 @@ class AgentApiContext:
     job_store: JobStorageService
     files: FileStorageService | None
     graph: object | None = None
+    dataset_loader: DatasetLoader | None = None
     stream_poll_seconds: float = 1.0
 
 
@@ -174,4 +176,4 @@ def create_agent_api_context(
         read_job,
         query_result,
     )
-    return replace(context, graph=graph)
+    return replace(context, graph=graph, dataset_loader=load_datasets)

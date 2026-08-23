@@ -75,6 +75,12 @@ class AgentProductStore(Protocol):
                     status: AgentTurnStatus, now: datetime, error_code: str | None = None) -> AgentTurnRecord:
         ...
 
+    def finish_inline_turn(
+        self, *, turn_id: str, user_id: str, status: AgentTurnStatus, now: datetime,
+        message: AgentMessageRecord | None = None, error_code: str | None = None,
+    ) -> AgentTurnRecord:
+        ...
+
     def worker_slot(self) -> Iterator[bool]:
         ...
 
@@ -251,6 +257,28 @@ class InMemoryAgentProductStore:
         turn.error_code = error_code
         turn.lease_owner = None
         turn.lease_expires_at = None
+        turn.completed_at = now
+        turn.updated_at = now
+        self._turns[turn.turn_id] = turn.model_dump(mode="json")
+        return turn.model_copy(deep=True)
+
+    def finish_inline_turn(
+        self, *, turn_id: str, user_id: str, status: AgentTurnStatus, now: datetime,
+        message: AgentMessageRecord | None = None, error_code: str | None = None,
+    ) -> AgentTurnRecord:
+        if status not in {AgentTurnStatus.COMPLETED, AgentTurnStatus.FAILED}:
+            raise ValueError("inline turn may only finish as completed or failed")
+        turn = self.get_turn(turn_id=turn_id, user_id=user_id)
+        if turn.status is not AgentTurnStatus.RUNNING or turn.lease_owner is not None:
+            raise TurnLeaseMismatch(turn_id)
+        if message is not None:
+            if (message.thread_id, message.run_id, message.user_id) != (
+                turn.thread_id, turn.run_id, turn.user_id,
+            ):
+                raise ValueError("inline turn message does not match ownership")
+            self.append_message(message)
+        turn.status = status
+        turn.error_code = error_code
         turn.completed_at = now
         turn.updated_at = now
         self._turns[turn.turn_id] = turn.model_dump(mode="json")
@@ -637,6 +665,47 @@ class PostgresAgentProductStore:
         if row is None:
             raise TurnLeaseMismatch(turn_id)
         return _turn_from_row(row)
+
+    def finish_inline_turn(
+        self, *, turn_id: str, user_id: str, status: AgentTurnStatus, now: datetime,
+        message: AgentMessageRecord | None = None, error_code: str | None = None,
+    ) -> AgentTurnRecord:
+        if status not in {AgentTurnStatus.COMPLETED, AgentTurnStatus.FAILED}:
+            raise ValueError("inline turn may only finish as completed or failed")
+        Jsonb = _jsonb_type()
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                update agent_turns set status = %s, error_code = %s,
+                    completed_at = %s, updated_at = %s
+                where turn_id = %s and user_id = %s
+                  and status = 'running' and lease_owner is null
+                returning turn_id, thread_id, run_id, user_id, idempotency_key,
+                          request_hash, status, attempt, lease_owner, lease_expires_at,
+                          error_code, created_at, updated_at, started_at, completed_at
+                """,
+                (status.value, error_code, now, now, turn_id, user_id),
+            ).fetchone()
+            if row is None:
+                raise TurnLeaseMismatch(turn_id)
+            turn = _turn_from_row(row)
+            if message is not None:
+                if (message.thread_id, message.run_id, message.user_id) != (
+                    turn.thread_id, turn.run_id, turn.user_id,
+                ):
+                    raise ValueError("inline turn message does not match ownership")
+                conn.execute(
+                    """
+                    insert into agent_messages (
+                        message_id, thread_id, run_id, user_id, role, blocks, created_at
+                    ) values (%s, %s, %s, %s, %s, %s, %s)
+                    """,
+                    (message.message_id, message.thread_id, message.run_id,
+                     message.user_id, message.role.value,
+                     Jsonb([block.model_dump(mode="json") for block in message.blocks]),
+                     message.created_at),
+                )
+        return turn
 
     def commit_turn_result(self, *, turn: AgentTurnRecord, worker_id: str,
                            state: RunState, expected_version: int,
