@@ -279,6 +279,7 @@ def _make_coordinator(
     return coordinator, state_store, plans, approvals, jobs, executor
 
 
+# DEPRECATED-BY: phase-5
 def test_e2e_full_analysis_lifecycle_across_turns() -> None:
     """完整链路：分析→计划→批准→提交→状态轮询→完成，全程跨多个 turn。"""
     now = datetime.now(timezone.utc)
@@ -318,6 +319,7 @@ def test_e2e_full_analysis_lifecycle_across_turns() -> None:
     assert any(block.type == "job" for block in done.blocks)
 
 
+# DEPRECATED-BY: phase-5
 def test_e2e_pending_plan_answers_questions_and_stays_pending() -> None:
     """问题 1：计划待批时提问不再硬失败，且保持待批状态以便后续审批。"""
     model = _RecordingModel([_analysis_decision()])
@@ -357,6 +359,7 @@ def test_e2e_pending_plan_answers_questions_and_stays_pending() -> None:
     assert len(plans.get(plan_id=proposed.state.plan_id or "", user_id="user-1").submitted_job_ids) == 1
 
 
+# DEPRECATED-BY: phase-5
 def test_pending_plan_narration_uses_only_system_facts_and_keeps_approval_pending() -> None:
     model = _RecordingModel([
         _analysis_decision(),
@@ -382,6 +385,7 @@ def test_pending_plan_narration_uses_only_system_facts_and_keeps_approval_pendin
     assert jobs.saved == [] and executor.enqueued == []
 
 
+# DEPRECATED-BY: phase-5
 def test_pending_plan_narration_budget_exhaustion_returns_existing_fallback() -> None:
     model = _RecordingModel([_analysis_decision()])
     coordinator, _store, _plans, _approvals, jobs, executor = _make_coordinator(
@@ -399,6 +403,8 @@ def test_pending_plan_narration_budget_exhaustion_returns_existing_fallback() ->
     assert jobs.saved == [] and executor.enqueued == []
 
 
+# DEPRECATED-BY: phase-5
+# BEHAVIOR-CHANGE-IN: phase-2.2
 def test_e2e_contrast_negotiation_remembers_partial_params() -> None:
     """问题 2：对比参数歧义时记住已确定部分，下一轮从 confirmed_params 续填。"""
     model = _RecordingModel([
@@ -432,6 +438,7 @@ def test_e2e_contrast_negotiation_remembers_partial_params() -> None:
     assert model.contexts[1].confirmed_params == {"compare_field": "condition"}
 
 
+# DEPRECATED-BY: phase-5
 def test_e2e_job_failure_emits_diagnosis_and_sets_job_failed() -> None:
     """问题 3：任务失败时给出有依据的中文诊断，状态进入 JOB_FAILED。"""
     now = datetime.now(timezone.utc)
@@ -488,6 +495,7 @@ def _evidence_job(now: datetime) -> tuple[str, JobRecord]:
     return artifact, job
 
 
+# DEPRECATED-BY: phase-5
 def test_e2e_pending_plan_param_change_supersedes_and_regenerates() -> None:
     """任务 G：待批期改参数 → 同一 turn 内作废旧计划并重新生成、重新审批。"""
     model = _RecordingModel([
@@ -639,6 +647,7 @@ def test_e2e_bad_artifact_query_both_attempts_fail_then_degrades() -> None:
     assert model.decisions == []
 
 
+# DEPRECATED-BY: phase-5
 def test_e2e_status_poll_refetches_jobs_while_running() -> None:
     """状态查询会在 MONITOR_JOBS 下重新拉取，而不是被当成普通咨询。"""
     now = datetime.now(timezone.utc)
@@ -672,6 +681,7 @@ def test_e2e_status_poll_refetches_jobs_while_running() -> None:
     assert done.state.state is AgentState.AWAIT_FOLLOWUP
 
 
+# DEPRECATED-BY: phase-5
 def test_e2e_status_query_works_after_success_in_await_followup() -> None:
     """任务 A：成功后处于 AWAIT_FOLLOWUP 也能查到任务，而不是「没有任务」。"""
     now = datetime.now(timezone.utc)
@@ -702,6 +712,7 @@ def test_e2e_status_query_works_after_success_in_await_followup() -> None:
     assert not any(block.type == "text" and "没有正在运行" in block.text for block in result.blocks)
 
 
+# DEPRECATED-BY: phase-5
 def test_e2e_status_query_in_job_failed_returns_diagnosis() -> None:
     """任务 A：失败后处于 JOB_FAILED 也能查到任务并拿到失败诊断。"""
     now = datetime.now(timezone.utc)
@@ -732,6 +743,7 @@ def test_e2e_status_query_in_job_failed_returns_diagnosis() -> None:
     assert result.state.state is AgentState.JOB_FAILED
 
 
+# DEPRECATED-BY: phase-5
 def test_e2e_status_query_without_tasks_returns_guidance_without_tools() -> None:
     """任务 A：focus 为空时返回引导文案，不调用任何工具。"""
     state_store = InMemoryStateStore()

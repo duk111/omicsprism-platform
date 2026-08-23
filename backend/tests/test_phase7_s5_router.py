@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+# DEPRECATED-BY: phase-5
+# This file characterizes the RuleRouter/ModelRouter control-plane path.
+
 from backend.app.agent.router import ModelRouter, RuleRouter
 from backend.app.agent.schemas import (
     ActiveProfile,

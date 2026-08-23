@@ -479,6 +479,7 @@ def test_claimed_upload_and_execution_injection_cannot_bypass_input_gate() -> No
     assert executor.enqueued == []
 
 
+# DEPRECATED-BY: phase-5
 def test_production_analysis_requires_structured_approval_then_submits_once() -> None:
     now = datetime.now(timezone.utc)
     state_store = InMemoryStateStore()
@@ -556,6 +557,8 @@ def test_production_analysis_requires_structured_approval_then_submits_once() ->
     assert replay.state.focus.in_scope_job_ids == submitted.state.focus.in_scope_job_ids
 
 
+# DEPRECATED-BY: phase-5
+# BEHAVIOR-CHANGE-IN: phase-2.2
 def test_missing_model_contrast_is_inferred_from_unique_control_group() -> None:
     state_store = InMemoryStateStore()
     state_store.save(_state(), expected_version=0)
@@ -598,6 +601,8 @@ def test_missing_model_contrast_is_inferred_from_unique_control_group() -> None:
     assert plan.contrasts[0]["reference_count"] == 2
 
 
+# DEPRECATED-BY: phase-5
+# BEHAVIOR-CHANGE-IN: phase-2.2
 def test_ambiguous_contrast_lists_real_metadata_choices_instead_of_preflight_error() -> None:
     state_store = InMemoryStateStore()
     state_store.save(_state(), expected_version=0)
@@ -631,6 +636,7 @@ def test_ambiguous_contrast_lists_real_metadata_choices_instead_of_preflight_err
     assert result.state.plan_id is None
 
 
+# DEPRECATED-BY: phase-5
 def test_rejected_plan_can_be_explained_without_model_or_tool_calls() -> None:
     state_store = InMemoryStateStore()
     state = _state(state=AgentState.NEED_USER_INPUT)
@@ -1060,6 +1066,7 @@ def test_interpretation_caps_model_evidence_rows_even_when_model_requests_more()
     assert result.blocks[0].type == "evidence"
 
 
+# DEPRECATED-BY: phase-5
 def test_state_conflict_replay_does_not_duplicate_approved_job_side_effect() -> None:
     now = datetime.now(timezone.utc)
     base_store = InMemoryStateStore()

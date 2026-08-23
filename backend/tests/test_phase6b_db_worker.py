@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+# DEPRECATED-BY: phase-5
+# These integration cases cover the worker lease/control-plane persistence path.
+
 import os
 from datetime import datetime, timedelta, timezone
 from uuid import uuid4

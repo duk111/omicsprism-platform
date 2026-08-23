@@ -72,6 +72,7 @@ class _Processor:
         return [AgentTextBlock(text="done")]
 
 
+# DEPRECATED-BY: phase-5
 def test_expired_lease_is_reclaimed_and_completed_without_duplicate_message() -> None:
     now = datetime.now(timezone.utc)
     store = _store(now)
@@ -123,6 +124,7 @@ def test_model_failure_has_stable_error_and_no_processor_side_effect_retry() -> 
     assert processor.calls == ["turn-1"]
 
 
+# DEPRECATED-BY: phase-5
 def test_worker_slot_prevents_two_in_process_workers_from_claiming_concurrently() -> None:
     now = datetime.now(timezone.utc)
     store = _store(now)

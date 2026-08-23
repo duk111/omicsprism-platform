@@ -73,6 +73,7 @@ def _decision(
     )
 
 
+# DEPRECATED-BY: phase-5
 def test_router_rules_cover_analysis_interpretation_description_and_unclear() -> None:
     router = RuleRouter()
 
@@ -93,6 +94,7 @@ def test_router_rules_cover_analysis_interpretation_description_and_unclear() ->
     assert router.route("随便聊聊", _state()).target_profile is RouteTargetProfile.ANALYSIS
 
 
+# DEPRECATED-BY: phase-5
 def test_router_parameter_answer_and_status_rules_respect_context() -> None:
     """任务 B：宽词规则只在有意义的语境里生效，不吞掉纯咨询意图。"""
     router = RuleRouter()
@@ -151,6 +153,7 @@ def test_profile_policy_is_structurally_closed() -> None:
         )
 
 
+# DEPRECATED-BY: phase-5
 def test_approval_requires_matching_unexpired_resumed_plan() -> None:
     gate = InMemoryApprovalGate()
     now = datetime.now(timezone.utc)
@@ -207,6 +210,7 @@ def test_approval_requires_matching_unexpired_resumed_plan() -> None:
         )
 
 
+# DEPRECATED-BY: phase-5
 def test_approval_survives_gate_reconstruction() -> None:
     shared: dict[str, object] = {}
     now = datetime.now(timezone.utc)
@@ -327,6 +331,7 @@ def test_decision_validator_rejects_invalid_conditional_fields() -> None:
         )
 
 
+# DEPRECATED-BY: phase-5
 def test_stub_harness_runs_analysis_approval_resume_and_interpretation_without_jobs() -> None:
     from backend.app.agent.runtime import FixtureRunCoordinator
 

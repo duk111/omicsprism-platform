@@ -183,6 +183,7 @@ def _submit_runtime(plan: PlanRecord, gate: InMemoryApprovalGate, jobs: _FakeJob
     )
 
 
+# DEPRECATED-BY: phase-5
 def test_submit_requires_approval_and_valid_contrast_before_side_effect() -> None:
     now = datetime.now(timezone.utc)
     source = JobRecord(
@@ -203,6 +204,7 @@ def test_submit_requires_approval_and_valid_contrast_before_side_effect() -> Non
     assert executor.enqueued == []
 
 
+# DEPRECATED-BY: phase-5
 def test_submit_is_idempotent_for_replayed_key() -> None:
     now = datetime.now(timezone.utc)
     source = JobRecord(
@@ -225,6 +227,7 @@ def test_submit_is_idempotent_for_replayed_key() -> None:
     assert executor.enqueued == [first.rows[0]["job_ids"][0]]
 
 
+# DEPRECATED-BY: phase-5
 def test_approved_gma_plan_submits_once_and_replay_is_idempotent() -> None:
     now = datetime.now(timezone.utc)
     source = JobRecord(
@@ -265,6 +268,7 @@ def test_approved_gma_plan_submits_once_and_replay_is_idempotent() -> None:
     ("empty_contrasts", "preflight_blocked"),
     ("changed_params", "plan_hash_mismatch"),
 ])
+# DEPRECATED-BY: phase-5
 def test_submit_rejects_invalidated_plan_without_creating_job(mutation: str, error_code: str) -> None:
     now = datetime.now(timezone.utc)
     source = JobRecord(
@@ -296,6 +300,7 @@ def test_submit_rejects_invalidated_plan_without_creating_job(mutation: str, err
     assert executor.enqueued == []
 
 
+# DEPRECATED-BY: phase-5
 def test_submit_rejects_expired_approval_without_creating_job() -> None:
     now = datetime.now(timezone.utc)
     source = JobRecord(
@@ -422,6 +427,7 @@ def test_result_rows_are_capped_by_count_and_serialized_size() -> None:
     assert len(result.model_dump_json().encode("utf-8")) <= 32 * 1024
 
 
+# DEPRECATED-BY: phase-5
 def test_json_plan_store_persists_and_binds_user(tmp_path) -> None:
     plan = _plan()
     store = JsonPlanStore(tmp_path / "plans")
@@ -446,6 +452,7 @@ def test_policy_executor_rejects_interpretation_write_before_handler() -> None:
         executor.execute("submit_approved_plan", plan_id="plan-1", idempotency_key="key-1")
 
 
+# DEPRECATED-BY: phase-5
 def test_json_approval_gate_survives_reconstruction(tmp_path) -> None:
     now = datetime.now(timezone.utc)
     first = JsonApprovalGate(tmp_path / "approvals")
