@@ -65,6 +65,7 @@ AGENT_API_CONTEXT = create_agent_api_context(
     SETTINGS,
     files=FILES,
     job_store=JOB_STORE,
+    job_executor=JOB_EXECUTOR,
 )
 LOG = logging.getLogger("omicsprism.platform.api")
 

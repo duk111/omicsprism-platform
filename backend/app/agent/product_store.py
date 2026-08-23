@@ -94,6 +94,9 @@ class AgentProductStore(Protocol):
     def list_input_files(self, *, bundle_id: str, user_id: str) -> list[AgentInputFileRecord]:
         ...
 
+    def get_input_file(self, *, file_id: str, user_id: str) -> AgentInputFileRecord:
+        ...
+
     def get_latest_active_bundle(self, *, thread_id: str, user_id: str, before: datetime) -> AgentInputBundleRecord | None:
         ...
 
@@ -306,6 +309,12 @@ class InMemoryAgentProductStore:
         ]
         records.sort(key=lambda item: (item.created_at, item.file_id))
         return records
+
+    def get_input_file(self, *, file_id: str, user_id: str) -> AgentInputFileRecord:
+        payload = self._files.get(file_id)
+        if payload is None or payload["user_id"] != user_id:
+            raise AgentResourceNotFound(file_id)
+        return AgentInputFileRecord.model_validate(deepcopy(payload))
 
     def get_latest_active_bundle(self, *, thread_id: str, user_id: str, before: datetime) -> AgentInputBundleRecord | None:
         self.get_thread(thread_id=thread_id, user_id=user_id)
@@ -886,6 +895,24 @@ class PostgresAgentProductStore:
             "checksum", "content_type", "size_bytes", "created_at",
         )
         return [AgentInputFileRecord.model_validate(dict(zip(fields, row))) for row in rows]
+
+    def get_input_file(self, *, file_id: str, user_id: str) -> AgentInputFileRecord:
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                select file_id, bundle_id, user_id, field, filename, storage_key,
+                       checksum, content_type, size_bytes, created_at
+                from agent_input_files where file_id = %s and user_id = %s
+                """,
+                (file_id, user_id),
+            ).fetchone()
+        if row is None:
+            raise AgentResourceNotFound(file_id)
+        fields = (
+            "file_id", "bundle_id", "user_id", "field", "filename", "storage_key",
+            "checksum", "content_type", "size_bytes", "created_at",
+        )
+        return AgentInputFileRecord.model_validate(dict(zip(fields, row)))
 
     def get_latest_active_bundle(self, *, thread_id: str, user_id: str, before: datetime) -> AgentInputBundleRecord | None:
         self.get_thread(thread_id=thread_id, user_id=user_id)

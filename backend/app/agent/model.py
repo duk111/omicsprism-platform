@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Callable
-from typing import Any, Mapping, Protocol, TypeAlias
+from typing import TYPE_CHECKING, Any, Mapping, Protocol, TypeAlias
 
 import httpx
 from pydantic import TypeAdapter, ValidationError
@@ -19,6 +19,9 @@ from .schemas import (
     JsonValue,
     ModelContext,
 )
+
+if TYPE_CHECKING:
+    from .graph import MainModelContext, MainModelOutput
 
 ModelCompletion: TypeAlias = Callable[[Mapping[str, JsonValue]], Mapping[str, Any] | str]
 ModelRepair: TypeAlias = Callable[
@@ -278,6 +281,85 @@ Set confidence to "high" if you are confident about the classification, "low" ot
             return payload["choices"][0]["message"]["content"]
         except (KeyError, IndexError, TypeError) as exc:
             raise ModelBoundaryError("vLLM response has no message content") from exc
+
+
+class VllmGraphModel:
+    """OpenAI-compatible structured boundary for the v3 Main graph node."""
+
+    def __init__(
+        self,
+        *,
+        base_url: str,
+        model: str,
+        api_key: str | None = None,
+        timeout_seconds: float = 60.0,
+        client: httpx.Client | None = None,
+    ) -> None:
+        if not base_url.strip() or not model.strip():
+            raise ValueError("vLLM base_url and model are required")
+        self.model_name = model.strip()
+        self.endpoint = _chat_completions_url(base_url)
+        self.api_key = api_key
+        self.client = client or httpx.Client(timeout=timeout_seconds)
+
+    def __call__(self, context: MainModelContext) -> MainModelOutput:
+        from .graph import MainModelContext, MainModelOutput
+
+        if not isinstance(context, MainModelContext):
+            raise ModelBoundaryError("graph model context has an invalid type")
+        headers = {"Content-Type": "application/json"}
+        if self.api_key:
+            headers["Authorization"] = f"Bearer {self.api_key}"
+        response = self.client.post(
+            self.endpoint,
+            headers=headers,
+            json={
+                "model": self.model_name,
+                "temperature": 0,
+                "max_tokens": 768,
+                "response_format": {
+                    "type": "json_schema",
+                    "json_schema": {
+                        "name": "main_model_output",
+                        "strict": True,
+                        "schema": MainModelOutput.model_json_schema(),
+                    },
+                },
+                "chat_template_kwargs": {"enable_thinking": False},
+                "messages": [
+                    {"role": "system", "content": _GRAPH_MAIN_SYSTEM_PROMPT},
+                    {
+                        "role": "user",
+                        "content": json.dumps(context.model_dump(mode="json"), ensure_ascii=False),
+                    },
+                ],
+            },
+        )
+        try:
+            response.raise_for_status()
+        except httpx.HTTPStatusError as exc:
+            detail = _response_error_detail(response)
+            message = f"{exc}; vllm_error={detail}" if detail else str(exc)
+            raise httpx.HTTPStatusError(
+                message, request=exc.request, response=exc.response
+            ) from exc
+        try:
+            content = response.json()["choices"][0]["message"]["content"]
+            return MainModelOutput.model_validate_json(content)
+        except (KeyError, IndexError, TypeError, ValueError, ValidationError) as exc:
+            raise ModelBoundaryError("vLLM graph response is invalid") from exc
+
+
+_GRAPH_MAIN_SYSTEM_PROMPT = (
+    "You are OmicsPrism Copilot. Return exactly one object matching the supplied "
+    "MainModelOutput schema. Route general knowledge to answer; dataset inspection "
+    "or DEG/DEM/GMA requests to inspect_dataset or run_analysis; existing Job status "
+    "or evidence questions to get_job or query_result; and insufficient intent to "
+    "ask_user. AnalysisProposal values are candidates only and must use observed "
+    "dataset roles and explicit user language. Never claim a dataset fact, Job, "
+    "artifact, entity, or numeric result that is absent from the bounded context. "
+    "Do not decide validation, ownership, ambiguity, or execution success."
+)
 
 
 def _validate_model_context(context: ModelContext) -> dict[str, JsonValue]:

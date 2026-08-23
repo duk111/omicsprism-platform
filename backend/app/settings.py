@@ -48,6 +48,7 @@ class AppSettings:
     agent_lease_seconds: int = 120
     agent_max_attempts: int = 3
     agent_poll_seconds: float = 1.0
+    use_v3_agent: bool = False  # PHASE-5-DELETE: temporary orchestration migration flag.
     log_level: str = "INFO"
     dev_email: str = "dev@omicsprism.local"
     dev_password: str = "dev-password"
@@ -93,6 +94,7 @@ def load_settings() -> AppSettings:
         agent_lease_seconds=int(os.getenv("OMICS_PRISM_AGENT_LEASE_SECONDS", "120")),
         agent_max_attempts=int(os.getenv("OMICS_PRISM_AGENT_MAX_ATTEMPTS", "3")),
         agent_poll_seconds=float(os.getenv("OMICS_PRISM_AGENT_POLL_SECONDS", "1")),
+        use_v3_agent=os.getenv("OMICS_PRISM_USE_V3_AGENT", "false").strip().lower() in {"1", "true", "yes", "on"},
         log_level=os.getenv("OMICS_PRISM_LOG_LEVEL", "INFO"),
         dev_email=os.getenv("OMICS_PRISM_DEV_EMAIL", "dev@omicsprism.local"),
         dev_password=os.getenv("OMICS_PRISM_DEV_PASSWORD", "dev-password"),
