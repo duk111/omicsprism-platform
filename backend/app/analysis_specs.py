@@ -28,15 +28,15 @@ class AnalysisSpec:
 
 
 _ANALYSIS_ORDER = (
-    AnalysisType.DIFFERENTIAL,
+    AnalysisType.DEG,
     AnalysisType.DEM,
-    AnalysisType.CORRELATION,
+    AnalysisType.GMA,
 )
 
 
 _DEFAULT_SPECS = {
-    AnalysisType.DIFFERENTIAL: AnalysisSpec(
-        analysis_type=AnalysisType.DIFFERENTIAL,
+    AnalysisType.DEG: AnalysisSpec(
+        analysis_type=AnalysisType.DEG,
         display_label="DEG",
         input_rules=(InputRule("counts"), InputRule("metadata")),
         parameter_rules=(
@@ -73,8 +73,8 @@ _DEFAULT_SPECS = {
             ParameterRule("n_orthogonal_components", default=1),
         ),
     ),
-    AnalysisType.CORRELATION: AnalysisSpec(
-        analysis_type=AnalysisType.CORRELATION,
+    AnalysisType.GMA: AnalysisSpec(
+        analysis_type=AnalysisType.GMA,
         display_label="GMA",
         input_rules=(
             InputRule("transcriptome"),

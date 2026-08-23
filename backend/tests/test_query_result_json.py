@@ -83,7 +83,7 @@ def _runtime(
     payload: object,
     *,
     filename: str,
-    analysis_type: AnalysisType = AnalysisType.CORRELATION,
+    analysis_type: AnalysisType = AnalysisType.GMA,
     owner_id: str = "user-1",
     checksum: str | None = "sha256:fixture",
 ) -> AgentToolRuntime:
@@ -203,7 +203,7 @@ def test_unlisted_json_artifact_is_rejected() -> None:
 
 def test_figure_json_for_wrong_analysis_type_is_rejected() -> None:
     result = _runtime(
-        PCA_PAYLOAD, filename="pca.json", analysis_type=AnalysisType.DIFFERENTIAL
+        PCA_PAYLOAD, filename="pca.json", analysis_type=AnalysisType.DEG
     ).query_result(
         "job-1", "pca.json", field_path="plotly_spec.datasets.transcriptome.var_exp"
     )

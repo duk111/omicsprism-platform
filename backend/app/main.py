@@ -330,7 +330,7 @@ async def create_job(
     FILES.prepare_run_dirs(job_id)
 
     inputs = []
-    if atype == AnalysisType.DIFFERENTIAL:
+    if atype == AnalysisType.DEG:
         inputs.append(await FILES.save_upload(job_id, "counts", files["counts"], "counts.csv"))
         inputs.append(await FILES.save_upload(job_id, "metadata", files["metadata"], "metadata.csv"))
     elif atype == AnalysisType.DEM:
@@ -590,7 +590,7 @@ def _build_job_params(
     metab_log2: bool | None,
     n_orthogonal_components: int | None,
 ) -> JobParams:
-    if atype == AnalysisType.DIFFERENTIAL:
+    if atype == AnalysisType.DEG:
         if counts is None:
             raise HTTPException(status_code=400, detail="counts is required for differential analysis")
         if metadata is None:
@@ -1016,7 +1016,7 @@ def _estimate_from_input_profile(
 ) -> int | None:
     size_mb = sum(path.stat().st_size for path in input_paths.values() if path.exists()) / (1024 * 1024)
 
-    if atype == AnalysisType.DIFFERENTIAL:
+    if atype == AnalysisType.DEG:
         counts_profile = _inspect_csv_profile(input_paths.get("counts"))
         metadata_profile = _inspect_csv_profile(input_paths.get("metadata"))
         if not counts_profile or not metadata_profile:
@@ -1085,7 +1085,7 @@ def _estimate_from_history(atype: AnalysisType) -> int | None:
 
 
 def _default_timing_range(atype: AnalysisType) -> tuple[int, int]:
-    if atype == AnalysisType.DIFFERENTIAL:
+    if atype == AnalysisType.DEG:
         return 5 * 60, 15 * 60
     if atype == AnalysisType.DEM:
         return 6 * 60, 25 * 60

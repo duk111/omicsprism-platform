@@ -60,7 +60,7 @@ def _job(*, owner_id: str = "user-1", artifact: FileArtifactInfo | None = None) 
     return JobRecord(
         id="job-1",
         project_name="fixture",
-        analysis_type=AnalysisType.CORRELATION,
+        analysis_type=AnalysisType.GMA,
         status=JobStatus.SUCCEEDED,
         created_at=now,
         updated_at=now,

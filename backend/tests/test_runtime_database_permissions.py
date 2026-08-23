@@ -38,7 +38,7 @@ def test_runtime_role_can_use_jobs_but_cannot_change_schema() -> None:
     job = JobRecord(
         id=job_id,
         project_name="runtime-role-test",
-        analysis_type=AnalysisType.DIFFERENTIAL,
+        analysis_type=AnalysisType.DEG,
         status=JobStatus.QUEUED,
         created_at=now,
         updated_at=now,

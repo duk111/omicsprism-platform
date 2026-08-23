@@ -228,7 +228,7 @@ def test_legacy_same_fields_column_keeps_all_valid_strata() -> None:
                 rows.append([f"s{sample}", batch, treatment])
                 sample += 1
     proposal = AnalysisProposal.from_legacy(
-        "differential",
+        "deg",
         {
             "compare_field": "treatment",
             "tested_levels": "salt",

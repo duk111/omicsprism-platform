@@ -14,9 +14,9 @@ const FigureViewer = lazy(() => import("./viewer/FigureViewer"));
 type AnalysisTab = "home" | "new" | "jobs" | "download" | "tutorial" | "contact";
 
 const FULL_ANALYSIS_LABELS: Record<AnalysisType, string> = {
-  differential: "Differentially Expressed Genes",
-  correlation: "Gene-Metabolite Association",
+  deg: "Differentially Expressed Genes",
   dem: "Differentially Expressed Metabolites",
+  gma: "Gene-Metabolite Association",
 };
 
 const DEFAULT_GMA_TRANS_LOG2 = true;
@@ -78,7 +78,7 @@ function AppRoutes() {
   }, [location.pathname]);
 
   const openAnalysis = (analysisType: AnalysisType) => {
-    const route = analysisType === "differential" ? "/deg" : analysisType === "dem" ? "/dem" : "/gma";
+    const route = analysisType === "deg" ? "/deg" : analysisType === "dem" ? "/dem" : "/gma";
     navigate(route);
   };
   const openProgress = (jobId: string) => navigate(`/jobs/${encodeURIComponent(jobId)}`);
@@ -100,9 +100,9 @@ function AppRoutes() {
         <Route path="/" element={<LandingPage onStart={() => navigate("/home")} />} />
         <Route path="/home" element={<AnalysisPage tab="home" onSelectType={openAnalysis} onProgress={openProgress} />} />
         <Route path="/new" element={<AnalysisPage tab="new" onSelectType={openAnalysis} onProgress={openProgress} />} />
-        <Route path="/deg" element={<AnalysisFormRoute analysisType="differential" />} />
+        <Route path="/deg" element={<AnalysisFormRoute analysisType="deg" />} />
         <Route path="/dem" element={<AnalysisFormRoute analysisType="dem" />} />
-        <Route path="/gma" element={<AnalysisFormRoute analysisType="correlation" />} />
+        <Route path="/gma" element={<AnalysisFormRoute analysisType="gma" />} />
         <Route path="/jobs" element={<AnalysisPage tab="jobs" onSelectType={openAnalysis} onProgress={openProgress} />} />
         <Route path="/jobs/:jobId" element={<JobProgressRoute />} />
         <Route path="/jobs/:jobId/results" element={<JobResultsRoute />} />
@@ -388,15 +388,15 @@ function WelcomeCards({ onSelect }: { onSelect: (t: AnalysisType) => void }) {
         No account required: your data stays in this browser session.
       </p>
       <div className="welcome-cards">
-        <button className="welcome-card" type="button" onClick={() => onSelect("differential")}>
+        <button className="welcome-card" type="button" onClick={() => onSelect("deg")}>
           <span className="welcome-card-icon">DEG</span>
-          <strong>{FULL_ANALYSIS_LABELS.differential}</strong>
+          <strong>{FULL_ANALYSIS_LABELS.deg}</strong>
           <p>Compare gene expression between groups using DESeq2. Upload raw counts and sample metadata to identify differentially expressed genes with volcano plots and MA plots.</p>
           <span className="welcome-card-cta">Start &rarr;</span>
         </button>
-        <button className="welcome-card" type="button" onClick={() => onSelect("correlation")}>
+        <button className="welcome-card" type="button" onClick={() => onSelect("gma")}>
           <span className="welcome-card-icon">GMA</span>
-          <strong>{FULL_ANALYSIS_LABELS.correlation}</strong>
+          <strong>{FULL_ANALYSIS_LABELS.gma}</strong>
           <p>Discover relationships between transcriptome and metabolome. Three-way screening, ElasticNet + XGBoost modeling, RRA aggregation, WGCNA-style module detection, and interactive network visualizations.</p>
           <span className="welcome-card-cta">Start &rarr;</span>
         </button>
@@ -483,7 +483,7 @@ function AnalysisForm({ initialType, onProgress, onBack }: {
     const formData = new FormData();
     formData.set("analysis_type", state.analysisType);
     const fields =
-      state.analysisType === "differential" ? DEG_FIELDS :
+      state.analysisType === "deg" ? DEG_FIELDS :
       state.analysisType === "dem" ? DEM_FIELDS :
       CORR_FIELDS;
     for (const f of fields) {
@@ -494,7 +494,7 @@ function AnalysisForm({ initialType, onProgress, onBack }: {
       }
       if (file) formData.set(f.name, file);
     }
-    if (state.analysisType === "differential") {
+    if (state.analysisType === "deg") {
       const compareField = String(state.params.compare_field || "");
       const testedLevels = String(state.params.tested_levels || "");
       const referenceLevel = String(state.params.reference_level || "");
@@ -541,7 +541,7 @@ function AnalysisForm({ initialType, onProgress, onBack }: {
       formData.set("log_transform", String(state.params.log_transform ?? true));
       formData.set("min_replicates", String(state.params.min_replicates ?? 2));
       formData.set("n_orthogonal_components", String(state.params.n_orthogonal_components ?? 1));
-    } else if (state.analysisType === "correlation") {
+    } else if (state.analysisType === "gma") {
       formData.set("trans_log2", String(state.params.trans_log2 ?? DEFAULT_GMA_TRANS_LOG2));
       formData.set("metab_log2", String(state.params.metab_log2 ?? DEFAULT_GMA_METAB_LOG2));
     } else {
@@ -557,10 +557,10 @@ function AnalysisForm({ initialType, onProgress, onBack }: {
   }
 
   const fields =
-    state.analysisType === "differential" ? DEG_FIELDS :
+    state.analysisType === "deg" ? DEG_FIELDS :
     state.analysisType === "dem" ? DEM_FIELDS :
     CORR_FIELDS;
-  const isDEG = state.analysisType === "differential";
+  const isDEG = state.analysisType === "deg";
   const isDEM = state.analysisType === "dem";
 
   return (
@@ -747,7 +747,7 @@ function AnalysisForm({ initialType, onProgress, onBack }: {
           </div>
         )}
 
-        {state.analysisType === "correlation" && (
+        {state.analysisType === "gma" && (
           <div className="field-group">
             <h3>Correlation parameters</h3>
             <div className="field-row">
@@ -1131,7 +1131,7 @@ function ResultsPage({ jobId, onBack, onProgress }: { jobId: string; onBack: () 
   const tableFiles = (files?.result_files ?? []).filter(f =>
     f.name.endsWith(".csv") || f.name.endsWith(".zip")
   );
-  const isCorrelation = job?.analysis_type === "correlation";
+  const isCorrelation = job?.analysis_type === "gma";
   const imageGroups = useMemo(() => groupResultImages(images), [images]);
   const resultsTitle = job?.analysis_type ? FULL_ANALYSIS_LABELS[job.analysis_type] : (job?.project_name ?? jobId);
 

@@ -29,7 +29,7 @@ VALID_SAMPLES = {
             "reasons": ["输入类型齐全"],
             "missing_information": [],
         },
-        "analysis_recommendations": ["differential", "dem", "correlation"],
+        "analysis_recommendations": ["deg", "dem", "gma"],
         "requires_approval": True,
         "requested_params": {
             "compare_field": "treatment",
@@ -149,7 +149,7 @@ def test_unknown_fields_are_rejected() -> None:
     ("field", "value"),
     [
         ("reasoning_summary", "x" * 241),
-        ("analysis_recommendations", ["differential", "dem", "correlation", "differential"]),
+        ("analysis_recommendations", ["deg", "dem", "gma", "deg"]),
         ("requested_params", {f"param_{index}": index for index in range(33)}),
         ("requested_params", {"nested": {"not": "a scalar"}}),
     ],

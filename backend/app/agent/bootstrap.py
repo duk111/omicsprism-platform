@@ -113,9 +113,9 @@ def create_agent_api_context(
         ]
         inputs = [files.copy_staged_input(job_id, item) for item in input_records]
         analysis_type = {
-            "DEG": AnalysisType.DIFFERENTIAL,
+            "DEG": AnalysisType.DEG,
             "DEM": AnalysisType.DEM,
-            "GMA": AnalysisType.CORRELATION,
+            "GMA": AnalysisType.GMA,
         }[request.resolved_params.analysis_type]
         now = datetime.now(timezone.utc)
         job = JobRecord(

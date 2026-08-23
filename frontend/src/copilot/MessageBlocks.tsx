@@ -119,7 +119,7 @@ function ContrastView({ contrast }: { contrast: Record<string, unknown> }) {
 const formatBytes = (bytes: number) => bytes < 1024 * 1024 ? `${Math.ceil(bytes / 1024)} KB` : `${(bytes / 1024 / 1024).toFixed(1)} MB`;
 const formatDate = (value: string) => new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeStyle: "short" }).format(new Date(value));
 const humanize = (value: string) => value.replace(/_/g, " ").replace(/^./, (char: string) => char.toUpperCase());
-const analysisLabel = (value: string) => ({ differential: "DEG", dem: "DEM", correlation: "GMA" }[value] || value);
+const analysisLabel = (value: string) => ({ deg: "DEG", dem: "DEM", gma: "GMA" }[value] || value);
 const shortChecksum = (value: string) => value.length > 20 ? `${value.slice(0, 16)}...` : value;
 const CONTRAST_PARAM_KEYS = new Set(["compare_field", "tested_levels", "reference_level", "same_fields"]);
 const PARAM_LABELS: Record<string, string> = {

@@ -13,7 +13,7 @@ def _job(job_id: str, user_id: str) -> JobRecord:
     return JobRecord(
         id=job_id,
         project_name="test",
-        analysis_type=AnalysisType.DIFFERENTIAL,
+        analysis_type=AnalysisType.DEG,
         status=JobStatus.QUEUED,
         created_at=now,
         updated_at=now,

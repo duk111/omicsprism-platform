@@ -8,13 +8,13 @@ def test_registry_uses_existing_analysis_type_as_single_source_of_truth() -> Non
     registry = AnalysisSpecRegistry()
 
     assert registry.analysis_types() == (
-        AnalysisType.DIFFERENTIAL,
+        AnalysisType.DEG,
         AnalysisType.DEM,
-        AnalysisType.CORRELATION,
+        AnalysisType.GMA,
     )
-    assert registry.get(AnalysisType.DIFFERENTIAL).display_label == "DEG"
+    assert registry.get(AnalysisType.DEG).display_label == "DEG"
     assert registry.get(AnalysisType.DEM).display_label == "DEM"
-    assert registry.get(AnalysisType.CORRELATION).display_label == "GMA"
+    assert registry.get(AnalysisType.GMA).display_label == "GMA"
 
 
 def test_registry_contains_input_and_parameter_rule_containers() -> None:
@@ -30,13 +30,13 @@ def test_registry_contains_input_and_parameter_rule_containers() -> None:
 def test_registry_filters_parameters_to_analysis_whitelist() -> None:
     registry = AnalysisSpecRegistry()
 
-    requested = registry.requested_params(AnalysisType.DIFFERENTIAL, {
+    requested = registry.requested_params(AnalysisType.DEG, {
         "compare_field": "treatment",
         "tested_levels": "salt",
         "counts": "counts",
         "comparison": "treatment",
     })
-    effective = registry.effective_params(AnalysisType.DIFFERENTIAL, requested)
+    effective = registry.effective_params(AnalysisType.DEG, requested)
 
     assert requested == {"compare_field": "treatment", "tested_levels": "salt"}
     assert "counts" not in effective

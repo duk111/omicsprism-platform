@@ -18,9 +18,9 @@ class JobStatus(str, Enum):
 
 
 class AnalysisType(str, Enum):
-    DIFFERENTIAL = "differential"
-    CORRELATION = "correlation"
+    DEG = "deg"
     DEM = "dem"
+    GMA = "gma"
 
 
 class FileArtifactKind(str, Enum):

@@ -57,7 +57,7 @@ describe("MessageBlocks", () => {
       type: "plan",
       plan_id: "plan-1",
       plan_hash: "sha256:plan",
-      analysis_type: "differential",
+      analysis_type: "deg",
       requested_params: {},
       effective_params: { compare_field: "treatment", tested_levels: "salt", reference_level: "control", padj_cutoff: 0.05, normalize: true },
       contrasts: [{ compare_field: "treatment", tested_level: "salt", reference_level: "control", tested_count: 55, reference_count: 56, same_values: {} }],

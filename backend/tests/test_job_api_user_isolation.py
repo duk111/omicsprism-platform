@@ -23,7 +23,7 @@ def test_other_session_gets_404_for_another_users_job(tmp_path, monkeypatch) -> 
             JobRecord(
                 id="private-job",
                 project_name="private",
-                analysis_type=AnalysisType.DIFFERENTIAL,
+                analysis_type=AnalysisType.DEG,
                 status=JobStatus.QUEUED,
                 created_at=now,
                 updated_at=now,

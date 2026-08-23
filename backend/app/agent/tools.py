@@ -19,9 +19,9 @@ MAX_TOOL_ROWS = 50
 MAX_TOOL_BYTES = 32 * 1024
 
 _FIGURE_JSON_BY_ANALYSIS = {
-    AnalysisType.DIFFERENTIAL: frozenset({"volcano.json"}),
+    AnalysisType.DEG: frozenset({"volcano.json"}),
     AnalysisType.DEM: frozenset({"volcano.json"}),
-    AnalysisType.CORRELATION: frozenset({
+    AnalysisType.GMA: frozenset({
         "pca.json",
         "dendrogram.json",
         "upset.json",
@@ -224,7 +224,7 @@ def _allowed_result_artifact(artifact: str, job_type: AnalysisType | None) -> bo
     figure_json = any(name in allowed for allowed in _FIGURE_JSON_BY_ANALYSIS.values())
     if job_type is None:
         return differential or dem or correlation or figure_json
-    if job_type is AnalysisType.DIFFERENTIAL:
+    if job_type is AnalysisType.DEG:
         return differential or name in _FIGURE_JSON_BY_ANALYSIS[job_type]
     if job_type is AnalysisType.DEM:
         return dem or name in _FIGURE_JSON_BY_ANALYSIS[job_type]

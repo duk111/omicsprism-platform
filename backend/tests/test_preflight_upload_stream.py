@@ -32,7 +32,7 @@ def test_preflight_accepts_upload_stream_without_readable_method() -> None:
     )
 
     result = PreflightService().preflight(
-        AnalysisType.DIFFERENTIAL,
+        AnalysisType.DEG,
         params={
             "compare_field": "treatment",
             "tested_levels": "salt",

@@ -180,7 +180,7 @@ class PreflightService:
         issues: list[PreflightIssue] = []
         normalized_params = dict(params)
 
-        if analysis_type == AnalysisType.DIFFERENTIAL:
+        if analysis_type == AnalysisType.DEG:
             counts = self._load_matrix("counts", files.get("counts"))
             metadata = self._load_group("metadata", files.get("metadata"))
             issues.extend(self._require_fields(analysis_type, files, ["counts", "metadata"]))

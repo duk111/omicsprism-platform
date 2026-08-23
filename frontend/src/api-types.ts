@@ -196,7 +196,7 @@ export interface AgentTurnResponse {
 
 export type AgentTurnStatus = "queued" | "running" | "completed" | "failed";
 
-export type AnalysisType = "differential" | "correlation" | "dem";
+export type AnalysisType = "deg" | "dem" | "gma";
 
 export interface ApiErrorDetail {
   category: ErrorCategory;

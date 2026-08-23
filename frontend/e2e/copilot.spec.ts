@@ -6,7 +6,7 @@ const run = { run_id: "run-1", thread_id: "thread-1", active_profile: "analysis"
 const planMessages = [
   { message_id: "message-1", thread_id: "thread-1", run_id: "run-1", role: "user", blocks: [{ type: "text", text: "Find differential genes in salt-treated samples." }], created_at: now },
   { message_id: "message-2", thread_id: "thread-1", run_id: "run-1", role: "assistant", blocks: [
-    { type: "plan", plan_id: "plan-1", plan_hash: "sha256:plan", analysis_type: "differential", requested_params: {}, effective_params: { padj_cutoff: 0.05, log2fc_cutoff: 1 }, contrasts: [{ tested: "salt", reference: "control" }], warnings: [], expires_at: "2026-08-03T09:00:00Z" },
+    { type: "plan", plan_id: "plan-1", plan_hash: "sha256:plan", analysis_type: "deg", requested_params: {}, effective_params: { padj_cutoff: 0.05, log2fc_cutoff: 1 }, contrasts: [{ tested: "salt", reference: "control" }], warnings: [], expires_at: "2026-08-03T09:00:00Z" },
     { type: "approval", approval_id: "approval-1", plan_hash: "sha256:plan", status: "pending", expires_at: "2026-08-03T09:00:00Z" },
   ], created_at: now },
 ];

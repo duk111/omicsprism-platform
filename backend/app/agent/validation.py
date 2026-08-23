@@ -114,7 +114,7 @@ def validate_analysis_request(
         blocking.extend(_issues(response.errors))
         warnings = _issues(response.warnings)
         preview = None
-        if analysis_type in {AnalysisType.DIFFERENTIAL, AnalysisType.DEM}:
+        if analysis_type in {AnalysisType.DEG, AnalysisType.DEM}:
             metadata_ref = next((ref for ref in dataset_refs if ref.role == "metadata"), None)
             rows = _metadata_rows(metadata_ref)
             contrasts, contrast_issues = build_contrast_preview(rows, params)
@@ -161,9 +161,9 @@ def _issues(items: Sequence[object]) -> list[Issue]:
 
 def _analysis_type(value: str | None) -> AnalysisType:
     return {
-        "DEG": AnalysisType.DIFFERENTIAL,
+        "DEG": AnalysisType.DEG,
         "DEM": AnalysisType.DEM,
-        "GMA": AnalysisType.CORRELATION,
+        "GMA": AnalysisType.GMA,
     }[str(value)]
 
 

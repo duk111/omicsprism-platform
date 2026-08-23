@@ -63,3 +63,16 @@ def test_phase5_cleanup_drops_only_legacy_control_plane_storage() -> None:
         "agent_events",
     ):
         assert f"drop table {retained}" not in sql
+
+
+def test_phase5_analysis_type_migration_updates_columns_and_payloads() -> None:
+    sql = (
+        ROOT / "migrations" / "007_rename_analysis_types.sql"
+    ).read_text(encoding="utf-8").lower()
+
+    assert "analysis_type = 'deg'" in sql
+    assert "analysis_type = 'gma'" in sql
+    assert "analysis_type = 'differential'" in sql
+    assert "analysis_type = 'correlation'" in sql
+    assert sql.count("jsonb_set(payload, '{analysis_type}'") == 2
+    assert "analysis_type = 'dem'" not in sql

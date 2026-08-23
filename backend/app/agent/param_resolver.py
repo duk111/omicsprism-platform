@@ -602,7 +602,7 @@ def _optional_text(value: object) -> str | None:
 
 def _analysis_name(value: AnalysisType | str) -> AnalysisName:
     raw = value.value if isinstance(value, AnalysisType) else str(value)
-    return {"differential": "DEG", "DEG": "DEG", "dem": "DEM", "DEM": "DEM", "correlation": "GMA", "GMA": "GMA"}[raw]  # type: ignore[return-value]
+    return {"deg": "DEG", "DEG": "DEG", "dem": "DEM", "DEM": "DEM", "gma": "GMA", "GMA": "GMA"}[raw]  # type: ignore[return-value]
 
 
 def _analysis_name_from_prior(prior: AnalysisParams | None) -> AnalysisName | None:

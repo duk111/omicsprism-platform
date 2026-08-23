@@ -220,7 +220,7 @@ class OmicsPrismJobRunner:
                 paths_by_field = self.files.resolve_inputs_by_field(job)
                 self._raise_if_cancelled(job_id)
 
-                if job.analysis_type == AnalysisType.DIFFERENTIAL:
+                if job.analysis_type == AnalysisType.DEG:
                     _run_differential_job(job, self.store, input_dir, output_dir, paths_by_field, report)
                 elif job.analysis_type == AnalysisType.DEM:
                     _run_dem_job(job, self.store, input_dir, output_dir, paths_by_field, report)

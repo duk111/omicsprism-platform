@@ -14,7 +14,7 @@ interface ExampleConfig {
 }
 
 const EXAMPLES: Record<string, ExampleConfig> = {
-  differential: {
+  deg: {
     files: {
       counts: "/examples/deg/raw_count.csv",
       metadata: "/examples/deg/metadata.csv",
@@ -31,7 +31,7 @@ const EXAMPLES: Record<string, ExampleConfig> = {
     },
   },
 
-  correlation: {
+  gma: {
     files: {
       transcriptome: "/examples/gma/DEAT.csv",
       metabolome: "/examples/gma/ym_metab.csv",
