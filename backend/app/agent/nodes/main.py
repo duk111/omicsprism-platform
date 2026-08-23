@@ -62,12 +62,6 @@ def route_after_main(state: GraphState) -> Literal["analysis", "result_qa", "end
     return "end"
 
 
-def specialist_placeholder(_state: GraphState) -> dict[str, object]:
-    """Keep 4.2 routing observable without implementing later specialist work."""
-
-    return {}
-
-
 def _main_context(state: GraphState) -> MainModelContext:
     return MainModelContext(
         user_message=state.user_message,

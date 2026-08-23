@@ -7,6 +7,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from .dataset_profile import DatasetProfile
 from .param_resolver import AnalysisParams, AnalysisProposal, ResolvedRequest
+from .schemas import GroundedAnswer, ToolResult
 from .validation import ContrastPreview, DatasetRef, Issue, ValidationReport
 
 
@@ -47,6 +48,58 @@ class JobRef(BaseModel):
 
     job_id: str = Field(min_length=1, max_length=200)
     owner_id: str = Field(min_length=1, max_length=200)
+
+
+class ResultQuerySpec(BaseModel):
+    """Bounded candidate query that must be checked against a real Job."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    artifact: str = Field(min_length=1, max_length=500)
+    field_path: str | None = Field(default=None, max_length=200)
+    filters: dict[str, str | int | float | bool | None] = Field(
+        default_factory=dict,
+        max_length=8,
+    )
+    sort: str | None = Field(default=None, max_length=100)
+    limit: int | None = Field(default=None, ge=1, le=12)
+    resolve_entity: str | None = Field(default=None, max_length=200)
+
+
+class JobLookupRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    user_id: str = Field(min_length=1, max_length=200)
+    job_id: str = Field(min_length=1, max_length=200)
+
+
+class JobSummary(BaseModel):
+    """Compact ownership-bound status and artifact index for one Job."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    job_id: str = Field(min_length=1, max_length=200)
+    owner_id: str = Field(min_length=1, max_length=200)
+    status: str = Field(min_length=1, max_length=100)
+    progress: int | None = Field(default=None, ge=0, le=100)
+    progress_step: str | None = Field(default=None, max_length=200)
+    error: str | None = Field(default=None, max_length=500)
+    artifacts: list[Annotated[str, Field(min_length=1, max_length=500)]] = Field(
+        default_factory=list,
+        max_length=20,
+    )
+
+
+class ResultEvidenceRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    user_id: str = Field(min_length=1, max_length=200)
+    job_id: str = Field(min_length=1, max_length=200)
+    query: ResultQuerySpec
+
+
+JobReader = Callable[[JobLookupRequest], JobSummary]
+ResultQuerier = Callable[[ResultEvidenceRequest], ToolResult]
 
 
 class ClarificationItem(BaseModel):
@@ -126,8 +179,17 @@ class AgentDecision(BaseModel):
     analysis_type: AnalysisTypeName | None = None
     proposal: AnalysisProposal | None = None
     job_id: str | None = Field(default=None, max_length=200)
+    result_query: ResultQuerySpec | None = None
     question: str | None = Field(default=None, max_length=1000)
     decision_note: str | None = Field(default=None, max_length=240)
+
+    @model_validator(mode="after")
+    def _result_query_matches_action(self) -> "AgentDecision":
+        if self.action == "query_result" and self.result_query is None:
+            raise ValueError("query_result action requires result_query")
+        if self.action != "query_result" and self.result_query is not None:
+            raise ValueError("result_query is only valid for query_result")
+        return self
 
 
 class MainModelContext(BaseModel):
@@ -209,6 +271,8 @@ class GraphState(BaseModel):
     clarification_answer: str | None = Field(default=None, max_length=1000)
     resolved_request: ResolvedRequest | None = None
     validation_report: ValidationReport | None = None
+    job_summary: JobSummary | None = None
+    grounded_answer: GroundedAnswer | None = None
     pending_interrupt: PendingInterrupt | None = None
     step_budget: StepBudget = Field(default_factory=StepBudget)
 
@@ -217,6 +281,8 @@ class GraphState(BaseModel):
         references = [*self.dataset_profiles, *self.recent_jobs]
         if self.current_job is not None:
             references.append(self.current_job)
+        if self.job_summary is not None:
+            references.append(self.job_summary)
         if any(reference.owner_id != self.user_id for reference in references):
             raise ValueError("graph references must belong to user_id")
         return self
@@ -226,6 +292,8 @@ def build_agent_graph(
     model: MainDecisionModel,
     dataset_loader: DatasetLoader,
     job_submitter: JobSubmitter,
+    job_reader: JobReader,
+    result_querier: ResultQuerier,
     *,
     checkpointer: object | None = None,
 ):
@@ -234,7 +302,8 @@ def build_agent_graph(
     from langgraph.graph import END, START, StateGraph
 
     from .nodes.analysis import analysis_node
-    from .nodes.main import main_node, route_after_main, specialist_placeholder
+    from .nodes.main import main_node, route_after_main
+    from .nodes.result_qa import result_qa_node
 
     builder = StateGraph(GraphState)
     builder.add_node("main", main_node(model))
@@ -243,7 +312,7 @@ def build_agent_graph(
         analysis_node(dataset_loader, job_submitter),
         destinations=("analysis", END),
     )
-    builder.add_node("result_qa", specialist_placeholder)
+    builder.add_node("result_qa", result_qa_node(job_reader, result_querier))
     builder.add_edge(START, "main")
     builder.add_conditional_edges(
         "main",

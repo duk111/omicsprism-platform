@@ -11,9 +11,12 @@ from backend.app.agent.graph import (
     DatasetProfileRef,
     GraphState,
     JobRef,
+    JobSummary,
+    ResultQuerySpec,
     StepBudget,
 )
 from backend.app.agent.param_resolver import DEGParams
+from backend.app.agent.schemas import Citation, GroundedAnswer, GroundedClaim
 
 
 def _profile_ref(owner_id: str = "user-1") -> DatasetProfileRef:
@@ -43,6 +46,22 @@ def test_agent_decision_uses_v3_action_contract() -> None:
     assert decision.proposal is None
 
 
+def test_query_result_decision_requires_a_typed_query() -> None:
+    with pytest.raises(ValidationError, match="requires result_query"):
+        AgentDecision(action="query_result")
+
+    decision = AgentDecision(
+        action="query_result",
+        result_query={
+            "artifact": "differential_gene_counts.csv",
+            "filters": {"Gene": "GeneA"},
+            "limit": 5,
+        },
+    )
+
+    assert isinstance(decision.result_query, ResultQuerySpec)
+
+
 def test_graph_state_keeps_only_bounded_refs_and_context() -> None:
     state = GraphState(
         thread_id="thread-1",
@@ -67,6 +86,37 @@ def test_graph_state_rejects_cross_user_references() -> None:
             user_message="Show result",
             current_job=JobRef(job_id="job-1", owner_id="user-2"),
         )
+
+
+def test_graph_state_keeps_only_compact_result_contracts() -> None:
+    state = GraphState(
+        thread_id="thread-1",
+        user_id="user-1",
+        user_message="Show GeneA",
+        job_summary=JobSummary(
+            job_id="job-1",
+            owner_id="user-1",
+            status="succeeded",
+            artifacts=["differential_gene_counts.csv"],
+        ),
+        grounded_answer=GroundedAnswer(claims=[GroundedClaim(
+            text="GeneA log2FoldChange=2.5",
+            citation=Citation(
+                artifact="differential_gene_counts.csv",
+                checksum="sha256:fixture",
+                row_ids=[4],
+            ),
+        )]),
+    )
+
+    assert state.job_summary is not None
+    assert state.grounded_answer is not None
+    assert state.grounded_answer.claims[0].citation.row_ids == [4]
+
+    payload = state.model_dump(mode="python")
+    payload["job_summary"]["owner_id"] = "user-2"
+    with pytest.raises(ValidationError, match="must belong"):
+        GraphState.model_validate(payload)
 
 
 def test_graph_state_rejects_raw_dataset_content() -> None:
