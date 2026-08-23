@@ -6,16 +6,13 @@ import pytest
 from pydantic import ValidationError
 
 from backend.app.agent.schemas import (
-    AgentAction,
     AgentDecision,
-    AgentState,
     GroundedAnswer,
     RouteDecision,
     RunState,
     ToolResult,
     VerifierVerdict,
 )
-from backend.app.agent.validator import DecisionValidator, InvalidDecision
 
 
 VALID_SAMPLES = {
@@ -202,33 +199,3 @@ def test_agent_decision_accepts_bounded_advisory_answer() -> None:
     assert decision.advisory_answer.startswith("ABA")
     with pytest.raises(ValidationError):
         AgentDecision.model_validate({**payload, "advisory_answer": "x" * 1201})
-
-
-def test_advisory_state_rejects_plans_approval_and_grounded_evidence() -> None:
-    state = RunState.model_validate({
-        **VALID_SAMPLES[RunState],
-        "state": AgentState.ADVISE,
-        "plan_id": None,
-        "plan_hash": None,
-    })
-    base = AgentDecision(
-        action=AgentAction.ANSWER,
-        reasoning_summary="Bounded consultation",
-        feasibility=None,
-        analysis_recommendations=[],
-        requires_approval=False,
-        requested_params={},
-        grounded_answer=None,
-        advisory_answer="Use biological replicates and record the experimental groups.",
-    )
-
-    DecisionValidator().validate(state, base)
-    invalid_decisions = (
-        base.model_copy(update={"requires_approval": True}),
-        base.model_copy(update={"requested_params": {"compare_field": "group"}}),
-        base.model_copy(update={"analysis_recommendations": ["differential"]}),
-        base.model_copy(update={"grounded_answer": GroundedAnswer(claims=[])}),
-    )
-    for decision in invalid_decisions:
-        with pytest.raises(InvalidDecision):
-            DecisionValidator().validate(state, decision)

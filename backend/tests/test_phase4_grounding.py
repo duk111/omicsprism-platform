@@ -12,19 +12,13 @@ from backend.app.agent.grounding import (
     GroundedAnswerPipeline,
 )
 from backend.app.agent.schemas import (
-    ActiveProfile,
     AgentEvent,
-    AgentState,
     Citation,
     GroundedAnswer,
     GroundedClaim,
-    RunFocus,
-    RunState,
-    RunStatus,
     ToolName,
     ToolResult,
 )
-from backend.app.agent.store import InMemoryStateStore
 from backend.app.agent.verifier import AnswerVerifier
 
 
@@ -56,16 +50,6 @@ def _answer(text: str, row_ids: list[int] = [7]) -> GroundedAnswer:
     )])
 
 
-def _state() -> RunState:
-    return RunState(
-        run_id="run-1", user_id="user-1", thread_id="thread-1",
-        active_profile=ActiveProfile.INTERPRETATION, state=AgentState.ANSWER_WITH_EVIDENCE,
-        step_no=1, plan_id=None, plan_hash=None, pending_approval_id=None,
-        focus=RunFocus(in_scope_job_ids=["job-1"], resolved_entities={}, last_citation=None),
-        model_calls=0, tool_calls=1, status=RunStatus.RUNNING, version=1,
-    )
-
-
 def test_empty_evidence_uses_the_fixed_no_evidence_template() -> None:
     answer = EvidenceGrounder().ground(_evidence(rows=[]))
 
@@ -76,14 +60,11 @@ def test_empty_evidence_uses_the_fixed_no_evidence_template() -> None:
 
 def test_grounder_assigns_evidence_citations_and_updates_focus() -> None:
     evidence = _evidence()
-    state = _state()
 
     answer = EvidenceGrounder().ground(evidence)
-    EvidenceGrounder().update_focus(state, answer)
 
     assert answer.claims[0].citation.row_ids == [7]
     assert answer.claims[0].citation.checksum == evidence.checksum
-    assert state.focus.last_citation == answer.claims[0].citation
 
 
 def test_grounder_rejects_direction_claims_from_union_tables() -> None:
@@ -126,30 +107,6 @@ def test_pipeline_repairs_once_then_falls_back_to_raw_evidence() -> None:
     )
     assert fallback.claims[0].text.startswith("验证未通过")
     assert fallback.claims[1].citation.row_ids == [7]
-
-
-def test_followup_keeps_interpretation_context_and_rerun_returns_to_analysis() -> None:
-    from backend.app.agent.runtime import FixtureRunCoordinator
-    from backend.app.agent.model import ScriptedModelAdapter
-    from backend.app.agent.approvals import InMemoryApprovalGate
-
-    state = _state().model_copy(update={"state": AgentState.AWAIT_FOLLOWUP})
-    store = InMemoryStateStore()
-    coordinator = FixtureRunCoordinator.create(
-        state_store=store,
-        model=ScriptedModelAdapter([]),
-        initial_state=state,
-        approval_gate=InMemoryApprovalGate(),
-    )
-
-    followup = coordinator.run_step(run_id="run-1", user_id="user-1", user_message="继续解释这个结果")
-    assert followup.active_profile is ActiveProfile.INTERPRETATION
-    assert followup.state is AgentState.ANSWER_WITH_EVIDENCE
-    assert followup.focus.in_scope_job_ids == ["job-1"]
-
-    rerun = coordinator.run_step(run_id="run-1", user_id="user-1", user_message="按新参数重跑")
-    assert rerun.active_profile is ActiveProfile.ANALYSIS
-    assert rerun.state is AgentState.CHECK_INPUTS
 
 
 def test_trace_store_is_append_only_user_bound_and_redacts_unsafe_payloads() -> None:

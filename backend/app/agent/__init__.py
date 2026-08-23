@@ -12,7 +12,6 @@ from .schemas import (
 )
 from .approvals import InMemoryApprovalGate, JsonApprovalGate, PostgresApprovalGate
 from .audit import PostgresAgentEventStore
-from .context import MinimalContextBuilder
 from .dataset_profile import DatasetProfile, MatrixProfile, MetadataProfile, build_dataset_profiles
 from .fingerprint import compute_input_fingerprint
 from .param_resolver import (
@@ -27,11 +26,8 @@ from .param_resolver import (
     resolve_analysis_request,
 )
 from .validation import DatasetRef, Issue, ValidationReport, validate_analysis_request
-from .eval import EvalAssembly, EvalAssemblyFactory, EvalRunner, compare_reports, load_golden_cases
-from .model import ScriptedModelAdapter, VllmModelAdapter
+from .model import VllmGraphModel
 from .policy import ProfilePolicyGuard
-from .router import RuleRouter
-from .runtime import ProductionRunCoordinator
 from .store import InMemoryStateStore, PostgresStateStore
 from .plans import InMemoryPlanStore, JsonPlanStore, PostgresPlanStore
 from .product_store import InMemoryAgentProductStore, PostgresAgentProductStore
@@ -57,7 +53,6 @@ __all__ = [
     "JsonApprovalGate",
     "PostgresApprovalGate",
     "PostgresAgentEventStore",
-    "MinimalContextBuilder",
     "DatasetProfile",
     "MatrixProfile",
     "MetadataProfile",
@@ -76,16 +71,8 @@ __all__ = [
     "ValidationReport",
     "validate_analysis_request",
     "compute_input_fingerprint",
-    "ScriptedModelAdapter",
-    "VllmModelAdapter",
-    "EvalAssembly",
-    "EvalAssemblyFactory",
-    "EvalRunner",
-    "compare_reports",
-    "load_golden_cases",
+    "VllmGraphModel",
     "ProfilePolicyGuard",
-    "RuleRouter",
-    "ProductionRunCoordinator",
     "InMemoryStateStore",
     "PostgresStateStore",
     "InMemoryPlanStore",

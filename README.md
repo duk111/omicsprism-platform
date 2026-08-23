@@ -20,84 +20,26 @@ For a Chinese handoff and integration reference, see
 For a field-level description of DEG, DEM, and GMA result tables, see
 [`docs/OMICS_PRISM_RESULT_TABLES_ZH.md`](docs/OMICS_PRISM_RESULT_TABLES_ZH.md).
 
-For the agent evaluation and interview demo procedure, see
-[`docs/OMICS_PRISM_AGENT_EVAL_DEMO_ZH.md`](docs/OMICS_PRISM_AGENT_EVAL_DEMO_ZH.md).
-
 ## OmicsPrism Copilot architecture
 
-The copilot is a controlled runtime inside the existing backend. The model only
-receives `ModelContext` and returns a schema-validated `AgentDecision`; it never
-receives database, filesystem, shell, credential, or executor handles.
+The copilot runs as a single LangGraph inside the existing backend. The model
+chooses a typed semantic action; deterministic Python services retain ownership,
+validation, job submission, artifact access, and evidence binding.
 
 ```mermaid
 flowchart LR
-    U[User session] --> R[RuleRouter]
-    R --> H[RunCoordinator]
-    H --> C[MinimalContextBuilder]
-    C --> M[ModelAdapter]
-    M -->|AgentDecision| H
-    H --> P[PolicyGuard]
-    P --> T[ToolExecutor]
-    T --> A[Platform adapters]
-    A --> D[(PostgreSQL / artifacts / worker)]
-    T --> G[EvidenceGrounder]
-    G --> V[AnswerVerifier]
-    V --> H
-    H --> E[(append-only agent_events)]
+    U[User session] --> M[Main node]
+    M --> A[Analysis node]
+    M --> Q[Result QA node]
+    A --> V[Resolver and validation]
+    V --> J[Job submission]
+    Q --> G[Evidence grounding]
+    G --> C[Cited answer]
 ```
 
-The analysis profile can inspect inputs, run preflight, and submit only an
-approved plan. The interpretation profile has read-only evidence/status tools.
-The verifier has no tools.
-
-## Agent golden evaluation
-
-The same 25-case harness has three explicit assemblies:
-
-| Assembly | Model | Tools | State/storage | Intended use |
-| --- | --- | --- | --- | --- |
-| `unit` | structured stub | frozen fixtures | in memory | regular CI and local checks |
-| `offline` | live vLLM | frozen fixtures | in memory | model/prompt replay without production data |
-| `production` | live vLLM | live ownership boundary | PostgreSQL | controlled server verification |
-
-Run the deterministic suite from the repository root:
-
-```powershell
-python -m scripts.run_agent_eval --assembly unit --output eval-reports/unit.json --label local-stub
-```
-
-Run the live-model fixture suite only when a vLLM endpoint is available:
-
-```powershell
-$env:OMICS_PRISM_AGENT_MODEL_URL = "http://<vllm-host>:8000"
-$env:OMICS_PRISM_AGENT_MODEL_NAME = "Qwen3-14B-AWQ"
-python -m scripts.run_agent_eval --assembly offline --output eval-reports/qwen14b.json
-```
-
-Production replay additionally verifies that a user cannot read another
-user's real PostgreSQL job. The job id must belong to a user other than
-`OMICS_PRISM_EVAL_CROSS_USER_ID`, and the DSN must use the normal `omics_app`
-role:
-
-```powershell
-$env:OMICS_PRISM_RUNTIME_DATABASE_URL = "postgresql://omics_app:<runtime-password>@<host>:<port>/<database>"
-$env:OMICS_PRISM_EVAL_CROSS_USER_JOB_ID = "<job-owned-by-another-user>"
-$env:OMICS_PRISM_EVAL_CROSS_USER_ID = "<requesting-user-id>"
-python -m scripts.run_agent_eval --assembly production --output eval-reports/production.json
-```
-
-Missing live configuration produces an explicit all-skipped report; it does not
-produce a synthetic live score. Compare a replay with a previous report:
-
-```powershell
-python -m scripts.run_agent_eval --assembly offline `
-  --baseline eval-reports/qwen14b.json `
-  --output eval-reports/qwen30b.json `
-  --diff-output eval-reports/qwen14b-to-qwen30b.diff.json
-```
-
-The diff contains pass-rate, model-call, P95-latency, metric, new-failure,
-recovery, and new-skip changes in machine-readable JSON.
+The Analysis node can inspect datasets, resolve and validate requests, and
+create analysis Jobs after confirmation. The Result QA node is read-only and
+must ground data claims in ownership-bound artifact evidence.
 
 ## Prerequisites
 
@@ -183,10 +125,6 @@ The included `docker-compose.yml` starts:
 The frontend is built as static files and served by the host nginx or server
 panel site directory. It is not started as a compose service by default.
 
-The Copilot model is isolated in a separate `agent-worker` deployment unit.
-The cloud API never receives the vLLM URL or API key; the existing analysis
-worker also remains independent from the model service.
-
 ### Start the backend stack
 
 ```powershell
@@ -210,31 +148,6 @@ To remove volumes as well:
 ```powershell
 docker compose down -v
 ```
-
-### Start the compute-server agent worker
-
-The compute server must have the sibling `../omicsprism` repository, a local
-vLLM endpoint, and network access to the cloud PostgreSQL, Redis, and MinIO
-ports. Create the untracked runtime environment first:
-
-```bash
-cp deploy/agent-worker.env.example .env.agent
-chmod 600 .env.agent
-```
-
-Replace every placeholder in `.env.agent`, then build and start only the
-Copilot worker:
-
-```bash
-docker compose \
-  -p omicsprism-agent \
-  -f docker-compose.agent-worker.yml \
-  up -d --build agent-worker
-```
-
-`network_mode: host` is intentional for the current Linux compute-server
-deployment: it lets the container reach the loopback-only vLLM endpoint at
-`127.0.0.1:18000`. Do not expose vLLM directly to browsers or the cloud API.
 
 Gate E deployment, rollback, cross-user 404, and model-off verification steps
 are recorded in [`PHASE_6E_REPORT.md`](PHASE_6E_REPORT.md) and
