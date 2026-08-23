@@ -303,6 +303,7 @@ def build_agent_graph(
 ):
     """Compile the v3 graph around injected model and deterministic data boundaries."""
 
+    from langgraph.checkpoint.memory import InMemorySaver
     from langgraph.graph import END, START, StateGraph
 
     from .nodes.analysis import analysis_node
@@ -324,4 +325,5 @@ def build_agent_graph(
         {"analysis": "analysis", "result_qa": "result_qa", "end": END},
     )
     builder.add_edge("result_qa", END)
-    return builder.compile(checkpointer=checkpointer)
+    graph_checkpointer = checkpointer if checkpointer is not None else InMemorySaver()
+    return builder.compile(checkpointer=graph_checkpointer)

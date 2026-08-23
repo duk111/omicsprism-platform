@@ -20,9 +20,8 @@ assert version("langgraph") == "1.2.11"
 assert version("langgraph-checkpoint") == "4.2.0"
 ```
 
-The Postgres checkpointer extension is intentionally not installed in 4.0.
-Task 4.7 will decide whether its integration cost is acceptable; the plan
-already authorizes `InMemorySaver` as the fallback.
+The Postgres checkpointer extension is not installed. Phase 4.7 selected the
+documented `InMemorySaver` fallback for the reasons recorded below.
 
 ## Graph definition and compilation
 
@@ -114,6 +113,26 @@ direct construction and `with InMemorySaver() as saver:` are supported. The
 local smoke check used direct construction and confirmed `get_tuple(config)`
 returned the saved checkpoint. Phase 4 code should use the canonical
 `InMemorySaver` name.
+
+## Phase 4.7 checkpointer decision
+
+The application currently opens direct `psycopg.connect(...)` connections and
+does not have a shared connection pool. The installed environment also lacks
+both `langgraph-checkpoint-postgres` and `psycopg_pool`. Adding the Postgres
+checkpointer would therefore require another package, pool integration, and
+checkpoint schema management instead of lightly reusing the existing stack.
+
+Phase 4.7 consequently compiles each graph instance with one `InMemorySaver` by
+default. Callers may still inject a checkpointer directly, without a persistence
+abstraction or configuration layer. Interrupt and resume calls must use the same
+compiled graph instance and the same `configurable.thread_id`; different thread
+IDs have isolated checkpoints.
+
+The accepted limitation is that a process restart loses a turn that is currently
+waiting at an interrupt, so the user must initiate that turn again. Existing
+thread and message records, submitted Jobs, and produced artifacts remain in
+their current business stores and are unaffected. No PlanStore, ApprovalStore,
+or custom graph-state database is introduced.
 
 ## Local sources inspected
 

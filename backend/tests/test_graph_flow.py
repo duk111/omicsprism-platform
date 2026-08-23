@@ -144,6 +144,10 @@ def _state(**overrides: object) -> GraphState:
     return GraphState.model_validate(values)
 
 
+def _config(thread_id: str = "thread-1") -> dict[str, dict[str, str]]:
+    return {"configurable": {"thread_id": thread_id}}
+
+
 def _submitter() -> RecordingJobSubmitter:
     return RecordingJobSubmitter()
 
@@ -157,13 +161,14 @@ def _querier(evidence: ToolResult | None = None) -> RecordingResultQuerier:
 
 
 def _run(model: ScriptedMainModel, state: GraphState | None = None) -> GraphState:
+    graph_state = state or _state()
     result = build_agent_graph(
         model,
         lambda _request: [],
         _submitter(),
         _reader(),
         _querier(),
-    ).invoke(state or _state())
+    ).invoke(graph_state, _config(graph_state.thread_id))
     return GraphState.model_validate(result)
 
 
@@ -262,7 +267,10 @@ def test_result_qa_queries_evidence_and_returns_verified_citations() -> None:
 
     result = GraphState.model_validate(build_agent_graph(
         model, lambda _request: [], submitter, reader, querier
-    ).invoke(_state(user_message="What happened to GeneA?")))
+    ).invoke(
+        _state(user_message="What happened to GeneA?"),
+        _config(),
+    ))
 
     assert result.current_job == JobRef(job_id="job-7", owner_id="user-1")
     assert result.job_summary == summary
@@ -298,7 +306,10 @@ def test_get_job_uses_current_job_and_returns_compact_summary() -> None:
 
     result = GraphState.model_validate(build_agent_graph(
         model, lambda _request: [], _submitter(), reader, querier
-    ).invoke(_state(current_job=JobRef(job_id="job-current", owner_id="user-1"))))
+    ).invoke(
+        _state(current_job=JobRef(job_id="job-current", owner_id="user-1")),
+        _config(),
+    ))
 
     assert result.job_summary == summary
     assert result.grounded_answer is None
@@ -317,7 +328,10 @@ def test_result_qa_uses_the_only_recent_job_but_does_not_guess_among_several() -
     )])
     single = GraphState.model_validate(build_agent_graph(
         model, lambda _request: [], _submitter(), single_reader, _querier()
-    ).invoke(_state(recent_jobs=[JobRef(job_id="job-only", owner_id="user-1")])))
+    ).invoke(
+        _state(recent_jobs=[JobRef(job_id="job-only", owner_id="user-1")]),
+        _config(),
+    ))
 
     assert single.job_summary == only
 
@@ -330,10 +344,13 @@ def test_result_qa_uses_the_only_recent_job_but_does_not_guess_among_several() -
         _submitter(),
         ambiguous_reader,
         _querier(),
-    ).invoke(_state(recent_jobs=[
-        JobRef(job_id="job-1", owner_id="user-1"),
-        JobRef(job_id="job-2", owner_id="user-1"),
-    ])))
+    ).invoke(
+        _state(recent_jobs=[
+            JobRef(job_id="job-1", owner_id="user-1"),
+            JobRef(job_id="job-2", owner_id="user-1"),
+        ]),
+        _config(),
+    ))
 
     assert ambiguous.job_summary is None
     assert ambiguous.response_text == "Specify which Job to use: job-1, job-2"
@@ -351,7 +368,7 @@ def test_result_qa_rejects_cross_user_job_reader_response() -> None:
     with pytest.raises(ResultAccessError, match="cross-user"):
         build_agent_graph(
             model, lambda _request: [], _submitter(), reader, _querier()
-        ).invoke(_state())
+        ).invoke(_state(), _config())
 
 
 def test_analysis_node_rejects_result_capability_before_side_effects() -> None:
@@ -451,15 +468,14 @@ def test_complete_analysis_request_is_resolved_and_validated_before_confirmation
         reference_level="control",
     ))
     state = _state(
+        thread_id="confirmation-ready",
         user_message="Compare salt and control",
         dataset_profiles=_profile_refs(refs),
     )
 
     result = build_agent_graph(
         model, loader, submitter, _reader(), _querier()
-    ).invoke(state, {
-        "configurable": {"thread_id": "confirmation-ready"},
-    })
+    ).invoke(state, _config(state.thread_id))
 
     assert result["__interrupt__"][0].value["kind"] == "confirmation"
     payload = result["__interrupt__"][0].value
@@ -473,7 +489,7 @@ def test_complete_analysis_request_is_resolved_and_validated_before_confirmation
     )]
 
 
-def test_ambiguity_interrupt_resume_re_resolves_and_revalidates() -> None:
+def test_default_checkpointer_resumes_clarification_flow() -> None:
     refs = _dataset_refs()
     loader = RecordingDatasetLoader(refs)
     submitter = _submitter()
@@ -483,10 +499,10 @@ def test_ambiguity_interrupt_resume_re_resolves_and_revalidates() -> None:
         submitter,
         _reader(),
         _querier(),
-        checkpointer=InMemorySaver(),
     )
-    config = {"configurable": {"thread_id": "clarification-flow"}}
+    config = _config("clarification-flow")
     state = _state(
+        thread_id="clarification-flow",
         user_message="Analyze treatment response",
         dataset_profiles=_profile_refs(refs),
     )
@@ -510,7 +526,61 @@ def test_ambiguity_interrupt_resume_re_resolves_and_revalidates() -> None:
     assert not submitter.requests
 
 
-def test_confirmation_run_submits_validated_params_once() -> None:
+def test_default_checkpointer_isolates_interrupted_threads() -> None:
+    refs = _dataset_refs()
+    proposal = AnalysisProposal(analysis_type="DEG", compare_field="condition")
+    model = ScriptedMainModel([
+        MainModelOutput(decision=AgentDecision(
+            action="run_analysis",
+            analysis_type="DEG",
+            proposal=proposal,
+        )),
+        MainModelOutput(decision=AgentDecision(
+            action="run_analysis",
+            analysis_type="DEG",
+            proposal=proposal,
+        )),
+    ])
+    graph = build_agent_graph(
+        model,
+        RecordingDatasetLoader(refs),
+        _submitter(),
+        _reader(),
+        _querier(),
+    )
+    salt_config = _config("isolated-salt")
+    drought_config = _config("isolated-drought")
+
+    salt_paused = graph.invoke(_state(
+        thread_id="isolated-salt",
+        user_message="Analyze treatment response",
+        dataset_profiles=_profile_refs(refs),
+    ), salt_config)
+    drought_paused = graph.invoke(_state(
+        thread_id="isolated-drought",
+        user_message="Analyze treatment response",
+        dataset_profiles=_profile_refs(refs),
+    ), drought_config)
+
+    assert salt_paused["__interrupt__"][0].value["kind"] == "clarification"
+    assert drought_paused["__interrupt__"][0].value["kind"] == "clarification"
+
+    salt_resumed = graph.invoke(
+        Command(resume={"answer": "compare salt and control"}),
+        salt_config,
+    )
+    drought_resumed = graph.invoke(
+        Command(resume={"answer": "compare drought and control"}),
+        drought_config,
+    )
+
+    assert salt_resumed["thread_id"] == "isolated-salt"
+    assert salt_resumed["resolved_request"].params.contrast.tested_level == "salt"
+    assert drought_resumed["thread_id"] == "isolated-drought"
+    assert drought_resumed["resolved_request"].params.contrast.tested_level == "drought"
+
+
+def test_default_checkpointer_resumes_confirmation_flow_once() -> None:
     refs = _dataset_refs()
     loader = RecordingDatasetLoader(refs)
     submitter = _submitter()
@@ -525,11 +595,14 @@ def test_confirmation_run_submits_validated_params_once() -> None:
         submitter,
         _reader(),
         _querier(),
-        checkpointer=InMemorySaver(),
     )
-    config = {"configurable": {"thread_id": "confirmation-run"}}
+    config = _config("confirmation-run")
     graph.invoke(
-        _state(user_message="Run DEG", dataset_profiles=_profile_refs(refs)),
+        _state(
+            thread_id="confirmation-run",
+            user_message="Run DEG",
+            dataset_profiles=_profile_refs(refs),
+        ),
         config,
     )
 
@@ -557,7 +630,7 @@ def test_confirmation_run_submits_validated_params_once() -> None:
     assert len(submitter.requests) == 1
 
 
-def test_confirmation_modify_re_resolves_and_revalidates() -> None:
+def test_explicit_checkpointer_resumes_confirmation_modify() -> None:
     refs = _dataset_refs()
     loader = RecordingDatasetLoader(refs)
     submitter = _submitter()
@@ -574,9 +647,13 @@ def test_confirmation_modify_re_resolves_and_revalidates() -> None:
         _querier(),
         checkpointer=InMemorySaver(),
     )
-    config = {"configurable": {"thread_id": "confirmation-modify"}}
+    config = _config("confirmation-modify")
     graph.invoke(
-        _state(user_message="Run DEG", dataset_profiles=_profile_refs(refs)),
+        _state(
+            thread_id="confirmation-modify",
+            user_message="Run DEG",
+            dataset_profiles=_profile_refs(refs),
+        ),
         config,
     )
 
@@ -610,9 +687,13 @@ def test_confirmation_cancel_does_not_create_a_job() -> None:
         _querier(),
         checkpointer=InMemorySaver(),
     )
-    config = {"configurable": {"thread_id": "confirmation-cancel"}}
+    config = _config("confirmation-cancel")
     graph.invoke(
-        _state(user_message="Run DEG", dataset_profiles=_profile_refs(refs)),
+        _state(
+            thread_id="confirmation-cancel",
+            user_message="Run DEG",
+            dataset_profiles=_profile_refs(refs),
+        ),
         config,
     )
 
@@ -644,9 +725,13 @@ def test_changed_input_rejects_execution_and_asks_for_clarification() -> None:
         _querier(),
         checkpointer=InMemorySaver(),
     )
-    config = {"configurable": {"thread_id": "changed-input"}}
+    config = _config("changed-input")
     graph.invoke(
-        _state(user_message="Run DEG", dataset_profiles=_profile_refs(refs)),
+        _state(
+            thread_id="changed-input",
+            user_message="Run DEG",
+            dataset_profiles=_profile_refs(refs),
+        ),
         config,
     )
     changed_counts = COUNTS.replace(b"g1,10", b"g1,11")
@@ -687,8 +772,12 @@ def test_blocking_validation_interrupts_without_creating_a_job() -> None:
     )
 
     paused = graph.invoke(
-        _state(user_message="Run DEG", dataset_profiles=_profile_refs(refs)),
-        {"configurable": {"thread_id": "blocking-validation"}},
+        _state(
+            thread_id="blocking-validation",
+            user_message="Run DEG",
+            dataset_profiles=_profile_refs(refs),
+        ),
+        _config("blocking-validation"),
     )
 
     payload = paused["__interrupt__"][0].value
@@ -718,4 +807,4 @@ def test_analysis_loader_rejects_cross_user_dataset() -> None:
         graph.invoke(_state(
             user_message="Run DEG",
             dataset_profiles=_profile_refs(state_refs),
-        ))
+        ), _config())
