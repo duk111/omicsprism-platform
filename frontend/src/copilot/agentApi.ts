@@ -9,9 +9,14 @@ import type {
   AgentThreadResponse,
   AgentTurnListResponse,
   AgentTurnResponse,
+  GraphClarificationResumeRequest,
+  GraphConfirmationResumeRequest,
+  GraphTurnResult,
 } from "../api-types";
 
 const root = "/api/agent/threads";
+
+export type GraphResumeRequest = GraphClarificationResumeRequest | GraphConfirmationResumeRequest;
 
 function json(method: string, body: unknown): RequestInit {
   return { method, headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) };
@@ -31,7 +36,20 @@ export const agentApi = {
     apiFetchJson(`${root}/${encodeURIComponent(threadId)}/turns`, {
       ...json("POST", { message, input_bundle_id: inputBundleId, focus_job_ids: focusJobIds }),
       headers: { "Content-Type": "application/json", "Idempotency-Key": createClientId() },
-    }) as Promise<AgentTurnResponse>,
+    }) as Promise<AgentTurnResponse | GraphTurnResult>,
+  resumeTurn: (threadId: string, checkpointTurnId: string, request: GraphResumeRequest) => {
+    const run = request.kind === "confirmation" && request.action === "run";
+    return apiFetchJson(
+      `${root}/${encodeURIComponent(threadId)}/turns/${encodeURIComponent(checkpointTurnId)}/resume`,
+      {
+        ...json("POST", request),
+        headers: {
+          "Content-Type": "application/json",
+          ...(run ? { "Idempotency-Key": createClientId() } : {}),
+        },
+      },
+    ) as Promise<GraphTurnResult>;
+  },
   uploadBundle: async (threadId: string, attachments: { file: File; field: string }[]) => {
     const body = new FormData();
     attachments.forEach(({ file, field }) => { body.append("files", file); body.append("fields", field); });
@@ -45,3 +63,9 @@ export const agentApi = {
   streamUrl: (threadId: string) => apiUrl(`${root}/${encodeURIComponent(threadId)}/stream`),
   ping: () => apiFetch("/health"),
 };
+
+export function isGraphTurnResult(
+  result: AgentTurnResponse | GraphTurnResult,
+): result is GraphTurnResult {
+  return "checkpoint_turn_id" in result;
+}

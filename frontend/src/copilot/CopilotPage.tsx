@@ -1,15 +1,18 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AlertCircle, Bot, ChevronDown, FilePlus2, Menu, MessageSquarePlus, Paperclip, Plus, Send, Wifi, WifiOff, X } from "lucide-react";
 import { useSearchParams } from "react-router-dom";
-import type { AgentMessageResponse, AgentRunResponse, AgentStreamEvent, AgentThreadResponse, AgentTurnResponse } from "../api-types";
+import type { AgentMessageResponse, AgentRunResponse, AgentStreamEvent, AgentThreadResponse, AgentTurnResponse, GraphInterrupt, GraphTurnResult } from "../api-types";
 import { ApiRequestError } from "../api";
 import { createClientId } from "../clientId";
-import { agentApi } from "./agentApi";
+import { agentApi, isGraphTurnResult } from "./agentApi";
+import type { GraphResumeRequest } from "./agentApi";
+import { GraphInterruptPanel } from "./GraphInterruptPanel";
 import { MessageBlocks } from "./MessageBlocks";
 import "./copilot.css";
 
 const INPUT_FIELDS = ["counts", "metadata", "metabs", "transcriptome", "metabolome", "group"];
 type Attachment = { id: string; file: File; field: string };
+type PendingGraph = { checkpointTurnId: string; interrupt: GraphInterrupt };
 
 export default function CopilotPage() {
   const [searchParams, setSearchParams] = useSearchParams();
@@ -24,6 +27,8 @@ export default function CopilotPage() {
   const [loading, setLoading] = useState(true);
   const [sending, setSending] = useState(false);
   const [approvalBusy, setApprovalBusy] = useState<string | null>(null);
+  const [pendingGraph, setPendingGraph] = useState<PendingGraph | null>(null);
+  const [graphBusy, setGraphBusy] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
   const [connection, setConnection] = useState<"live" | "recovering" | "offline">("recovering");
   const [railOpen, setRailOpen] = useState(false);
@@ -39,6 +44,7 @@ export default function CopilotPage() {
   const createThread = useCallback(async (focusIds: string[] = []) => {
     const created = await agentApi.createThread(focusIds);
     setThreads(current => [created, ...current.filter(item => item.thread_id !== created.thread_id)]);
+    setPendingGraph(null); setGraphBusy(false);
     setActiveId(created.thread_id); setRailOpen(false); setNotice(null);
     if (focusIds.length) setSearchParams({}, { replace: true });
     return created.thread_id;
@@ -61,7 +67,7 @@ export default function CopilotPage() {
 
   useEffect(() => {
     if (!activeId) return;
-    setLoading(true); setNotice(null);
+    setPendingGraph(null); setGraphBusy(false); setLoading(true); setNotice(null);
     recover(activeId).catch(error => setNotice(errorMessage(error))).finally(() => setLoading(false));
   }, [activeId, recover]);
 
@@ -85,7 +91,7 @@ export default function CopilotPage() {
     return () => { source.close(); if (fallback) window.clearInterval(fallback); };
   }, [activeId, recover]);
 
-  useEffect(() => { messageEnd.current?.scrollIntoView({ behavior: "smooth", block: "end" }); }, [messages]);
+  useEffect(() => { messageEnd.current?.scrollIntoView({ behavior: "smooth", block: "end" }); }, [messages, pendingGraph]);
 
   const pendingTurn = turns.some(turn => turn.status === "queued" || turn.status === "running");
   const focusIds = run?.focus.in_scope_job_ids ?? [];
@@ -97,11 +103,30 @@ export default function CopilotPage() {
     try {
       const threadId = activeId || await createThread(focusJobId ? [focusJobId] : []);
       const bundle = attachments.length ? await agentApi.uploadBundle(threadId, attachments) : null;
-      const turn = await agentApi.createTurn(threadId, text, bundle?.bundle_id ?? null, focusIds);
-      setDraft(""); setAttachments([]); setTurns(current => upsert(current, turn, "turn_id"));
+      const result = await agentApi.createTurn(threadId, text, bundle?.bundle_id ?? null, focusIds);
+      setDraft(""); setAttachments([]);
+      if (isGraphTurnResult(result)) applyGraphResult(result);
+      else setTurns(current => upsert(current, result, "turn_id"));
       await recover(threadId);
     } catch (error) { setNotice(errorMessage(error)); }
     finally { setSending(false); }
+  }
+
+  async function resumeGraph(request: GraphResumeRequest) {
+    if (!activeId || !pendingGraph || graphBusy) return;
+    setGraphBusy(true); setNotice(null);
+    try {
+      const result = await agentApi.resumeTurn(activeId, pendingGraph.checkpointTurnId, request);
+      applyGraphResult(result);
+      await recover(activeId);
+    } catch (error) { setNotice(errorMessage(error)); }
+    finally { setGraphBusy(false); }
+  }
+
+  function applyGraphResult(result: GraphTurnResult) {
+    setTurns(current => upsert(current, result.turn, "turn_id"));
+    if (result.message) setMessages(current => upsert(current, result.message!, "message_id"));
+    setPendingGraph(result.interrupt ? { checkpointTurnId: result.checkpoint_turn_id, interrupt: result.interrupt } : null);
   }
 
   async function decide(approvalId: string, decision: "approve" | "reject", planHash: string) {
@@ -127,14 +152,15 @@ export default function CopilotPage() {
     <aside className={`copilot-rail${railOpen ? " rail-open" : ""}`} aria-label="Conversations">
       <div className="rail-heading"><div><span>Workspace</span><h1>Copilot</h1></div><button type="button" title="Close conversations" aria-label="Close conversations" onClick={() => setRailOpen(false)}><X size={19} /></button></div>
       <button type="button" className="new-thread" onClick={() => void createThread()}><MessageSquarePlus size={17} />New conversation</button>
-      <div className="thread-list">{threads.map(thread => <button type="button" key={thread.thread_id} className={thread.thread_id === activeId ? "active" : ""} onClick={() => { setActiveId(thread.thread_id); setRailOpen(false); }}><strong>{thread.title || "Untitled conversation"}</strong><time>{relativeTime(thread.updated_at)}</time></button>)}</div>
+      <div className="thread-list">{threads.map(thread => <button type="button" key={thread.thread_id} className={thread.thread_id === activeId ? "active" : ""} onClick={() => { setPendingGraph(null); setGraphBusy(false); setActiveId(thread.thread_id); setRailOpen(false); }}><strong>{thread.title || "Untitled conversation"}</strong><time>{relativeTime(thread.updated_at)}</time></button>)}</div>
     </aside>
 
     <section className="conversation-panel">
       <header className="conversation-header"><div><span className="conversation-kicker">OmicsPrism Copilot</span><h2>{activeThread?.title || "New conversation"}</h2></div><div className={`connection-state ${connection}`} title="Connection status">{connection === "live" ? <Wifi size={15} /> : <WifiOff size={15} />}{statusLabel}</div></header>
       <div className="message-scroll" aria-live="polite">
         {loading ? <EmptyState loading /> : messages.length === 0 ? <EmptyState /> : messages.map(message => <article className={`copilot-message ${message.role}`} key={message.message_id}><div className="message-author">{message.role === "assistant" ? <Bot size={16} /> : null}{message.role === "assistant" ? "Copilot" : "You"}</div><div className="message-body"><MessageBlocks message={message} approvalBusy={approvalBusy} onApproval={decide} onRetry={() => setDraft(latestUserText(messages))} /></div></article>)}
-        {pendingTurn && <div className="working-state"><span /><span /><span /><em>Working on your request</em></div>}
+        {pendingGraph && <GraphInterruptPanel interrupt={pendingGraph.interrupt} busy={graphBusy} onResume={request => void resumeGraph(request)} />}
+        {pendingTurn && !pendingGraph && <div className="working-state"><span /><span /><span /><em>Working on your request</em></div>}
         {notice && <div className="copilot-notice" role="alert"><AlertCircle size={17} /><span>{notice}</span><button type="button" aria-label="Dismiss" onClick={() => setNotice(null)}><X size={16} /></button></div>}
         <div ref={messageEnd} />
       </div>

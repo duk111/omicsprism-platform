@@ -100,6 +100,7 @@ export interface AgentPlanBlock {
   effective_params: { [key: string]: string | number | boolean | null };
   contrasts: Record<string, unknown>[];
   warnings?: string[];
+  inference_note?: string | null;
   expires_at: string;
 }
 
@@ -130,7 +131,7 @@ export interface AgentRunResponse {
   version: number;
 }
 
-export type AgentState = "COLLECT_INTENT" | "ADVISE" | "CHECK_INPUTS" | "PROPOSE_PLAN" | "WAIT_PLAN_CONFIRMATION" | "PREFLIGHT" | "WAIT_EXECUTION_CONFIRMATION" | "SUBMIT_JOBS" | "MONITOR_JOBS" | "ANSWER_WITH_EVIDENCE" | "AWAIT_FOLLOWUP" | "DONE" | "NEED_USER_INPUT" | "PREFLIGHT_BLOCKED" | "JOB_FAILED";
+export type AgentState = "COLLECT_INTENT" | "ADVISE" | "CHECK_INPUTS" | "WAIT_PLAN_CONFIRMATION" | "WAIT_EXECUTION_CONFIRMATION" | "SUBMIT_JOBS" | "MONITOR_JOBS" | "ANSWER_WITH_EVIDENCE" | "AWAIT_FOLLOWUP" | "DONE" | "NEED_USER_INPUT" | "PREFLIGHT_BLOCKED" | "JOB_FAILED";
 
 export interface AgentStreamEvent {
   event_id: string;
@@ -282,6 +283,70 @@ export interface Citation {
   row_ids: number[];
 }
 
+export interface ClarificationItem {
+  field: string;
+  options?: string[];
+  reason: string;
+}
+
+export interface ClarificationPayload {
+  kind?: "clarification";
+  missing?: ClarificationItem[];
+  question: string;
+}
+
+export interface ConfirmationPayload {
+  kind?: "confirmation";
+  analysis_type: "DEG" | "DEM" | "GMA";
+  resolved_params: DEGParams | DEMParams | GMAParams;
+  preview?: ContrastPreview | null;
+  warnings?: Issue[];
+  input_fingerprint: string;
+}
+
+export interface ContrastPreview {
+  compare_field: string;
+  tested_level: string;
+  reference_level: string;
+  same_fields?: string[];
+  same_values?: { [key: string]: string };
+  tested_count: number;
+  reference_count: number;
+}
+
+export interface ContrastSpec {
+  compare_field: string;
+  tested_level: string;
+  reference_level: string;
+  same_fields?: { [key: string]: string };
+}
+
+export interface DEGParams {
+  contrast: ContrastSpec;
+  min_replicates?: number;
+  analysis_type?: "DEG";
+  padj_cutoff?: number;
+  log2fc_cutoff?: number;
+  min_total_count?: number;
+  normalize?: boolean;
+  filter_low_expression?: boolean;
+}
+
+export interface DEMParams {
+  contrast: ContrastSpec;
+  min_replicates?: number;
+  analysis_type?: "DEM";
+  padj_cutoff?: number;
+  log2fc_cutoff?: number;
+  vip_cutoff?: number;
+  pseudocount?: number;
+  max_missing_fraction?: number;
+  impute_method?: string;
+  normalize?: boolean;
+  log_transform?: boolean;
+  n_orthogonal_components?: number;
+}
+
 export type ErrorCategory = "input_error" | "permission_error" | "resource_error" | "analysis_failed" | "system_error";
 
 export interface FigureDataResponse {
@@ -302,6 +367,40 @@ export interface FigureDataResponse {
 }
 
 export type FileArtifactKind = "input" | "output" | "report" | "image" | "log" | "figure" | "temp";
+
+export interface GMAParams {
+  analysis_type?: "GMA";
+  fdr_cutoff?: number;
+  enable_modules?: boolean;
+  trans_log2?: boolean;
+  metab_log2?: boolean;
+  max_missing_fraction?: number;
+}
+
+export interface GraphClarificationResumeRequest {
+  kind?: "clarification";
+  interrupt_id: string;
+  answer: string;
+}
+
+export interface GraphConfirmationResumeRequest {
+  kind?: "confirmation";
+  interrupt_id: string;
+  action: "run" | "modify" | "cancel";
+  modification?: string | null;
+}
+
+export interface GraphInterrupt {
+  interrupt_id: string;
+  payload: ClarificationPayload | ConfirmationPayload;
+}
+
+export interface GraphTurnResult {
+  checkpoint_turn_id: string;
+  turn: AgentTurnResponse;
+  message?: AgentMessageResponse | null;
+  interrupt?: GraphInterrupt | null;
+}
 
 export interface GroundedClaim {
   text: string;
@@ -326,6 +425,12 @@ export interface ImageInfo {
   thumbnail_url: string;
   full_url: string;
   interactive_url?: string | null;
+}
+
+export interface Issue {
+  code: string;
+  message: string;
+  field?: string | null;
 }
 
 export interface JobFilesResponse {
@@ -460,6 +565,10 @@ export interface RunFocus {
   in_scope_job_ids: string[];
   resolved_entities: { [key: string]: string };
   last_citation: Citation | null;
+  draft_params?: { [key: string]: string | number | boolean | null };
+  preferences?: { [key: string]: string | number | boolean | null };
+  draft_analysis_type?: string | null;
+  params_source_ref?: string | null;
 }
 
 export type RunStatus = "running" | "suspended" | "completed" | "failed" | "cancelled";
