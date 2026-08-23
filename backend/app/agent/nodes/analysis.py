@@ -20,6 +20,7 @@ from ..graph import (
     GraphState,
     JobRef,
     JobSubmitter,
+    NodeCapabilityError,
 )
 from ..param_resolver import AnalysisProposal, ResolvedRequest, resolve_analysis_request
 from ..validation import DatasetRef, ValidationReport, validate_analysis_request
@@ -38,6 +39,13 @@ def analysis_node(
     job_submitter: JobSubmitter,
 ) -> Callable[[GraphState], Command]:
     def run(state: GraphState) -> Command:
+        decision = state.decision
+        if decision is None or decision.action not in {"inspect_dataset", "run_analysis"}:
+            action = decision.action if decision is not None else "missing"
+            raise NodeCapabilityError(
+                f"Analysis node does not allow action: {action}"
+            )
+
         if isinstance(state.pending_interrupt, ConfirmationPayload):
             return _handle_confirmation(state, dataset_loader, job_submitter)
 

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from .analysis import DatasetLoadError, ExecutionRejected, analysis_node, run_analysis
+from ..graph import NodeCapabilityError
 from .main import main_node, route_after_main
 from .result_qa import (
     ResultAccessError,
@@ -14,6 +15,7 @@ from .result_qa import (
 __all__ = [
     "DatasetLoadError",
     "ExecutionRejected",
+    "NodeCapabilityError",
     "analysis_node",
     "main_node",
     "job_reader_from_runtime",

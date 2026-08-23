@@ -9,6 +9,7 @@ from ..graph import (
     JobReader,
     JobRef,
     JobSummary,
+    NodeCapabilityError,
     ResultEvidenceRequest,
     ResultQuerier,
 )
@@ -32,6 +33,13 @@ def result_qa_node(
     pipeline = GroundedAnswerPipeline()
 
     def run(state: GraphState) -> dict[str, object]:
+        decision = state.decision
+        if decision is None or decision.action not in {"get_job", "query_result"}:
+            action = decision.action if decision is not None else "missing"
+            raise NodeCapabilityError(
+                f"Result QA node does not allow action: {action}"
+            )
+
         if state.step_budget.used_steps >= state.step_budget.max_steps:
             return {
                 "response_text": (
@@ -62,9 +70,6 @@ def result_qa_node(
             }
         _validate_job_summary(state, job_ref, summary)
 
-        decision = state.decision
-        if decision is None:
-            raise ResultAccessError("Result QA requires a typed Main decision")
         base_update: dict[str, object] = {
             "current_job": JobRef(job_id=summary.job_id, owner_id=summary.owner_id),
             "job_summary": summary,
@@ -73,8 +78,8 @@ def result_qa_node(
         }
         if decision.action == "get_job":
             return {**base_update, "response_text": _job_summary_text(summary)}
-        if decision.action != "query_result" or decision.result_query is None:
-            raise ResultAccessError("Result QA received an unsupported action")
+        if decision.result_query is None:
+            raise ResultAccessError("query_result action is missing its typed query")
 
         query = decision.result_query
         if query.artifact not in summary.artifacts:

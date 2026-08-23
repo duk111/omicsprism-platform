@@ -14,6 +14,10 @@ from .validation import ContrastPreview, DatasetRef, Issue, ValidationReport
 AnalysisTypeName = Literal["DEG", "DEM", "GMA"]
 
 
+class NodeCapabilityError(ValueError):
+    """A semantic node received an action outside its capability whitelist."""
+
+
 class StepBudget(BaseModel):
     """Bounded graph execution budget; it is not a workflow state enum."""
 

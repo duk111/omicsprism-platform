@@ -18,13 +18,14 @@ from backend.app.agent.graph import (
     JobSummary,
     MainModelContext,
     MainModelOutput,
+    NodeCapabilityError,
     ResultEvidenceRequest,
     ResultQuerySpec,
     StepBudget,
     build_agent_graph,
 )
-from backend.app.agent.nodes.analysis import DatasetLoadError
-from backend.app.agent.nodes.result_qa import ResultAccessError
+from backend.app.agent.nodes.analysis import DatasetLoadError, analysis_node
+from backend.app.agent.nodes.result_qa import ResultAccessError, result_qa_node
 from backend.app.agent.param_resolver import AnalysisProposal
 from backend.app.agent.schemas import ToolName, ToolResult
 from backend.app.agent.validation import DatasetRef
@@ -351,6 +352,39 @@ def test_result_qa_rejects_cross_user_job_reader_response() -> None:
         build_agent_graph(
             model, lambda _request: [], _submitter(), reader, _querier()
         ).invoke(_state())
+
+
+def test_analysis_node_rejects_result_capability_before_side_effects() -> None:
+    loader = RecordingDatasetLoader([])
+    submitter = _submitter()
+    state = _state(
+        decision=AgentDecision(
+            action="query_result",
+            job_id="job-7",
+            result_query=ResultQuerySpec(artifact="differential_gene_counts.csv"),
+        )
+    )
+
+    with pytest.raises(NodeCapabilityError, match="Analysis node.*query_result"):
+        analysis_node(loader, submitter)(state)
+
+    assert not loader.requests
+    assert not submitter.requests
+
+
+def test_result_qa_node_rejects_create_job_before_reading_results() -> None:
+    reader = _reader()
+    querier = _querier()
+    state = _state(
+        decision=AgentDecision(action="run_analysis", analysis_type="DEG"),
+        current_job=JobRef(job_id="job-7", owner_id="user-1"),
+    )
+
+    with pytest.raises(NodeCapabilityError, match="Result QA node.*run_analysis"):
+        result_qa_node(reader, querier)(state)
+
+    assert not reader.requests
+    assert not querier.requests
 
 
 def test_graph_has_only_three_semantic_nodes() -> None:
