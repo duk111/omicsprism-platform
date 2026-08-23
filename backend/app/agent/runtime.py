@@ -1056,7 +1056,11 @@ class ProductionRunCoordinator:
         if tool is ToolName.GET_JOBS_STATUS:
             return tool, {"job_ids": payload.get("job_ids", [])}
         if tool is ToolName.QUERY_RESULT_EVIDENCE:
-            query = {key: payload[key] for key in ("job_id", "artifact", "sort", "limit", "resolve_entity") if key in payload}
+            query = {
+                key: payload[key]
+                for key in ("job_id", "artifact", "field_path", "filters", "sort", "limit", "resolve_entity")
+                if key in payload
+            }
             return tool, _safe_evidence_query(query, state.focus.in_scope_job_ids)
         raise InvalidDecision("write tools are unavailable inside the read-only loop")
 
@@ -1624,12 +1628,21 @@ def _safe_evidence_query(params: dict[str, Any], focus_job_ids: list[str]) -> di
     if not isinstance(artifact, str) or not artifact.strip():
         raise ValueError("evidence query requires an artifact")
     query: dict[str, Any] = {"job_id": job_id, "artifact": artifact.strip()}
-    for name in ("sort", "resolve_entity"):
+    for name in ("field_path", "sort", "resolve_entity"):
         value = params.get(name)
         if value is not None:
             if not isinstance(value, str):
                 raise ValueError(f"evidence query {name} must be text")
             query[name] = value
+    filters = params.get("filters")
+    if filters is not None:
+        if not isinstance(filters, dict) or len(filters) > 8:
+            raise ValueError("evidence query filters must be a bounded object")
+        if any(not isinstance(key, str) or not key or len(key) > 100 for key in filters):
+            raise ValueError("evidence query filter names are invalid")
+        if any(value is not None and not isinstance(value, (str, int, float, bool)) for value in filters.values()):
+            raise ValueError("evidence query filter values must be scalar")
+        query["filters"] = filters
     limit = params.get("limit", AGENT_EVIDENCE_MAX_ROWS)
     if limit is not None:
         if not isinstance(limit, int) or isinstance(limit, bool):

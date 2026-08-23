@@ -20,6 +20,7 @@ from backend.app.agent.schemas import (
     ToolResult,
 )
 from backend.app.agent.context import MinimalContextBuilder
+from backend.app.agent.runtime import ProductionRunCoordinator
 from backend.app.agent.validator import DecisionValidator, InvalidDecision
 from backend.tests.test_agent_end_to_end import (
     COUNTS,
@@ -101,6 +102,34 @@ def test_tool_call_arguments_are_structured_and_extra_keys_are_rejected() -> Non
     assert args.job_ids == ["job-1"]
     with pytest.raises(ValueError):
         ToolCallArguments.model_validate({"job_ids": ["job-1"], "shell": "cat /etc/passwd"})
+
+
+def test_json_query_arguments_pass_through_readonly_loop() -> None:
+    decision = _call(
+        ToolName.QUERY_RESULT_EVIDENCE,
+        ToolCallArguments(
+            job_id="job-1",
+            artifact="upset.json",
+            field_path="upset_data.intersections",
+            filters={"validated": True},
+            sort="count desc",
+            limit=2,
+        ),
+    )
+
+    tool, kwargs = ProductionRunCoordinator._readonly_tool_kwargs(
+        decision, _state(ActiveProfile.INTERPRETATION)
+    )
+
+    assert tool is ToolName.QUERY_RESULT_EVIDENCE
+    assert kwargs == {
+        "job_id": "job-1",
+        "artifact": "upset.json",
+        "field_path": "upset_data.intersections",
+        "filters": {"validated": True},
+        "sort": "count desc",
+        "limit": 2,
+    }
 
 
 def test_analysis_loop_executes_read_only_call_then_keeps_approval_gate() -> None:

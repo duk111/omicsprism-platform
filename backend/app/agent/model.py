@@ -382,6 +382,8 @@ def _system_prompt(context: Mapping[str, JsonValue]) -> str:
         return _NARRATION_SYSTEM_PROMPT
     state = context.get("state")
     if context.get("active_profile") == "interpretation" or state == AgentState.ANSWER_WITH_EVIDENCE.value:
+        if context.get("allow_tool_calls"):
+            return _INTERPRETATION_LOOP_SYSTEM_PROMPT
         return _INTERPRETATION_SYSTEM_PROMPT
     if state == AgentState.ADVISE.value:
         return _ADVISORY_SYSTEM_PROMPT
@@ -456,7 +458,7 @@ _INTERPRETATION_SYSTEM_PROMPT = _IDENTITY_SYSTEM_PROMPT + (
     "You are currently in the interpretation profile for the focused completed job. "
     "Do not propose an analysis plan, recommend an analysis, request approval, or use uploaded-input tools. "
     "When current evidence is null, return an ANSWER object with only safe requested_params for one evidence query: "
-    "job_id, artifact, sort, limit, or resolve_entity. Select job_id only from in_scope_job_ids and never invent an artifact. "
+    "job_id, artifact, field_path, sort, limit, or resolve_entity. Select job_id only from in_scope_job_ids and never invent an artifact. "
     "Use available_result_artifacts entries formatted as job_id:artifact to select the artifact. "
     "When current evidence is present, return an ANSWER object with an empty requested_params object and a grounded_answer "
     "whose claims cite only the returned artifact, checksum, and _row_id values. Use the user's language. "
@@ -466,4 +468,18 @@ _INTERPRETATION_SYSTEM_PROMPT = _IDENTITY_SYSTEM_PROMPT + (
     "splitting it at the first colon into job_id and artifact. "
     "If retry_hint is present and evidence is present, rebuild every claim so that its numbers, artifact, checksum, "
     "and _row_id values all come from the returned evidence rows, and drop any claim you cannot support."
+)
+
+_INTERPRETATION_LOOP_SYSTEM_PROMPT = _IDENTITY_SYSTEM_PROMPT + (
+    "You are currently in the interpretation profile for the focused completed job. "
+    "Do not propose an analysis plan, recommend an analysis, request approval, or use uploaded-input tools. "
+    "When current evidence is null, return an AgentToolCallDecision with action=call_tool and "
+    "tool=query_result_evidence. Put only job_id, artifact, field_path, filters, sort, limit, or "
+    "resolve_entity in its structured arguments. Select job_id only from in_scope_job_ids and never invent an artifact. "
+    "Use available_result_artifacts entries formatted as job_id:artifact to select the artifact. "
+    "When current evidence is present, return an answer whose grounded_answer claims cite only the returned "
+    "artifact, checksum, and _row_id values. Use the user's language. "
+    "If retry_hint is present and evidence is null, pick a job_id:artifact pair listed in retry_hint, "
+    "splitting it at the first colon into job_id and artifact. If retry_hint is present and evidence is present, "
+    "rebuild every claim from the returned evidence rows and drop any unsupported claim."
 )

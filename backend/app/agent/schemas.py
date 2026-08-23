@@ -185,6 +185,8 @@ class ToolCallArguments(ContractModel):
     job_ids: list[str] = Field(default_factory=list, max_length=20)
     job_id: str | None = Field(default=None, max_length=200)
     artifact: str | None = Field(default=None, max_length=500)
+    field_path: str | None = Field(default=None, max_length=200)
+    filters: dict[str, AgentParamValue] = Field(default_factory=dict, max_length=8)
     sort: str | None = Field(default=None, max_length=100)
     limit: int | None = Field(default=None, ge=1, le=12)
     resolve_entity: str | None = Field(default=None, max_length=200)

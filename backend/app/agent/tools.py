@@ -35,6 +35,28 @@ from .schemas import (
 MAX_TOOL_ROWS = 50
 MAX_TOOL_BYTES = 32 * 1024
 
+_FIGURE_JSON_BY_ANALYSIS = {
+    AnalysisType.DIFFERENTIAL: frozenset({"volcano.json"}),
+    AnalysisType.DEM: frozenset({"volcano.json"}),
+    AnalysisType.CORRELATION: frozenset({
+        "pca.json",
+        "dendrogram.json",
+        "upset.json",
+        "bubble-heatmap.json",
+        "scatter-panels.json",
+        "violin-box.json",
+        "corr-heatmap.json",
+        "ridge.json",
+        "line-panels.json",
+        "circos.json",
+    }),
+}
+_JSON_PATH_PART = re.compile(r"^[A-Za-z0-9_-]+$")
+_JSON_ENTITY_FIELDS = (
+    "id", "sample_id", "entity_id", "feature", "gene", "metabolite",
+    "node_id", "label", "name", "text",
+)
+
 
 class ToolConfigurationError(RuntimeError):
     """工具缺少受控运行时依赖，不能执行。"""
@@ -437,6 +459,7 @@ class AgentToolRuntime:
         job_id: str,
         artifact: str,
         filters: Mapping[str, Any] | None = None,
+        field_path: str | None = None,
         sort: str | None = None,
         limit: int | None = None,
         resolve_entity: str | None = None,
@@ -456,6 +479,17 @@ class AgentToolRuntime:
         if artifact_info is None:
             return _tool_result(ToolName.QUERY_RESULT_EVIDENCE, rows=[], ok=False, error_code="not_found")
         text = self.files.read_artifact_text(job.id, artifact_info.path)
+        if Path(artifact).suffix.lower() == ".json":
+            return _query_json_evidence(
+                text=text,
+                artifact=artifact_info.path,
+                checksum=artifact_info.checksum,
+                field_path=field_path,
+                filters=filters,
+                sort=sort,
+                limit=limit,
+                resolve_entity=resolve_entity,
+            )
         reader = csv.DictReader(io.StringIO(text))
         rows = [
             {"_row_id": row_id, **{str(key): value for key, value in row.items() if key is not None}}
@@ -593,13 +627,118 @@ def _allowed_result_artifact(artifact: str, job_type: AnalysisType | None) -> bo
     differential = name in {"differential_gene_counts.csv", "union_significant_genes.csv"} or name.endswith((".sig.csv", ".all.csv"))
     dem = name in {"differential_metabolite_counts.csv", "union_significant_metabolites.csv"} or name.endswith((".sig.csv", ".all.csv"))
     correlation = name.startswith(("T01_", "T02_", "T03_", "T04_", "T05_", "T06_")) and name.endswith(".csv")
+    figure_json = any(name in allowed for allowed in _FIGURE_JSON_BY_ANALYSIS.values())
     if job_type is None:
-        return differential or dem or correlation
+        return differential or dem or correlation or figure_json
     if job_type is AnalysisType.DIFFERENTIAL:
-        return differential
+        return differential or name in _FIGURE_JSON_BY_ANALYSIS[job_type]
     if job_type is AnalysisType.DEM:
-        return dem
-    return correlation
+        return dem or name in _FIGURE_JSON_BY_ANALYSIS[job_type]
+    return correlation or name in _FIGURE_JSON_BY_ANALYSIS[job_type]
+
+
+def _query_json_evidence(
+    *,
+    text: str,
+    artifact: str,
+    checksum: str | None,
+    field_path: str | None,
+    filters: Mapping[str, Any] | None,
+    sort: str | None,
+    limit: int | None,
+    resolve_entity: str | None,
+) -> ToolResult:
+    try:
+        payload = json.loads(text)
+    except json.JSONDecodeError:
+        return _tool_result(ToolName.QUERY_RESULT_EVIDENCE, rows=[], ok=False, error_code="invalid_json")
+    if not _valid_json_filters(filters):
+        return _tool_result(ToolName.QUERY_RESULT_EVIDENCE, rows=[], ok=False, error_code="invalid_filter")
+    try:
+        rows = _json_evidence_rows(payload, field_path)
+    except (KeyError, IndexError, TypeError, ValueError):
+        return _tool_result(ToolName.QUERY_RESULT_EVIDENCE, rows=[], ok=False, error_code="invalid_field")
+
+    effective_filters = dict(filters or {})
+    rows = [
+        row for row in rows
+        if all(str(row.get(key, "")) == str(value) for key, value in effective_filters.items())
+    ]
+    if resolve_entity:
+        rows = [row for row in rows if _json_row_matches_entity(row, resolve_entity)]
+    if sort:
+        sort_field, _, direction = sort.partition(" ")
+        reverse = direction.strip().lower() == "desc"
+        if not all(sort_field in row for row in rows):
+            return _tool_result(ToolName.QUERY_RESULT_EVIDENCE, rows=[], ok=False, error_code="invalid_sort")
+        rows.sort(key=lambda row: _sort_value(row.get(sort_field)), reverse=reverse)
+
+    max_rows = min(MAX_TOOL_ROWS, max(1, int(limit or MAX_TOOL_ROWS)))
+    selected = rows[:max_rows]
+    result = _tool_result(
+        ToolName.QUERY_RESULT_EVIDENCE,
+        rows=selected,
+        artifact=artifact,
+        checksum=checksum or "sha256:" + hashlib.sha256(text.encode("utf-8")).hexdigest(),
+        filters=effective_filters,
+        sort=sort,
+    )
+    result.row_count = len(rows)
+    result.truncated = result.truncated or len(selected) < len(rows)
+    return result
+
+
+def _json_evidence_rows(payload: Any, field_path: str | None) -> list[dict[str, Any]]:
+    parts = field_path.split(".") if field_path else []
+    if len(parts) > 12 or any(not part or not _JSON_PATH_PART.fullmatch(part) for part in parts):
+        raise ValueError("invalid JSON field path")
+    selected = payload
+    for part in parts:
+        if isinstance(selected, Mapping):
+            selected = selected[part]
+        elif isinstance(selected, list) and part.isdigit():
+            selected = selected[int(part)]
+        else:
+            raise TypeError("JSON field path does not resolve")
+
+    if isinstance(selected, list):
+        return [
+            _json_row(item, row_id=index + 1)
+            for index, item in enumerate(selected)
+        ]
+    return [_json_row(selected, row_id=1)]
+
+
+def _json_row(value: Any, *, row_id: int) -> dict[str, Any]:
+    row: dict[str, Any] = {"_row_id": row_id}
+    if isinstance(value, Mapping):
+        row.update({str(key): item for key, item in value.items() if _is_json_scalar(item)})
+        if len(row) == 1:
+            raise TypeError("selected JSON object has no scalar fields")
+    elif _is_json_scalar(value):
+        row["value"] = value
+    else:
+        raise TypeError("selected JSON value is not a scalar or object row")
+    return row
+
+
+def _is_json_scalar(value: Any) -> bool:
+    return value is None or isinstance(value, (str, int, float, bool))
+
+
+def _valid_json_filters(filters: Mapping[str, Any] | None) -> bool:
+    if filters is None:
+        return True
+    return (
+        len(filters) <= 8
+        and all(isinstance(key, str) and 0 < len(key) <= 100 for key in filters)
+        and all(_is_json_scalar(value) for value in filters.values())
+    )
+
+
+def _json_row_matches_entity(row: Mapping[str, Any], entity: str) -> bool:
+    lowered = {str(key).lower(): value for key, value in row.items()}
+    return any(str(lowered.get(field, "")) == entity for field in _JSON_ENTITY_FIELDS)
 
 
 def _inspect_input(field: str, item: AgentInputFile) -> dict[str, Any]:
