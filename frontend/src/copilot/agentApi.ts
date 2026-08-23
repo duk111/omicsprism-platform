@@ -1,7 +1,6 @@
 import { apiFetch, apiFetchJson, apiUrl } from "../api";
 import { createClientId } from "../clientId";
 import type {
-  AgentApprovalDecision,
   AgentInputBundleResponse,
   AgentMessageListResponse,
   AgentThreadDetailResponse,
@@ -55,11 +54,6 @@ export const agentApi = {
     attachments.forEach(({ file, field }) => { body.append("files", file); body.append("fields", field); });
     return apiFetchJson(`${root}/${encodeURIComponent(threadId)}/input-bundles`, { method: "POST", body }) as Promise<AgentInputBundleResponse>;
   },
-  decideApproval: (threadId: string, approvalId: string, decision: AgentApprovalDecision, planHash: string) =>
-    apiFetchJson(`${root}/${encodeURIComponent(threadId)}/approvals/${encodeURIComponent(approvalId)}`, json("POST", {
-      decision,
-      plan_hash: planHash,
-    })),
   streamUrl: (threadId: string) => apiUrl(`${root}/${encodeURIComponent(threadId)}/stream`),
   ping: () => apiFetch("/health"),
 };

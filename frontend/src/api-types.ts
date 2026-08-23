@@ -1,5 +1,5 @@
 // Auto-generated from FastAPI /openapi.json; run `npm run generate-api-types` to refresh
-// Source: FastAPI application export
+// Source: http://127.0.0.1:8765/openapi.json
 
 export type ActiveProfile = "analysis" | "interpretation";
 
@@ -9,21 +9,6 @@ export interface AgentAdvisoryBlock {
   type?: "advisory";
   category: AdvisoryCategory;
   text: string;
-}
-
-export interface AgentApprovalBlock {
-  type?: "approval";
-  approval_id: string;
-  plan_hash: string;
-  status: ApprovalStatus;
-  expires_at: string;
-}
-
-export type AgentApprovalDecision = "approve" | "reject";
-
-export interface AgentApprovalRequest {
-  decision: AgentApprovalDecision;
-  plan_hash: string;
 }
 
 export interface AgentErrorBlock {
@@ -85,24 +70,11 @@ export interface AgentMessageResponse {
   thread_id: string;
   run_id: string;
   role: AgentMessageRole;
-  blocks: (AgentTextBlock | AgentAdvisoryBlock | AgentInputSummaryBlock | AgentRecommendationBlock | AgentPlanBlock | AgentApprovalBlock | AgentJobBlock | AgentEvidenceBlock | AgentErrorBlock)[];
+  blocks: (AgentTextBlock | AgentAdvisoryBlock | AgentInputSummaryBlock | AgentRecommendationBlock | AgentJobBlock | AgentEvidenceBlock | AgentErrorBlock)[];
   created_at: string;
 }
 
 export type AgentMessageRole = "user" | "assistant";
-
-export interface AgentPlanBlock {
-  type?: "plan";
-  plan_id: string;
-  plan_hash: string;
-  analysis_type: AnalysisType;
-  requested_params: { [key: string]: string | number | boolean | null };
-  effective_params: { [key: string]: string | number | boolean | null };
-  contrasts: Record<string, unknown>[];
-  warnings?: string[];
-  inference_note?: string | null;
-  expires_at: string;
-}
 
 export interface AgentRecommendationBlock {
   type?: "recommendation";
@@ -121,9 +93,6 @@ export interface AgentRunResponse {
   active_profile: ActiveProfile;
   state: AgentState;
   step_no: number;
-  plan_id: string | null;
-  plan_hash: string | null;
-  pending_approval_id: string | null;
   focus: RunFocus;
   model_calls: number;
   tool_calls: number;
@@ -207,8 +176,6 @@ export interface ApiErrorDetail {
   technical_detail?: string | null;
   context?: Record<string, unknown>;
 }
-
-export type ApprovalStatus = "pending" | "approved" | "rejected" | "expired";
 
 export interface Body_create_input_bundle_api_agent_threads__thread_id__input_bundles_post {
   files: string[];

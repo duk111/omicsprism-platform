@@ -26,7 +26,6 @@ export default function CopilotPage() {
   const [attachments, setAttachments] = useState<Attachment[]>([]);
   const [loading, setLoading] = useState(true);
   const [sending, setSending] = useState(false);
-  const [approvalBusy, setApprovalBusy] = useState<string | null>(null);
   const [pendingGraph, setPendingGraph] = useState<PendingGraph | null>(null);
   const [graphBusy, setGraphBusy] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
@@ -129,14 +128,6 @@ export default function CopilotPage() {
     setPendingGraph(result.interrupt ? { checkpointTurnId: result.checkpoint_turn_id, interrupt: result.interrupt } : null);
   }
 
-  async function decide(approvalId: string, decision: "approve" | "reject", planHash: string) {
-    if (!activeId || approvalBusy) return;
-    setApprovalBusy(approvalId); setNotice(null);
-    try { await agentApi.decideApproval(activeId, approvalId, decision, planHash); await recover(activeId); }
-    catch (error) { setNotice(errorMessage(error)); }
-    finally { setApprovalBusy(null); }
-  }
-
   function addFiles(list: FileList | null) {
     if (!list) return;
     const next = Array.from(list).filter(file => file.name.toLowerCase().endsWith(".csv")).slice(0, 6 - attachments.length).map(file => ({ id: createClientId(), file, field: guessField(file.name) }));
@@ -158,7 +149,7 @@ export default function CopilotPage() {
     <section className="conversation-panel">
       <header className="conversation-header"><div><span className="conversation-kicker">OmicsPrism Copilot</span><h2>{activeThread?.title || "New conversation"}</h2></div><div className={`connection-state ${connection}`} title="Connection status">{connection === "live" ? <Wifi size={15} /> : <WifiOff size={15} />}{statusLabel}</div></header>
       <div className="message-scroll" aria-live="polite">
-        {loading ? <EmptyState loading /> : messages.length === 0 ? <EmptyState /> : messages.map(message => <article className={`copilot-message ${message.role}`} key={message.message_id}><div className="message-author">{message.role === "assistant" ? <Bot size={16} /> : null}{message.role === "assistant" ? "Copilot" : "You"}</div><div className="message-body"><MessageBlocks message={message} approvalBusy={approvalBusy} onApproval={decide} onRetry={() => setDraft(latestUserText(messages))} /></div></article>)}
+        {loading ? <EmptyState loading /> : messages.length === 0 ? <EmptyState /> : messages.map(message => <article className={`copilot-message ${message.role}`} key={message.message_id}><div className="message-author">{message.role === "assistant" ? <Bot size={16} /> : null}{message.role === "assistant" ? "Copilot" : "You"}</div><div className="message-body"><MessageBlocks message={message} onRetry={() => setDraft(latestUserText(messages))} /></div></article>)}
         {pendingGraph && <GraphInterruptPanel interrupt={pendingGraph.interrupt} busy={graphBusy} onResume={request => void resumeGraph(request)} />}
         {pendingTurn && !pendingGraph && <div className="working-state"><span /><span /><span /><em>Working on your request</em></div>}
         {notice && <div className="copilot-notice" role="alert"><AlertCircle size={17} /><span>{notice}</span><button type="button" aria-label="Dismiss" onClick={() => setNotice(null)}><X size={16} /></button></div>}
@@ -170,13 +161,13 @@ export default function CopilotPage() {
       </div>
     </section>
 
-    <aside className="copilot-context" aria-label="Conversation context"><section><span className="context-label">Profile</span><strong>{run?.active_profile === "interpretation" ? "Result interpretation" : "Analysis planning"}</strong><p>{run?.state ? run.state.replace(/_/g, " ").toLowerCase() : "Ready"}</p></section><section><span className="context-label">Focused jobs</span>{focusIds.length ? <ul>{focusIds.map(id => <li key={id}><a href={`/jobs/${encodeURIComponent(id)}`}>{id.slice(0, 8)}...</a></li>)}</ul> : <p>No job selected</p>}</section><section><span className="context-label">Input roles</span><p>Assign each CSV its role before sending. Copilot validates the files before proposing a plan.</p></section></aside>
+    <aside className="copilot-context" aria-label="Conversation context"><section><span className="context-label">Profile</span><strong>{run?.active_profile === "interpretation" ? "Result interpretation" : "Analysis"}</strong><p>{run?.state ? run.state.replace(/_/g, " ").toLowerCase() : "Ready"}</p></section><section><span className="context-label">Focused jobs</span>{focusIds.length ? <ul>{focusIds.map(id => <li key={id}><a href={`/jobs/${encodeURIComponent(id)}`}>{id.slice(0, 8)}...</a></li>)}</ul> : <p>No job selected</p>}</section><section><span className="context-label">Input roles</span><p>Assign each CSV its role before sending. Copilot validates the files before confirmation.</p></section></aside>
     {railOpen && <button className="rail-backdrop" type="button" aria-label="Close conversations" onClick={() => setRailOpen(false)} />}
   </main>;
 }
 
 function EmptyState({ loading = false }: { loading?: boolean }) {
-  return <div className="copilot-empty"><div className="empty-mark"><Bot size={25} /></div><h2>{loading ? "Opening your workspace" : "What are you investigating?"}</h2><p>{loading ? "Restoring conversations and current state." : "Describe your data or attach CSV inputs. You will review every analysis plan before a job is created."}</p></div>;
+  return <div className="copilot-empty"><div className="empty-mark"><Bot size={25} /></div><h2>{loading ? "Opening your workspace" : "What are you investigating?"}</h2><p>{loading ? "Restoring conversations and current state." : "Describe your data or attach CSV inputs. You will confirm validated parameters before a job is created."}</p></div>;
 }
 
 function upsert<T extends Record<K, string>, K extends keyof T>(items: T[], incoming: T, key: K): T[] { const found = items.findIndex(item => item[key] === incoming[key]); return found < 0 ? [...items, incoming] : items.map((item, index) => index === found ? incoming : item); }
