@@ -49,7 +49,6 @@ class AgentAction(str, Enum):
     CALL_TOOL = "call_tool"
     PROPOSE_PLAN = "propose_plan"
     REQUEST_MORE_DATA = "request_more_data"
-    RUN_PREFLIGHT = "run_preflight"
     REQUEST_APPROVAL = "request_approval"
     ANSWER = "answer"
 
@@ -126,10 +125,8 @@ class AgentApprovalDecision(str, Enum):
 
 
 class ToolName(str, Enum):
-    INSPECT_UPLOADED_INPUTS = "inspect_uploaded_inputs"
-    GET_ANALYSIS_SPEC = "get_analysis_spec"
-    RUN_PREFLIGHT = "run_preflight"
-    SUBMIT_APPROVED_PLAN = "submit_approved_plan"
+    """Internal result contracts; graph actions define the Agent-visible surface."""
+
     GET_JOBS_STATUS = "get_jobs_status"
     QUERY_RESULT_EVIDENCE = "query_result_evidence"
 

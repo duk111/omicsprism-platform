@@ -117,7 +117,7 @@ def _runtime(
 
 
 def test_pca_explained_variance_scalar_lookup() -> None:
-    evidence = _runtime(PCA_PAYLOAD, filename="pca.json").query_result_evidence(
+    evidence = _runtime(PCA_PAYLOAD, filename="pca.json").query_result(
         "job-1",
         "pca.json",
         field_path="plotly_spec.datasets.transcriptome.var_exp.0",
@@ -128,7 +128,7 @@ def test_pca_explained_variance_scalar_lookup() -> None:
 
 
 def test_json_entity_lookup_uses_real_panel_entity_field() -> None:
-    evidence = _runtime(PANEL_PAYLOAD, filename="scatter-panels.json").query_result_evidence(
+    evidence = _runtime(PANEL_PAYLOAD, filename="scatter-panels.json").query_result(
         "job-1",
         "scatter-panels.json",
         field_path="plotly_spec.panels",
@@ -141,7 +141,7 @@ def test_json_entity_lookup_uses_real_panel_entity_field() -> None:
 
 
 def test_json_sort_and_limit_preserve_source_row_ids() -> None:
-    evidence = _runtime(UPSET_PAYLOAD, filename="upset.json").query_result_evidence(
+    evidence = _runtime(UPSET_PAYLOAD, filename="upset.json").query_result(
         "job-1",
         "upset.json",
         field_path="upset_data.intersections",
@@ -156,7 +156,7 @@ def test_json_sort_and_limit_preserve_source_row_ids() -> None:
 
 
 def test_json_array_filter_is_exact_and_bounded() -> None:
-    evidence = _runtime(UPSET_PAYLOAD, filename="upset.json").query_result_evidence(
+    evidence = _runtime(UPSET_PAYLOAD, filename="upset.json").query_result(
         "job-1",
         "upset.json",
         field_path="upset_data.intersections",
@@ -169,7 +169,7 @@ def test_json_array_filter_is_exact_and_bounded() -> None:
 
 
 def test_json_direct_query_rejects_unbounded_filters() -> None:
-    evidence = _runtime(UPSET_PAYLOAD, filename="upset.json").query_result_evidence(
+    evidence = _runtime(UPSET_PAYLOAD, filename="upset.json").query_result(
         "job-1",
         "upset.json",
         field_path="upset_data.intersections",
@@ -182,7 +182,7 @@ def test_json_direct_query_rejects_unbounded_filters() -> None:
 
 def test_json_citation_uses_artifact_checksum_or_content_hash() -> None:
     runtime = _runtime(UPSET_PAYLOAD, filename="upset.json", checksum=None)
-    evidence = runtime.query_result_evidence(
+    evidence = runtime.query_result(
         "job-1", "upset.json", field_path="upset_data.n_edges"
     )
     expected_text = json.dumps(UPSET_PAYLOAD, separators=(",", ":"))
@@ -193,7 +193,7 @@ def test_json_citation_uses_artifact_checksum_or_content_hash() -> None:
 
 
 def test_unlisted_json_artifact_is_rejected() -> None:
-    result = _runtime({}, filename="secret.json").query_result_evidence(
+    result = _runtime({}, filename="secret.json").query_result(
         "job-1", "secret.json", field_path="value"
     )
 
@@ -204,7 +204,7 @@ def test_unlisted_json_artifact_is_rejected() -> None:
 def test_figure_json_for_wrong_analysis_type_is_rejected() -> None:
     result = _runtime(
         PCA_PAYLOAD, filename="pca.json", analysis_type=AnalysisType.DIFFERENTIAL
-    ).query_result_evidence(
+    ).query_result(
         "job-1", "pca.json", field_path="plotly_spec.datasets.transcriptome.var_exp"
     )
 
@@ -213,7 +213,7 @@ def test_figure_json_for_wrong_analysis_type_is_rejected() -> None:
 
 
 def test_json_evidence_passes_existing_grounder_and_verifier() -> None:
-    evidence = _runtime(UPSET_PAYLOAD, filename="upset.json").query_result_evidence(
+    evidence = _runtime(UPSET_PAYLOAD, filename="upset.json").query_result(
         "job-1",
         "upset.json",
         field_path="upset_data.intersections",
@@ -242,6 +242,6 @@ def test_json_access_preserves_owner_bound_404() -> None:
     runtime = _runtime(PCA_PAYLOAD, filename="pca.json", owner_id="user-2")
 
     with pytest.raises(HTTPException) as exc:
-        runtime.query_result_evidence("job-1", "pca.json", field_path="figure_id")
+        runtime.query_result("job-1", "pca.json", field_path="figure_id")
 
     assert exc.value.status_code == 404

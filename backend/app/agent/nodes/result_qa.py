@@ -121,7 +121,7 @@ def job_reader_from_runtime(runtime: AgentToolRuntime) -> JobReader:
 
     def read(request: JobLookupRequest) -> JobSummary:
         _validate_runtime_user(runtime, request.user_id)
-        result = runtime.get_jobs_status([request.job_id])
+        result = runtime.get_job(request.job_id)
         if result.tool is not ToolName.GET_JOBS_STATUS or not result.ok or len(result.rows) != 1:
             raise LookupError(request.job_id)
         row = result.rows[0]
@@ -146,7 +146,7 @@ def result_querier_from_runtime(runtime: AgentToolRuntime) -> ResultQuerier:
     def query(request: ResultEvidenceRequest) -> ToolResult:
         _validate_runtime_user(runtime, request.user_id)
         spec = request.query
-        return runtime.query_result_evidence(
+        return runtime.query_result(
             request.job_id,
             spec.artifact,
             filters=spec.filters,
