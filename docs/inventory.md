@@ -27,6 +27,7 @@ changes). Phase 0 does not alter product code to hide those failures.
 | `audit.py` | 114 | `AgentEventStore`, safe payload checks, Postgres event store | `runtime.py`, `bootstrap.py`, worker/tests | `keep` with Phase 5 audit reduction |
 | `bootstrap.py` | 44 | `AgentApiContext`, `create_agent_api_context` | app startup and API tests | `replace` graph wiring in Phase 4 |
 | `context.py` | 269 | `MinimalContextBuilder`, `build_input_summaries`, conversation summaries | `runtime.py`, worker, context tests | `extract`; reuse profile/context limits |
+| `dataset_profile.py` | 167 | `MatrixProfile`, `MetadataProfile`, `DatasetProfile`, `build_dataset_profiles` | `tools.py`, dataset profile tests | `keep`; typed extraction from existing inspection |
 | `eval.py` | 573 | `EvalAssembly`, `EvalRunner`, golden-case loading | CLI/tests | `replace` by Phase 6 domain eval |
 | `grounding.py` | 144 | `EvidenceGrounder`, `GroundedAnswerPipeline` | `runtime.py`, grounding tests | `keep` (do-not-touch) |
 | `model.py` | 467 | `ModelAdapter`, structured adapters, scripted/vLLM adapters | `agent_worker.py`, runtime, model tests | `extract`; reconnect to graph decisions |

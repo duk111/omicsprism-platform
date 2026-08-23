@@ -13,6 +13,7 @@ from .schemas import (
 from .approvals import InMemoryApprovalGate, JsonApprovalGate, PostgresApprovalGate
 from .audit import PostgresAgentEventStore
 from .context import MinimalContextBuilder
+from .dataset_profile import DatasetProfile, MatrixProfile, MetadataProfile, build_dataset_profiles
 from .eval import EvalAssembly, EvalAssemblyFactory, EvalRunner, compare_reports, load_golden_cases
 from .model import ScriptedModelAdapter, VllmModelAdapter
 from .policy import ProfilePolicyGuard
@@ -44,6 +45,10 @@ __all__ = [
     "PostgresApprovalGate",
     "PostgresAgentEventStore",
     "MinimalContextBuilder",
+    "DatasetProfile",
+    "MatrixProfile",
+    "MetadataProfile",
+    "build_dataset_profiles",
     "ScriptedModelAdapter",
     "VllmModelAdapter",
     "EvalAssembly",

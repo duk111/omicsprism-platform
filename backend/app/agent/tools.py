@@ -17,6 +17,7 @@ from fastapi import HTTPException, UploadFile
 from ..analysis_specs import AnalysisSpecRegistry
 from ..models import AnalysisType, JobOwnerType, JobRecord, JobStatus, UploadedFileInfo
 from ..preflight import PreflightService, build_contrast_preview
+from .dataset_profile import DatasetProfile, build_dataset_profiles
 from .schemas import ToolName, ToolResult
 from .approvals import ApprovalGate
 from .plans import PlanNotFound, PlanStore, compute_plan_hash
@@ -258,6 +259,13 @@ class AgentToolRuntime:
     def inspect_uploaded_inputs(self) -> ToolResult:
         rows = [_inspect_input(field, item) for field, item in sorted(self.inputs.items())]
         return _tool_result(ToolName.INSPECT_UPLOADED_INPUTS, rows=rows)
+
+    def inspect_dataset(self) -> list[DatasetProfile]:
+        """Return the same inspection facts as typed DatasetProfile models."""
+        return build_dataset_profiles({
+            field: (item.filename, item.content)
+            for field, item in sorted(self.inputs.items())
+        })
 
     def get_analysis_spec(self, analysis_type: AnalysisType | str) -> ToolResult:
         assert self.analysis_specs is not None
