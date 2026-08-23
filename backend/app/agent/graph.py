@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -106,6 +107,40 @@ class AgentDecision(BaseModel):
     decision_note: str | None = Field(default=None, max_length=240)
 
 
+class MainModelContext(BaseModel):
+    """Prompt-safe context for the top-level semantic decision."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    user_message: str = Field(min_length=1, max_length=4000)
+    conversation_summary: str | None = Field(default=None, max_length=4000)
+    dataset_roles: list[str] = Field(default_factory=list, max_length=6)
+    current_job_id: str | None = Field(default=None, max_length=200)
+    recent_job_ids: list[str] = Field(default_factory=list, max_length=20)
+
+
+class MainModelOutput(BaseModel):
+    """Validated model response for Main routing and general answers."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    decision: AgentDecision
+    answer: str | None = Field(default=None, min_length=1, max_length=1200)
+
+    @model_validator(mode="after")
+    def _answer_matches_action(self) -> "MainModelOutput":
+        if self.decision.action == "answer" and self.answer is None:
+            raise ValueError("answer action requires answer text")
+        if self.decision.action != "answer" and self.answer is not None:
+            raise ValueError("answer text is only valid for answer action")
+        if self.decision.action == "ask_user" and not self.decision.question:
+            raise ValueError("ask_user action requires a question")
+        return self
+
+
+MainDecisionModel = Callable[[MainModelContext], object]
+
+
 class GraphState(BaseModel):
     """Compact state shared by the v3 semantic graph nodes."""
 
@@ -119,6 +154,7 @@ class GraphState(BaseModel):
     current_job: JobRef | None = None
     recent_jobs: list[JobRef] = Field(default_factory=list, max_length=20)
     decision: AgentDecision | None = None
+    response_text: str | None = Field(default=None, max_length=1200)
     pending_interrupt: PendingInterrupt | None = None
     step_budget: StepBudget = Field(default_factory=StepBudget)
 
@@ -130,3 +166,25 @@ class GraphState(BaseModel):
         if any(reference.owner_id != self.user_id for reference in references):
             raise ValueError("graph references must belong to user_id")
         return self
+
+
+def build_agent_graph(model: MainDecisionModel):
+    """Compile the Phase 4.2 graph skeleton around an injected model boundary."""
+
+    from langgraph.graph import END, START, StateGraph
+
+    from .nodes.main import main_node, route_after_main, specialist_placeholder
+
+    builder = StateGraph(GraphState)
+    builder.add_node("main", main_node(model))
+    builder.add_node("analysis", specialist_placeholder)
+    builder.add_node("result_qa", specialist_placeholder)
+    builder.add_edge(START, "main")
+    builder.add_conditional_edges(
+        "main",
+        route_after_main,
+        {"analysis": "analysis", "result_qa": "result_qa", "end": END},
+    )
+    builder.add_edge("analysis", END)
+    builder.add_edge("result_qa", END)
+    return builder.compile()
