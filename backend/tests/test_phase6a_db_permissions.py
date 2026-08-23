@@ -21,9 +21,7 @@ def test_phase6_runtime_role_ownership_idempotency_and_append_only_permissions()
     import psycopg
     from psycopg.errors import InsufficientPrivilege
 
-    from backend.app.agent.approvals import ApprovalMismatch, ApprovalNotFound, PostgresApprovalGate
     from backend.app.agent.audit import PostgresAgentEventStore
-    from backend.app.agent.plans import PlanNotFound, PostgresPlanStore, compute_plan_hash
     from backend.app.agent.product_store import AgentResourceNotFound, IdempotencyConflict, PostgresAgentProductStore
     from backend.app.agent.schemas import (
         AgentEvent,
@@ -32,10 +30,8 @@ def test_phase6_runtime_role_ownership_idempotency_and_append_only_permissions()
         AgentMessageRecord,
         AgentThreadRecord,
         AgentTurnRecord,
-        PlanRecord,
     )
     from backend.app.agent.store import PostgresStateStore, StateNotFound
-    from backend.app.models import AnalysisType
     from scripts.migrate import apply_migrations
 
     assert ADMIN_DSN and APP_DSN and APP_PASSWORD
@@ -49,9 +45,7 @@ def test_phase6_runtime_role_ownership_idempotency_and_append_only_permissions()
     turn_id = f"turn-{suffix}"
     bundle_id = f"bundle-{suffix}"
     file_id = f"file-{suffix}"
-    plan_id = f"plan-{suffix}"
     event_id = f"event-{suffix}"
-    approval_id = None
     now = datetime.now(timezone.utc)
 
     try:
@@ -142,78 +136,6 @@ def test_phase6_runtime_role_ownership_idempotency_and_append_only_permissions()
         with pytest.raises(StateNotFound):
             state_store.get(run_id=run_id, user_id=other_user_id)
 
-        plan = PlanRecord(
-            plan_id=plan_id,
-            run_id=run_id,
-            thread_id=thread_id,
-            user_id=user_id,
-            analysis_type=AnalysisType.DIFFERENTIAL,
-            input_source={"kind": "staged_bundle", "source_id": bundle_id},
-            requested_params={"compare_field": "treatment"},
-            effective_params={"compare_field": "treatment"},
-            contrasts=[{
-                "compare_field": "treatment",
-                "tested_level": "salt",
-                "reference_level": "control",
-            }],
-            plan_hash="pending",
-            approval_id=None,
-        )
-        plan.plan_hash = compute_plan_hash(plan)
-        plan_store = PostgresPlanStore(APP_DSN)
-        plan_store.save(plan)
-        assert plan_store.get(plan_id=plan_id, user_id=user_id).plan_hash == plan.plan_hash
-        with pytest.raises(PlanNotFound):
-            plan_store.get(plan_id=plan_id, user_id=other_user_id)
-
-        approval_gate = PostgresApprovalGate(APP_DSN)
-        approval_id = approval_gate.suspend(
-            plan_id=plan_id,
-            thread_id=thread_id,
-            run_id=run_id,
-            user_id=user_id,
-            plan_hash=plan.plan_hash,
-            expires_at=now + timedelta(minutes=10),
-        )
-        with pytest.raises(ApprovalNotFound):
-            approval_gate.resume(
-                approval_id=approval_id,
-                run_id=run_id,
-                user_id=other_user_id,
-                plan_hash=plan.plan_hash,
-                now=now,
-            )
-        with pytest.raises(ApprovalMismatch):
-            approval_gate.resume(
-                approval_id=approval_id,
-                run_id=run_id,
-                user_id=user_id,
-                plan_hash="sha256:wrong-plan",
-                now=now,
-            )
-        approval_gate.reject(
-            approval_id=approval_id,
-            run_id=run_id,
-            user_id=user_id,
-            plan_hash=plan.plan_hash,
-            now=now,
-        )
-        with pytest.raises(ApprovalMismatch):
-            approval_gate.resume(
-                approval_id=approval_id,
-                run_id=run_id,
-                user_id=user_id,
-                plan_hash=plan.plan_hash,
-                now=now,
-            )
-        assert not approval_gate.is_valid(
-            approval_id=approval_id,
-            run_id=run_id,
-            user_id=user_id,
-            plan_hash=plan.plan_hash,
-            now=now,
-        )
-
         event_store = PostgresAgentEventStore(APP_DSN)
         event_store.append(AgentEvent(
             event_id=event_id,
@@ -248,8 +170,6 @@ def test_phase6_runtime_role_ownership_idempotency_and_append_only_permissions()
         with psycopg.connect(ADMIN_DSN, autocommit=True) as conn:
             for table, column, value in (
                 ("agent_events", "event_id", event_id),
-                ("agent_approvals", "approval_id", approval_id),
-                ("agent_plans", "plan_id", plan_id),
                 ("agent_input_files", "file_id", file_id),
                 ("agent_input_bundles", "bundle_id", bundle_id),
                 ("agent_turns", "turn_id", turn_id),

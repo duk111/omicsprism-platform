@@ -28,7 +28,7 @@ from backend.app.agent.schemas import (
     AgentThreadRecord,
 )
 from backend.app.models import FileArtifactKind, UploadedFileInfo
-from backend.app.settings import AppSettings, load_settings
+from backend.app.settings import AppSettings
 
 
 COUNTS = b"gene,s1,s2,s3,s4\ng1,10,12,30,32\n"
@@ -120,8 +120,6 @@ def _product_store() -> InMemoryAgentProductStore:
 def _patch_stores(monkeypatch: pytest.MonkeyPatch, store) -> None:
     monkeypatch.setattr(bootstrap, "PostgresAgentProductStore", lambda _url: store)
     monkeypatch.setattr(bootstrap, "PostgresStateStore", lambda _url: object())
-    monkeypatch.setattr(bootstrap, "PostgresPlanStore", lambda _url: object())
-    monkeypatch.setattr(bootstrap, "PostgresApprovalGate", lambda _url: object())
 
 
 def _settings(**changes) -> AppSettings:
@@ -132,51 +130,19 @@ def _settings(**changes) -> AppSettings:
     )
 
 
-@pytest.mark.parametrize(
-    ("value", "expected"),
-    [("true", True), (" YES ", True), ("1", True), ("off", False)],
-)
-def test_v3_migration_flag_parsing(
-    monkeypatch: pytest.MonkeyPatch, value: str, expected: bool
-) -> None:
-    monkeypatch.setenv("OMICS_PRISM_USE_V3_AGENT", value)
-    assert load_settings().use_v3_agent is expected
-
-
-def test_flag_off_keeps_legacy_context_without_building_graph(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    store = _product_store()
-    _patch_stores(monkeypatch, store)
-    monkeypatch.setattr(
-        bootstrap,
-        "build_agent_graph",
-        lambda *_args, **_kwargs: pytest.fail("graph must stay disabled"),
-    )
-
-    context = bootstrap.create_agent_api_context(
-        _settings(), files=_Files(), job_store=_Jobs()
-    )
-
-    assert context is not None
-    assert context.graph is None
-    assert context.product_store is store
-
-
-def test_flag_on_requires_model_and_executor(
+def test_graph_context_requires_model_and_executor(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _patch_stores(monkeypatch, _product_store())
 
     with pytest.raises(RuntimeError, match="AGENT_MODEL_URL"):
         bootstrap.create_agent_api_context(
-            _settings(use_v3_agent=True), files=_Files(), job_store=_Jobs()
+            _settings(), files=_Files(), job_store=_Jobs()
         )
 
     with pytest.raises(RuntimeError, match="Job executor"):
         bootstrap.create_agent_api_context(
             _settings(
-                use_v3_agent=True,
                 agent_model_url="http://model-host:8000",
                 agent_model_name="model",
             ),
@@ -185,7 +151,7 @@ def test_flag_on_requires_model_and_executor(
         )
 
 
-def test_v3_context_builds_one_graph_with_owned_deterministic_adapters(
+def test_context_builds_one_graph_with_owned_deterministic_adapters(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     store = _product_store()
@@ -204,7 +170,6 @@ def test_v3_context_builds_one_graph_with_owned_deterministic_adapters(
     monkeypatch.setattr(bootstrap, "build_agent_graph", build)
     context = bootstrap.create_agent_api_context(
         _settings(
-            use_v3_agent=True,
             agent_model_url="http://model-host:8000",
             agent_model_name="model",
         ),

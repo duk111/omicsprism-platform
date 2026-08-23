@@ -44,9 +44,6 @@ VALID_SAMPLES = {
         "active_profile": "interpretation",
         "state": "AWAIT_FOLLOWUP",
         "step_no": 8,
-        "plan_id": "plan-1",
-        "plan_hash": "sha256:plan",
-        "pending_approval_id": None,
         "focus": {
             "in_scope_job_ids": ["job-gma-1"],
             "resolved_entities": {"proline": "M0123"},

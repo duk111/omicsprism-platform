@@ -84,13 +84,6 @@ class RunStatus(str, Enum):
     CANCELLED = "cancelled"
 
 
-class ApprovalStatus(str, Enum):
-    PENDING = "pending"
-    APPROVED = "approved"
-    REJECTED = "rejected"
-    EXPIRED = "expired"
-
-
 class AgentThreadStatus(str, Enum):
     ACTIVE = "active"
     ARCHIVED = "archived"
@@ -112,16 +105,6 @@ class AgentInputBundleStatus(str, Enum):
     ACTIVE = "active"
     CONSUMED = "consumed"
     EXPIRED = "expired"
-
-
-class AgentInputSourceKind(str, Enum):
-    EXISTING_JOB = "existing_job"
-    STAGED_BUNDLE = "staged_bundle"
-
-
-class AgentApprovalDecision(str, Enum):
-    APPROVE = "approve"
-    REJECT = "reject"
 
 
 class ToolName(str, Enum):
@@ -194,8 +177,8 @@ JsonValue = TypeAliasType(
 )
 
 _ALLOWED_FACT_KEYS = frozenset({
-    "situation", "analysis_type", "contrast_count", "expires_in_minutes",
-    "user_options", "error_count", "errors", "roles_present", "roles_missing",
+    "situation", "analysis_type", "error_count", "errors",
+    "roles_present", "roles_missing",
     "role_summaries", "analysis_capabilities", "contrasts", "effective_params",
     "old_analysis_type", "new_analysis_type", "changed_param_keys",
     "has_inputs", "has_pending_plan", "alignment", "job_id", "error_text",
@@ -413,26 +396,12 @@ class ModelContext(ContractModel):
         walk(value)
         situation = value.get("situation")
         supported_situations = {
-            "pending_approval", "preflight_blocked", "explain_plan", "capability_help",
-            "input_receipt", "plan_superseded", "status_not_running", "job_failed",
+            "preflight_blocked", "capability_help", "input_receipt",
+            "status_not_running", "job_failed",
         }
         if situation not in supported_situations:
             raise ValueError("system_facts does not match a supported situation")
-        if situation == "pending_approval":
-            contrast_count = value.get("contrast_count")
-            if contrast_count is None:
-                raise ValueError("pending_approval requires contrast_count")
-            if not isinstance(contrast_count, int) or isinstance(contrast_count, bool) or contrast_count < 0:
-                raise ValueError("contrast_count must be a non-negative integer")
-            expires_in_minutes = value.get("expires_in_minutes")
-            if expires_in_minutes is None:
-                raise ValueError("pending_approval requires expires_in_minutes")
-            if not isinstance(expires_in_minutes, int) or isinstance(expires_in_minutes, bool) or expires_in_minutes < 0:
-                raise ValueError("expires_in_minutes must be a non-negative integer")
-            user_options = value.get("user_options")
-            if user_options != ["approve", "reject", "modify_params", "explain_plan"]:
-                raise ValueError("user_options is not the server-defined list")
-        elif situation == "preflight_blocked":
+        if situation == "preflight_blocked":
             errors = value.get("errors")
             if errors is None:
                 raise ValueError("preflight_blocked requires errors")
@@ -482,44 +451,11 @@ class RunState(ContractModel):
     active_profile: ActiveProfile
     state: AgentState
     step_no: int = Field(ge=0)
-    plan_id: str | None
-    plan_hash: str | None
-    pending_approval_id: str | None
     focus: RunFocus
     model_calls: int = Field(ge=0)
     tool_calls: int = Field(ge=0)
     status: RunStatus
     version: int = Field(ge=0)
-
-
-class ApprovalRecord(ContractModel):
-    approval_id: str = Field(min_length=1)
-    run_id: str = Field(min_length=1)
-    user_id: str = Field(min_length=1)
-    plan_hash: str = Field(min_length=1)
-    status: ApprovalStatus
-    expires_at: datetime
-
-
-class AgentInputSourceRef(ContractModel):
-    kind: AgentInputSourceKind
-    source_id: str = Field(min_length=1, max_length=200)
-
-
-class PlanRecord(ContractModel):
-    plan_id: str = Field(min_length=1)
-    run_id: str = Field(min_length=1)
-    thread_id: str = Field(min_length=1)
-    user_id: str = Field(min_length=1)
-    analysis_type: AnalysisType
-    input_source: AgentInputSourceRef
-    requested_params: dict[str, Any]
-    effective_params: dict[str, Any]
-    contrasts: list[dict[str, Any]]
-    plan_hash: str = Field(min_length=1)
-    approval_id: str | None
-    submitted_job_ids: list[str] = Field(default_factory=list)
-    idempotency_key: str | None = None
 
 
 class ToolResult(ContractModel):
@@ -595,27 +531,6 @@ class AgentRecommendationBlock(ContractModel):
     recommendations: list[AgentRecommendationItem] = Field(max_length=3)
 
 
-class AgentPlanBlock(ContractModel):
-    type: Literal["plan"] = "plan"
-    plan_id: str = Field(min_length=1)
-    plan_hash: str = Field(min_length=1)
-    analysis_type: AnalysisType
-    requested_params: dict[str, AgentParamValue] = Field(max_length=32)
-    effective_params: dict[str, AgentParamValue] = Field(max_length=32)
-    contrasts: list[dict[str, Any]] = Field(max_length=50)
-    warnings: list[str] = Field(default_factory=list, max_length=20)
-    inference_note: str | None = Field(default=None, max_length=200)
-    expires_at: datetime
-
-
-class AgentApprovalBlock(ContractModel):
-    type: Literal["approval"] = "approval"
-    approval_id: str = Field(min_length=1)
-    plan_hash: str = Field(min_length=1)
-    status: ApprovalStatus
-    expires_at: datetime
-
-
 class AgentJobBlock(ContractModel):
     type: Literal["job"] = "job"
     job_id: str = Field(min_length=1)
@@ -643,20 +558,11 @@ AgentMessageBlock = Annotated[
     | AgentAdvisoryBlock
     | AgentInputSummaryBlock
     | AgentRecommendationBlock
-    | AgentPlanBlock
-    | AgentApprovalBlock
     | AgentJobBlock
     | AgentEvidenceBlock
     | AgentErrorBlock,
     Field(discriminator="type"),
 ]
-
-
-class AgentTurnExecutionResult(ContractModel):
-    state: RunState
-    blocks: list[AgentMessageBlock] = Field(max_length=20)
-    expected_version: int = Field(ge=0)
-    events: list[AgentEvent] = Field(default_factory=list, max_length=20)
 
 
 class AgentThreadCreateRequest(ContractModel):
@@ -690,9 +596,6 @@ class AgentRunResponse(ContractModel):
     active_profile: ActiveProfile
     state: AgentState
     step_no: int = Field(ge=0)
-    plan_id: str | None
-    plan_hash: str | None
-    pending_approval_id: str | None
     focus: RunFocus
     model_calls: int = Field(ge=0)
     tool_calls: int = Field(ge=0)
@@ -750,11 +653,6 @@ class AgentTurnResponse(ContractModel):
 class AgentTurnListResponse(ContractModel):
     turns: list[AgentTurnResponse]
     next_cursor: str | None = None
-
-
-class AgentApprovalRequest(ContractModel):
-    decision: AgentApprovalDecision
-    plan_hash: str = Field(min_length=1)
 
 
 class AgentMessageRecord(ContractModel):
@@ -917,4 +815,3 @@ class EvalDiffReport(ContractModel):
 
 AgentDecision.model_rebuild()
 ModelContext.model_rebuild()
-AgentTurnExecutionResult.model_rebuild()

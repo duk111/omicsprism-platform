@@ -4,29 +4,22 @@ from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from types import SimpleNamespace
 
 from fastapi import FastAPI, Request, Response
 from fastapi.testclient import TestClient
 
 from backend.app.agent.api import create_agent_router, project_stream_events
-from backend.app.agent.approvals import InMemoryApprovalGate
 from backend.app.agent.bootstrap import AgentApiContext
-from backend.app.agent.plans import InMemoryPlanStore, compute_plan_hash
+from backend.app.agent.graph import GraphState
 from backend.app.agent.product_store import InMemoryAgentProductStore
 from backend.app.agent.schemas import (
-    ActiveProfile,
     AgentInputBundleRecord,
     AgentMessageRecord,
-    AgentState,
     AgentThreadRecord,
     AgentTurnRecord,
-    PlanRecord,
-    RunFocus,
-    RunState,
-    RunStatus,
 )
 from backend.app.agent.store import InMemoryStateStore
-from backend.app.models import AnalysisType
 from backend.app.settings import AppSettings
 from backend.app.storage_service import FileStorageService
 
@@ -45,6 +38,19 @@ class _Jobs:
         return object()
 
 
+class _Graph:
+    def __init__(self) -> None:
+        self.states: dict[str, GraphState] = {}
+
+    def invoke(self, state: GraphState, config: dict) -> None:
+        turn_id = config["configurable"]["thread_id"]
+        self.states[turn_id] = state.model_copy(update={"response_text": "done"})
+
+    def get_state(self, config: dict):
+        turn_id = config["configurable"]["thread_id"]
+        return SimpleNamespace(values=self.states[turn_id], tasks=())
+
+
 def _session(request: Request, response: Response) -> str:
     user_id = request.cookies.get(COOKIE)
     if not user_id:
@@ -57,9 +63,8 @@ def _context() -> AgentApiContext:
     return AgentApiContext(
         product_store=InMemoryAgentProductStore(),
         state_store=InMemoryStateStore(),
-        plan_store=InMemoryPlanStore(),
-        approval_gate=InMemoryApprovalGate(),
         job_store=_Jobs(),
+        graph=_Graph(),
         files=None,
         stream_poll_seconds=0.01,
     )
@@ -111,7 +116,7 @@ def test_request_body_rejects_user_id_and_cross_user_resources_are_404() -> None
     for path in (
         f"/api/agent/threads/{thread_id}",
         f"/api/agent/threads/{thread_id}/messages",
-        f"/api/agent/threads/{thread_id}/turns/{turn.json()['turn_id']}",
+        f"/api/agent/threads/{thread_id}/turns/{turn.json()['turn']['turn_id']}",
     ):
         assert client.get(path).status_code == 404
 
@@ -123,7 +128,7 @@ def test_request_body_rejects_user_id_and_cross_user_resources_are_404() -> None
     ).status_code == 422
 
 
-def test_turn_is_queued_atomically_and_idempotently_without_model_in_api() -> None:
+def test_turn_runs_graph_atomically_and_idempotently_without_model_in_api() -> None:
     context = _context()
     assert "model" not in AgentApiContext.__dataclass_fields__
     client = _client(context)
@@ -137,25 +142,28 @@ def test_turn_is_queued_atomically_and_idempotently_without_model_in_api() -> No
     replay = client.post(path, headers=headers, json=payload)
 
     assert first.status_code == replay.status_code == 202
-    assert first.json()["turn_id"] == replay.json()["turn_id"]
+    assert first.json()["turn"]["turn_id"] == replay.json()["turn"]["turn_id"]
+    assert first.json()["turn"]["status"] == "completed"
     messages = client.get(
         f"/api/agent/threads/{thread_id}/messages",
     ).json()["messages"]
-    assert len(messages) == 1
+    assert len(messages) == 2
     assert messages[0]["blocks"] == [{"type": "text", "text": "run DEG"}]
+    assert messages[1]["blocks"] == [{"type": "text", "text": "done"}]
 
     conflict = client.post(
         path,
         headers=headers,
         json={"message": "run GMA"},
     )
-    active = client.post(
+    next_turn = client.post(
         path,
         headers={"Idempotency-Key": "another-key"},
         json=payload,
     )
     assert conflict.status_code == 409
-    assert active.status_code == 409
+    assert next_turn.status_code == 202
+    assert next_turn.json()["turn"]["turn_id"] != first.json()["turn"]["turn_id"]
 
 
 def test_bundle_is_ownership_bound_when_attached_to_turn() -> None:
@@ -181,7 +189,7 @@ def test_bundle_is_ownership_bound_when_attached_to_turn() -> None:
     assert response.status_code == 404
 
 
-def test_turn_focus_jobs_are_owned_and_persisted_before_worker_claim() -> None:
+def test_turn_focus_jobs_are_owned_and_persisted_before_graph_invoke() -> None:
     context = _context()
     context.job_store.owners["job-a"] = "user-a"
     client = _client(context)
@@ -290,12 +298,12 @@ def test_message_cursor_and_sse_snapshot_support_disconnect_recovery() -> None:
     context = _context()
     client = _client(context)
     thread = _create_thread(client, "user-a")
-    turn = client.post(
+    turn_result = client.post(
         f"/api/agent/threads/{thread['thread_id']}/turns",
         headers={"Idempotency-Key": "recover-key"},
         json={"message": "analyze"},
     ).json()
-    user_message_id = f"user-{turn['turn_id']}"
+    assistant_message_id = turn_result["message"]["message_id"]
     context.product_store.append_message(AgentMessageRecord(
         message_id="assistant-recovery",
         thread_id=thread["thread_id"],
@@ -308,7 +316,7 @@ def test_message_cursor_and_sse_snapshot_support_disconnect_recovery() -> None:
 
     recovered = client.get(
         f"/api/agent/threads/{thread['thread_id']}/messages",
-        params={"after": user_message_id},
+        params={"after": assistant_message_id},
     )
     stream = client.get(
         f"/api/agent/threads/{thread['thread_id']}/stream",
@@ -322,122 +330,6 @@ def test_message_cursor_and_sse_snapshot_support_disconnect_recovery() -> None:
     assert "recover-key" not in stream.text
 
 
-def test_structured_approval_validates_owner_hash_and_queues_resume_turn() -> None:
-    context = _context()
-    client = _client(context)
-    thread = _create_thread(client, "user-a")
-    thread_id = thread["thread_id"]
-    state = context.state_store.get(run_id=thread["current_run_id"], user_id="user-a")
-    plan = PlanRecord(
-        plan_id="plan-1",
-        run_id=state.run_id,
-        thread_id=thread_id,
-        user_id="user-a",
-        analysis_type=AnalysisType.DIFFERENTIAL,
-        input_source={"kind": "existing_job", "source_id": "job-a"},
-        requested_params={},
-        effective_params={},
-        contrasts=[{"compare_field": "group", "tested_level": "salt", "reference_level": "control"}],
-        plan_hash="pending",
-        approval_id=None,
-    )
-    plan.plan_hash = compute_plan_hash(plan)
-    context.plan_store.save(plan)
-    approval_id = context.approval_gate.suspend(
-        run_id=state.run_id,
-        user_id="user-a",
-        plan_hash=plan.plan_hash,
-        plan_id=plan.plan_id,
-        thread_id=thread_id,
-        expires_at=datetime.now(timezone.utc) + timedelta(minutes=10),
-    )
-    plan.approval_id = approval_id
-    context.plan_store.save(plan)
-    state.plan_id = plan.plan_id
-    state.plan_hash = plan.plan_hash
-    state.pending_approval_id = approval_id
-    state.state = AgentState.WAIT_EXECUTION_CONFIRMATION
-    state.status = RunStatus.SUSPENDED
-    context.state_store.save(state, expected_version=state.version)
-
-    path = f"/api/agent/threads/{thread_id}/approvals/{approval_id}"
-    _as_user(client, "user-b")
-    assert client.post(
-        path,
-        json={"decision": "approve", "plan_hash": plan.plan_hash},
-    ).status_code == 404
-    _as_user(client, "user-a")
-    assert client.post(
-        path,
-        json={"decision": "approve", "plan_hash": "sha256:wrong"},
-    ).status_code == 409
-    assert client.post(
-        path,
-        json={"decision": "approve", "plan_hash": plan.plan_hash, "user_id": "attacker"},
-    ).status_code == 422
-    assert context.job_store.created == 0
-
-    approved = client.post(
-        path,
-        json={"decision": "approve", "plan_hash": plan.plan_hash},
-    )
-    assert approved.status_code == 202
-    assert approved.json()["status"] == "queued"
-    assert context.job_store.created == 0
-
-
-def test_expired_approval_releases_run_for_a_new_plan() -> None:
-    context = _context()
-    client = _client(context)
-    thread = _create_thread(client, "user-a")
-    thread_id = thread["thread_id"]
-    state = context.state_store.get(run_id=thread["current_run_id"], user_id="user-a")
-    plan = PlanRecord(
-        plan_id="plan-expired",
-        run_id=state.run_id,
-        thread_id=thread_id,
-        user_id="user-a",
-        analysis_type=AnalysisType.DIFFERENTIAL,
-        input_source={"kind": "existing_job", "source_id": "job-a"},
-        requested_params={},
-        effective_params={},
-        contrasts=[{"compare_field": "group", "tested_level": "salt", "reference_level": "control"}],
-        plan_hash="pending",
-        approval_id=None,
-    )
-    plan.plan_hash = compute_plan_hash(plan)
-    context.plan_store.save(plan)
-    approval_id = context.approval_gate.suspend(
-        run_id=state.run_id,
-        user_id="user-a",
-        plan_hash=plan.plan_hash,
-        plan_id=plan.plan_id,
-        thread_id=thread_id,
-        expires_at=datetime.now(timezone.utc) - timedelta(seconds=1),
-    )
-    plan.approval_id = approval_id
-    context.plan_store.save(plan)
-    state.plan_id = plan.plan_id
-    state.plan_hash = plan.plan_hash
-    state.pending_approval_id = approval_id
-    state.state = AgentState.WAIT_EXECUTION_CONFIRMATION
-    state.status = RunStatus.SUSPENDED
-    context.state_store.save(state, expected_version=state.version)
-
-    response = client.post(
-        f"/api/agent/threads/{thread_id}/approvals/{approval_id}",
-        json={"decision": "approve", "plan_hash": plan.plan_hash},
-    )
-
-    assert response.status_code == 409
-    assert "generate a new plan" in response.json()["detail"]
-    released = context.state_store.get(run_id=state.run_id, user_id="user-a")
-    assert released.pending_approval_id is None
-    assert released.state is AgentState.NEED_USER_INPUT
-    assert released.status is RunStatus.RUNNING
-    assert context.job_store.created == 0
-
-
 def test_openapi_exposes_agent_contract_without_api_model_dependency() -> None:
     from backend.app import main
 
@@ -449,10 +341,11 @@ def test_openapi_exposes_agent_contract_without_api_model_dependency() -> None:
         "/api/agent/threads/{thread_id}/turns",
         "/api/agent/threads/{thread_id}/turns/{turn_id}",
         "/api/agent/threads/{thread_id}/input-bundles",
-        "/api/agent/threads/{thread_id}/approvals/{approval_id}",
+        "/api/agent/threads/{thread_id}/turns/{checkpoint_turn_id}/resume",
         "/api/agent/threads/{thread_id}/stream",
     }
     assert expected_paths <= set(schema["paths"])
+    assert "/api/agent/threads/{thread_id}/approvals/{approval_id}" not in schema["paths"]
     request_properties = schema["components"]["schemas"]["AgentTurnCreateRequest"]["properties"]
     assert "user_id" not in request_properties
     generated = Path("frontend/src/api-types.ts").read_text(encoding="utf-8")

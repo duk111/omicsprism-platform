@@ -7,7 +7,6 @@ from fastapi import FastAPI, Request, Response
 from fastapi.testclient import TestClient
 
 from backend.app.agent.api import create_agent_router
-from backend.app.agent.approvals import InMemoryApprovalGate
 from backend.app.agent.bootstrap import AgentApiContext
 from backend.app.agent.graph import (
     AgentDecision,
@@ -18,7 +17,6 @@ from backend.app.agent.graph import (
     build_agent_graph,
 )
 from backend.app.agent.param_resolver import AnalysisProposal
-from backend.app.agent.plans import InMemoryPlanStore
 from backend.app.agent.product_store import InMemoryAgentProductStore
 from backend.app.agent.schemas import AgentInputBundleRecord, AgentInputFileRecord
 from backend.app.agent.store import InMemoryStateStore
@@ -79,7 +77,6 @@ def _setup(proposal: AnalysisProposal):
     graph = build_agent_graph(_Model(proposal), load, submitter, unavailable, unavailable)
     context = AgentApiContext(
         product_store=InMemoryAgentProductStore(), state_store=InMemoryStateStore(),
-        plan_store=InMemoryPlanStore(), approval_gate=InMemoryApprovalGate(),
         job_store=_Jobs(), files=None, graph=graph, dataset_loader=load)
     app = FastAPI()
     app.include_router(create_agent_router(context=context, session_dependency=_session))

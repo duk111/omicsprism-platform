@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from hashlib import sha256
 from uuid import NAMESPACE_URL, uuid5
@@ -12,8 +12,6 @@ from ..job_store import JobStorageService
 from ..models import AnalysisType, JobOwnerType, JobRecord, JobStatus
 from ..settings import AppSettings
 from ..storage_service import CSV_MAX_BYTES, FileStorageService
-from .approvals import ApprovalGate, PostgresApprovalGate
-from .plans import PlanStore, PostgresPlanStore
 from .product_store import AgentProductStore, PostgresAgentProductStore
 from .graph import (
     AnalysisExecutionRequest,
@@ -35,15 +33,13 @@ from .validation import DatasetRef
 
 @dataclass(frozen=True)
 class AgentApiContext:
-    """Application-scoped legacy stores and optional compiled v3 graph."""
+    """Application-scoped persistence and compiled semantic graph."""
 
     product_store: AgentProductStore
     state_store: StateStore
-    plan_store: PlanStore
-    approval_gate: ApprovalGate
     job_store: JobStorageService
+    graph: object
     files: FileStorageService | None
-    graph: object | None = None
     dataset_loader: DatasetLoader | None = None
     stream_poll_seconds: float = 1.0
 
@@ -59,25 +55,13 @@ def create_agent_api_context(
         return None
     database_url = settings.runtime_database_url
     product_store = PostgresAgentProductStore(database_url)
-    context = AgentApiContext(
-        product_store=product_store,
-        state_store=PostgresStateStore(database_url),
-        plan_store=PostgresPlanStore(database_url),
-        approval_gate=PostgresApprovalGate(database_url),
-        job_store=job_store,
-        files=files,
-        stream_poll_seconds=max(0.1, settings.agent_poll_seconds),
-    )
-    # PHASE-5-DELETE: remove this branch and the legacy context dependencies.
-    if not settings.use_v3_agent:
-        return context
     if not settings.agent_model_url or not settings.agent_model_name:
         raise RuntimeError(
             "OMICS_PRISM_AGENT_MODEL_URL and OMICS_PRISM_AGENT_MODEL_NAME are required "
-            "when OMICS_PRISM_USE_V3_AGENT=true"
+            "for the Agent graph"
         )
     if job_executor is None:
-        raise RuntimeError("A Job executor is required when OMICS_PRISM_USE_V3_AGENT=true")
+        raise RuntimeError("A Job executor is required for the Agent graph")
 
     model = VllmGraphModel(
         base_url=settings.agent_model_url,
@@ -176,4 +160,12 @@ def create_agent_api_context(
         read_job,
         query_result,
     )
-    return replace(context, graph=graph, dataset_loader=load_datasets)
+    return AgentApiContext(
+        product_store=product_store,
+        state_store=PostgresStateStore(database_url),
+        job_store=job_store,
+        graph=graph,
+        files=files,
+        dataset_loader=load_datasets,
+        stream_poll_seconds=max(0.1, settings.agent_poll_seconds),
+    )

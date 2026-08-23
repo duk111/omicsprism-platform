@@ -7,12 +7,11 @@ import json
 from typing import Annotated, Callable
 from uuid import uuid4
 
-from fastapi import APIRouter, Depends, File, Form, Header, HTTPException, Query, Request, Response, UploadFile
+from fastapi import APIRouter, Depends, File, Form, Header, HTTPException, Query, Request, UploadFile
 from fastapi.responses import StreamingResponse
 from langgraph.types import Command
 
 from ..storage_service import AGENT_BUNDLE_MAX_BYTES
-from .approvals import ApprovalExpired, ApprovalMismatch, ApprovalNotFound
 from .bootstrap import AgentApiContext
 from .dataset_profile import build_dataset_profiles
 from .graph import (
@@ -26,13 +25,9 @@ from .graph import (
     GraphTurnResult,
     JobRef,
 )
-from .plans import PlanNotFound
 from .product_store import ActiveTurnConflict, AgentResourceNotFound, IdempotencyConflict
 from .schemas import (
     ActiveProfile,
-    AgentApprovalBlock,
-    AgentApprovalDecision,
-    AgentApprovalRequest,
     AgentInputBundleRecord,
     AgentInputBundleResponse,
     AgentInputFileRecord,
@@ -56,7 +51,6 @@ from .schemas import (
     AgentTurnRecord,
     AgentTurnResponse,
     AgentTurnStatus,
-    ApprovalStatus,
     RunFocus,
     RunState,
     RunStatus,
@@ -96,9 +90,6 @@ def create_agent_router(
             active_profile=ActiveProfile.ANALYSIS,
             state=AgentState.COLLECT_INTENT,
             step_no=0,
-            plan_id=None,
-            plan_hash=None,
-            pending_approval_id=None,
             focus=RunFocus(
                 in_scope_job_ids=list(payload.focus_job_ids),
                 resolved_entities={},
@@ -274,7 +265,7 @@ def create_agent_router(
 
     @router.post(
         "/threads/{thread_id}/turns",
-        response_model=AgentTurnResponse | GraphTurnResult,
+        response_model=GraphTurnResult,
         status_code=202,
     )
     def create_turn(
@@ -283,7 +274,7 @@ def create_agent_router(
         idempotency_key: Annotated[str, Header(alias="Idempotency-Key", min_length=1, max_length=200)],
         user_id: str = Depends(session_dependency),
         ctx: AgentApiContext = Depends(current_context),
-    ) -> AgentTurnResponse | GraphTurnResult:
+    ) -> GraphTurnResult:
         thread = _owned_thread(ctx, thread_id, user_id)
         state = _owned_state(ctx, thread.current_run_id, user_id)
         _require_owned_jobs(ctx, payload.focus_job_ids, user_id)
@@ -295,25 +286,21 @@ def create_agent_router(
                 bundle_id=bundle.bundle_id,
                 files=[_file_response(item) for item in input_files],
             ))
-        graph_state = None
-        # PHASE-5-DELETE: make the graph path unconditional and remove the queued branch.
-        if ctx.graph is not None:
-            focus_job_ids = payload.focus_job_ids or state.focus.in_scope_job_ids
-            _require_owned_jobs(ctx, focus_job_ids, user_id)
-            graph_state = GraphState(
-                thread_id=thread_id,
-                user_id=user_id,
-                user_message=payload.message,
-                dataset_profiles=_graph_dataset_profiles(ctx, input_files, user_id),
-                recent_jobs=[
-                    JobRef(job_id=job_id, owner_id=user_id)
-                    for job_id in focus_job_ids
-                ],
-            )
-            _recover_inline_turn(ctx, thread_id, user_id)
+        focus_job_ids = payload.focus_job_ids or state.focus.in_scope_job_ids
+        _require_owned_jobs(ctx, focus_job_ids, user_id)
+        graph_state = GraphState(
+            thread_id=thread_id,
+            user_id=user_id,
+            user_message=payload.message,
+            dataset_profiles=_graph_dataset_profiles(ctx, input_files, user_id),
+            recent_jobs=[
+                JobRef(job_id=job_id, owner_id=user_id)
+                for job_id in focus_job_ids
+            ],
+        )
+        _recover_inline_turn(ctx, thread_id, user_id)
         now = datetime.now(timezone.utc)
         turn_id = f"turn-{uuid4()}"
-        inline = graph_state is not None
         turn = AgentTurnRecord(
             turn_id=turn_id,
             thread_id=thread_id,
@@ -321,14 +308,14 @@ def create_agent_router(
             user_id=user_id,
             idempotency_key=idempotency_key,
             request_hash=_request_hash(thread_id, payload.model_dump(mode="json")),
-            status=AgentTurnStatus.RUNNING if inline else AgentTurnStatus.QUEUED,
-            attempt=1 if inline else 0,
+            status=AgentTurnStatus.RUNNING,
+            attempt=1,
             lease_owner=None,
             lease_expires_at=None,
             error_code=None,
             created_at=now,
             updated_at=now,
-            started_at=now if inline else None,
+            started_at=now,
             completed_at=None,
         )
         message = AgentMessageRecord(
@@ -354,8 +341,6 @@ def create_agent_router(
                 _persist_non_transactional_focus_if_needed(ctx, state.run_id, user_id, desired_focus)
         except (IdempotencyConflict, ActiveTurnConflict, StateConflict) as exc:
             raise _conflict(str(exc) or "Agent turn conflicts with current state") from exc
-        if graph_state is None:
-            return _turn_response(queued)
         if not created:
             return _graph_turn_result(ctx, queued)
         try:
@@ -381,8 +366,6 @@ def create_agent_router(
         ctx: AgentApiContext = Depends(current_context),
     ) -> GraphTurnResult:
         _owned_thread(ctx, thread_id, user_id)
-        if ctx.graph is None:
-            raise HTTPException(status_code=404, detail="Agent graph endpoint is not enabled")
         try:
             turn = ctx.product_store.get_turn(turn_id=checkpoint_turn_id, user_id=user_id)
         except AgentResourceNotFound as exc:
@@ -441,125 +424,6 @@ def create_agent_router(
             raise _not_found()
         return _turn_response(turn)
 
-    @router.post(
-        "/threads/{thread_id}/approvals/{approval_id}",
-        response_model=AgentTurnResponse | AgentMessageResponse,
-    )
-    def decide_approval(
-        thread_id: str,
-        approval_id: str,
-        payload: AgentApprovalRequest,
-        response: Response,
-        user_id: str = Depends(session_dependency),
-        ctx: AgentApiContext = Depends(current_context),
-    ) -> AgentTurnResponse | AgentMessageResponse:
-        thread = _owned_thread(ctx, thread_id, user_id)
-        state = _owned_state(ctx, thread.current_run_id, user_id)
-        try:
-            approval = ctx.approval_gate.get_owned(approval_id=approval_id, user_id=user_id)
-            if not state.plan_id:
-                raise ApprovalMismatch("run has no pending plan")
-            plan = ctx.plan_store.get(plan_id=state.plan_id, user_id=user_id)
-        except ApprovalMismatch as exc:
-            # 计划已被自动作废（例如待批期改参数）：旧卡片不可再用，返回可读冲突而非 500。
-            raise _conflict(str(exc)) from exc
-        except (ApprovalNotFound, PlanNotFound) as exc:
-            raise _not_found() from exc
-        if (
-            state.pending_approval_id != approval_id
-            or plan.approval_id != approval_id
-            or plan.thread_id != thread_id
-            or plan.run_id != state.run_id
-            or approval.run_id != state.run_id
-            or payload.plan_hash != state.plan_hash
-            or payload.plan_hash != plan.plan_hash
-            or payload.plan_hash != approval.plan_hash
-        ):
-            raise _conflict("Approval does not match the current plan")
-        now = datetime.now(timezone.utc)
-        if payload.decision is AgentApprovalDecision.REJECT:
-            try:
-                ctx.approval_gate.reject(
-                    approval_id=approval_id,
-                    run_id=state.run_id,
-                    user_id=user_id,
-                    plan_hash=payload.plan_hash,
-                )
-            except ApprovalExpired as exc:
-                _release_expired_approval(ctx, state, approval_id, user_id)
-                raise _conflict("Approval has expired; generate a new plan to continue") from exc
-            except ApprovalMismatch as exc:
-                raise _conflict(str(exc)) from exc
-            state.pending_approval_id = None
-            state.state = AgentState.NEED_USER_INPUT
-            state.status = RunStatus.RUNNING
-            try:
-                ctx.state_store.save(state, expected_version=state.version)
-            except StateConflict as exc:
-                raise _conflict(str(exc)) from exc
-            message = AgentMessageRecord(
-                message_id=f"approval-message-{approval_id}-rejected",
-                thread_id=thread_id,
-                run_id=state.run_id,
-                user_id=user_id,
-                role=AgentMessageRole.ASSISTANT,
-                blocks=[AgentApprovalBlock(
-                    approval_id=approval_id,
-                    plan_hash=payload.plan_hash,
-                    status=ApprovalStatus.REJECTED,
-                    expires_at=approval.expires_at,
-                )],
-                created_at=now,
-            )
-            ctx.product_store.append_message(message)
-            return _message_response(message)
-
-        try:
-            ctx.approval_gate.resume(
-                approval_id=approval_id,
-                run_id=state.run_id,
-                user_id=user_id,
-                plan_hash=payload.plan_hash,
-            )
-            turn = AgentTurnRecord(
-                turn_id=f"turn-{uuid4()}",
-                thread_id=thread_id,
-                run_id=state.run_id,
-                user_id=user_id,
-                idempotency_key=f"approval:{approval_id}:approve",
-                request_hash=_request_hash(thread_id, payload.model_dump(mode="json")),
-                status=AgentTurnStatus.QUEUED,
-                attempt=0,
-                lease_owner=None,
-                lease_expires_at=None,
-                error_code=None,
-                created_at=now,
-                updated_at=now,
-                started_at=None,
-                completed_at=None,
-            )
-            approval_message = AgentMessageRecord(
-                message_id=f"approval-message-{approval_id}-approved",
-                thread_id=thread_id,
-                run_id=state.run_id,
-                user_id=user_id,
-                role=AgentMessageRole.ASSISTANT,
-                blocks=[AgentApprovalBlock(
-                    approval_id=approval_id,
-                    plan_hash=payload.plan_hash,
-                    status=ApprovalStatus.APPROVED,
-                    expires_at=approval.expires_at,
-                )],
-                created_at=now,
-            )
-            queued, _ = ctx.product_store.enqueue_turn(message=approval_message, turn=turn)
-        except ApprovalExpired as exc:
-            _release_expired_approval(ctx, state, approval_id, user_id)
-            raise _conflict("Approval has expired; generate a new plan to continue") from exc
-        except (ApprovalMismatch, IdempotencyConflict, ActiveTurnConflict) as exc:
-            raise _conflict(str(exc)) from exc
-        response.status_code = 202
-        return _turn_response(queued)
 
     @router.get(
         "/threads/{thread_id}/stream",
@@ -869,23 +733,6 @@ def _persist_non_transactional_focus_if_needed(
         return
     current.focus = focus
     ctx.state_store.save(current, expected_version=current.version)
-
-
-def _release_expired_approval(
-    ctx: AgentApiContext,
-    state: RunState,
-    approval_id: str,
-    user_id: str,
-) -> None:
-    if state.pending_approval_id != approval_id:
-        return
-    state.pending_approval_id = None
-    state.state = AgentState.NEED_USER_INPUT
-    state.status = RunStatus.RUNNING
-    try:
-        ctx.state_store.save(state, expected_version=state.version)
-    except StateConflict as exc:
-        raise _conflict(str(exc)) from exc
 
 
 def _thread_response(record: AgentThreadRecord) -> AgentThreadResponse:

@@ -55,8 +55,7 @@ class PostgresStateStore:
             row = conn.execute(
                 """
                 select run_id, user_id, thread_id, active_profile, state, step_no,
-                       plan_id, plan_hash, pending_approval_id, focus, model_calls,
-                       tool_calls, status, version
+                       focus, model_calls, tool_calls, status, version
                 from agent_runs where run_id = %s and user_id = %s
                 """,
                 (run_id, user_id),
@@ -65,8 +64,7 @@ class PostgresStateStore:
             raise StateNotFound(run_id)
         fields = (
             "run_id", "user_id", "thread_id", "active_profile", "state", "step_no",
-            "plan_id", "plan_hash", "pending_approval_id", "focus", "model_calls",
-            "tool_calls", "status", "version",
+            "focus", "model_calls", "tool_calls", "status", "version",
         )
         return RunState.model_validate(dict(zip(fields, row)))
 
@@ -78,9 +76,6 @@ class PostgresStateStore:
             state.active_profile.value,
             state.state.value,
             state.step_no,
-            state.plan_id,
-            state.plan_hash,
-            state.pending_approval_id,
             Jsonb(state.focus.model_dump(mode="json")),
             state.model_calls,
             state.tool_calls,
@@ -98,9 +93,6 @@ class PostgresStateStore:
                     active_profile = %s,
                     state = %s,
                     step_no = %s,
-                    plan_id = %s,
-                    plan_hash = %s,
-                    pending_approval_id = %s,
                     focus = %s,
                     model_calls = %s,
                     tool_calls = %s,
@@ -121,9 +113,8 @@ class PostgresStateStore:
                     """
                     insert into agent_runs (
                         run_id, user_id, thread_id, active_profile, state, step_no,
-                        plan_id, plan_hash, pending_approval_id, focus, model_calls,
-                        tool_calls, status, version
-                    ) values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                        focus, model_calls, tool_calls, status, version
+                    ) values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                     """,
                     (
                         state.run_id,
@@ -132,9 +123,6 @@ class PostgresStateStore:
                         state.active_profile.value,
                         state.state.value,
                         state.step_no,
-                        state.plan_id,
-                        state.plan_hash,
-                        state.pending_approval_id,
                         Jsonb(state.focus.model_dump(mode="json")),
                         state.model_calls,
                         state.tool_calls,
