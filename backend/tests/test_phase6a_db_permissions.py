@@ -21,10 +21,8 @@ def test_phase6_runtime_role_ownership_idempotency_and_append_only_permissions()
     import psycopg
     from psycopg.errors import InsufficientPrivilege
 
-    from backend.app.agent.audit import PostgresAgentEventStore
     from backend.app.agent.product_store import AgentResourceNotFound, IdempotencyConflict, PostgresAgentProductStore
     from backend.app.agent.schemas import (
-        AgentEvent,
         AgentInputBundleRecord,
         AgentInputFileRecord,
         AgentMessageRecord,
@@ -45,7 +43,6 @@ def test_phase6_runtime_role_ownership_idempotency_and_append_only_permissions()
     turn_id = f"turn-{suffix}"
     bundle_id = f"bundle-{suffix}"
     file_id = f"file-{suffix}"
-    event_id = f"event-{suffix}"
     now = datetime.now(timezone.utc)
 
     try:
@@ -136,18 +133,6 @@ def test_phase6_runtime_role_ownership_idempotency_and_append_only_permissions()
         with pytest.raises(StateNotFound):
             state_store.get(run_id=run_id, user_id=other_user_id)
 
-        event_store = PostgresAgentEventStore(APP_DSN)
-        event_store.append(AgentEvent(
-            event_id=event_id,
-            run_id=run_id,
-            user_id=user_id,
-            step_no=0,
-            event_type="phase6a.permission_test",
-            payload={"status": "ok"},
-        ))
-        assert [event.event_id for event in event_store.list_for_run(run_id=run_id, user_id=user_id)] == [event_id]
-        assert event_store.list_for_run(run_id=run_id, user_id=other_user_id) == []
-
         with psycopg.connect(APP_DSN) as conn:
             assert conn.execute("select count(*) from jobs where owner_id = %s", (user_id,)).fetchone() == (0,)
 
@@ -159,17 +144,10 @@ def test_phase6_runtime_role_ownership_idempotency_and_append_only_permissions()
                 conn.execute("delete from agent_messages where message_id = %s", (message_id,))
         with psycopg.connect(APP_DSN, autocommit=True) as conn:
             with pytest.raises(InsufficientPrivilege):
-                conn.execute("update agent_events set event_type = 'tampered' where event_id = %s", (event_id,))
-        with psycopg.connect(APP_DSN, autocommit=True) as conn:
-            with pytest.raises(InsufficientPrivilege):
-                conn.execute("delete from agent_events where event_id = %s", (event_id,))
-        with psycopg.connect(APP_DSN, autocommit=True) as conn:
-            with pytest.raises(InsufficientPrivilege):
                 conn.execute("delete from agent_turns where turn_id = %s and user_id = %s", (turn_id, user_id))
     finally:
         with psycopg.connect(ADMIN_DSN, autocommit=True) as conn:
             for table, column, value in (
-                ("agent_events", "event_id", event_id),
                 ("agent_input_files", "file_id", file_id),
                 ("agent_input_bundles", "bundle_id", bundle_id),
                 ("agent_turns", "turn_id", turn_id),

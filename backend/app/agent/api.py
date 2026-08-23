@@ -4,6 +4,7 @@ import asyncio
 from datetime import datetime, timedelta, timezone
 from hashlib import sha256
 import json
+from time import perf_counter
 from typing import Annotated, Callable
 from uuid import uuid4
 
@@ -11,6 +12,7 @@ from fastapi import APIRouter, Depends, File, Form, Header, HTTPException, Query
 from fastapi.responses import StreamingResponse
 from langgraph.types import Command
 
+from ..observability import LOG
 from ..storage_service import AGENT_BUNDLE_MAX_BYTES
 from .bootstrap import AgentApiContext
 from .dataset_profile import build_dataset_profiles
@@ -343,11 +345,28 @@ def create_agent_router(
             raise _conflict(str(exc) or "Agent turn conflicts with current state") from exc
         if not created:
             return _graph_turn_result(ctx, queued)
+        started_at = perf_counter()
         try:
             ctx.graph.invoke(graph_state, _graph_config(queued.turn_id))
-            return _graph_turn_result(ctx, queued)
+            result = _graph_turn_result(ctx, queued)
+            _log_graph_action(
+                thread_id=thread_id,
+                user_id=user_id,
+                action="invoke",
+                node=_result_node(result),
+                started_at=started_at,
+            )
+            return result
         except Exception as exc:
             _fail_inline_turn(ctx, queued, "graph_execution_failed")
+            _log_graph_action(
+                thread_id=thread_id,
+                user_id=user_id,
+                action="invoke",
+                node="graph",
+                started_at=started_at,
+                error_code="graph_execution_failed",
+            )
             raise HTTPException(status_code=500, detail="Agent graph execution failed") from exc
 
     @router.post(
@@ -401,11 +420,28 @@ def create_agent_router(
                         detail="Idempotency-Key is required to run an analysis",
                     )
                 resume_value["idempotency_key"] = idempotency_key
+        started_at = perf_counter()
         try:
             ctx.graph.invoke(Command(resume=resume_value), config)
-            return _graph_turn_result(ctx, turn)
+            result = _graph_turn_result(ctx, turn)
+            _log_graph_action(
+                thread_id=thread_id,
+                user_id=user_id,
+                action="resume",
+                node=_result_node(result),
+                started_at=started_at,
+            )
+            return result
         except Exception as exc:
             _fail_inline_turn(ctx, turn, "graph_execution_failed")
+            _log_graph_action(
+                thread_id=thread_id,
+                user_id=user_id,
+                action="resume",
+                node=payload.kind,
+                started_at=started_at,
+                error_code="graph_execution_failed",
+            )
             raise HTTPException(status_code=500, detail="Agent graph execution failed") from exc
 
     @router.get("/threads/{thread_id}/turns/{turn_id}", response_model=AgentTurnResponse)
@@ -733,6 +769,35 @@ def _persist_non_transactional_focus_if_needed(
         return
     current.focus = focus
     ctx.state_store.save(current, expected_version=current.version)
+
+
+def _result_node(result: GraphTurnResult) -> str:
+    if result.interrupt is not None:
+        return result.interrupt.payload.kind
+    return "complete"
+
+
+def _log_graph_action(
+    *,
+    thread_id: str,
+    user_id: str,
+    action: str,
+    node: str,
+    started_at: float,
+    error_code: str | None = None,
+) -> None:
+    LOG.info(
+        "agent graph action",
+        extra={
+            "event": "agent.graph",
+            "thread_id": thread_id,
+            "user_id": user_id,
+            "action": action,
+            "node": node,
+            "error_code": error_code,
+            "duration_ms": round((perf_counter() - started_at) * 1000, 3),
+        },
+    )
 
 
 def _thread_response(record: AgentThreadRecord) -> AgentThreadResponse:

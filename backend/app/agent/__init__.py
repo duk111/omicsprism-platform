@@ -9,7 +9,6 @@ from .schemas import (
     ToolResult,
     VerifierVerdict,
 )
-from .audit import PostgresAgentEventStore
 from .dataset_profile import DatasetProfile, MatrixProfile, MetadataProfile, build_dataset_profiles
 from .fingerprint import compute_input_fingerprint
 from .param_resolver import (
@@ -41,7 +40,6 @@ __all__ = [
     "RunState",
     "ToolResult",
     "VerifierVerdict",
-    "PostgresAgentEventStore",
     "DatasetProfile",
     "MatrixProfile",
     "MetadataProfile",

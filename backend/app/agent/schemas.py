@@ -729,15 +729,6 @@ class VerifierVerdict(ContractModel):
     checks: list[VerifierCheck]
 
 
-class AgentEvent(ContractModel):
-    event_id: str = Field(min_length=1)
-    run_id: str = Field(min_length=1)
-    user_id: str = Field(min_length=1)
-    step_no: int = Field(ge=0)
-    event_type: str = Field(min_length=1)
-    payload: dict[str, Any]
-
-
 class EvalCategory(str, Enum):
     ROUTER = "router"
     RECOMMENDATION = "recommendation"

@@ -34,7 +34,18 @@ class JsonLogFormatter(logging.Formatter):
             "user_id": getattr(record, "user_id", None) or _user_id.get(),
             "project_id": getattr(record, "project_id", None) or _project_id.get(),
         }
-        for key in ("method", "path", "status_code", "duration_ms", "event", "action"):
+        for key in (
+            "method",
+            "path",
+            "status_code",
+            "duration_ms",
+            "event",
+            "action",
+            "thread_id",
+            "node",
+            "artifact",
+            "error_code",
+        ):
             value = getattr(record, key, None)
             if value is not None:
                 payload[key] = value

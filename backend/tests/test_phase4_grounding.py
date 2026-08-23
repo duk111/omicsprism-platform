@@ -1,10 +1,7 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
-
 import pytest
 
-from backend.app.agent.audit import InMemoryAgentEventStore, UnsafeTracePayload
 from backend.app.agent.grounding import (
     NO_EVIDENCE_TEXT,
     EvidenceGrounder,
@@ -12,7 +9,6 @@ from backend.app.agent.grounding import (
     GroundedAnswerPipeline,
 )
 from backend.app.agent.schemas import (
-    AgentEvent,
     Citation,
     GroundedAnswer,
     GroundedClaim,
@@ -107,20 +103,3 @@ def test_pipeline_repairs_once_then_falls_back_to_raw_evidence() -> None:
     )
     assert fallback.claims[0].text.startswith("验证未通过")
     assert fallback.claims[1].citation.row_ids == [7]
-
-
-def test_trace_store_is_append_only_user_bound_and_redacts_unsafe_payloads() -> None:
-    store = InMemoryAgentEventStore()
-    event = AgentEvent(
-        event_id="event-1", run_id="run-1", user_id="user-1", step_no=1,
-        event_type="route.decided", payload={"intent": "interpret"},
-    )
-    store.append(event)
-
-    assert store.list_for_run(run_id="run-1", user_id="user-1") == [event]
-    assert store.list_for_run(run_id="run-1", user_id="user-2") == []
-    with pytest.raises(UnsafeTracePayload):
-        store.append(event.model_copy(update={
-            "event_id": "event-2",
-            "payload": {"database_url": "postgresql://secret"},
-        }))
