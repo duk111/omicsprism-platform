@@ -7,7 +7,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from .dataset_profile import DatasetProfile
 from .param_resolver import AnalysisParams, AnalysisProposal, ResolvedRequest
-from .validation import ContrastPreview, DatasetRef, ValidationReport
+from .validation import ContrastPreview, DatasetRef, Issue, ValidationReport
 
 
 AnalysisTypeName = Literal["DEG", "DEM", "GMA"]
@@ -78,12 +78,29 @@ class ConfirmationPayload(BaseModel):
     analysis_type: AnalysisTypeName
     resolved_params: AnalysisParams
     preview: ContrastPreview | None = None
+    warnings: list[Issue] = Field(default_factory=list, max_length=20)
     input_fingerprint: str = Field(pattern=r"^sha256:[0-9a-fA-F]{64}$")
 
     @model_validator(mode="after")
     def _analysis_type_matches_params(self) -> "ConfirmationPayload":
         if self.resolved_params.analysis_type != self.analysis_type:
             raise ValueError("analysis_type must match resolved_params")
+        return self
+
+
+class ConfirmationResume(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    action: Literal["run", "modify", "cancel"]
+    modification: str | None = Field(default=None, min_length=1, max_length=1000)
+    idempotency_key: str | None = Field(default=None, min_length=1, max_length=200)
+
+    @model_validator(mode="after")
+    def _required_action_fields(self) -> "ConfirmationResume":
+        if self.action == "run" and self.idempotency_key is None:
+            raise ValueError("run action requires idempotency_key")
+        if self.action == "modify" and self.modification is None:
+            raise ValueError("modify action requires modification")
         return self
 
 
@@ -159,6 +176,22 @@ class DatasetLoadRequest(BaseModel):
 DatasetLoader = Callable[[DatasetLoadRequest], list[DatasetRef]]
 
 
+class AnalysisExecutionRequest(BaseModel):
+    """Validated analysis submission request with an ownership and idempotency scope."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    user_id: str = Field(min_length=1, max_length=200)
+    thread_id: str = Field(min_length=1, max_length=200)
+    dataset_ids: list[str] = Field(min_length=1, max_length=6)
+    resolved_params: AnalysisParams
+    input_fingerprint: str = Field(pattern=r"^sha256:[0-9a-fA-F]{64}$")
+    idempotency_key: str = Field(min_length=1, max_length=200)
+
+
+JobSubmitter = Callable[[AnalysisExecutionRequest], JobRef]
+
+
 class GraphState(BaseModel):
     """Compact state shared by the v3 semantic graph nodes."""
 
@@ -192,6 +225,7 @@ class GraphState(BaseModel):
 def build_agent_graph(
     model: MainDecisionModel,
     dataset_loader: DatasetLoader,
+    job_submitter: JobSubmitter,
     *,
     checkpointer: object | None = None,
 ):
@@ -206,7 +240,7 @@ def build_agent_graph(
     builder.add_node("main", main_node(model))
     builder.add_node(
         "analysis",
-        analysis_node(dataset_loader),
+        analysis_node(dataset_loader, job_submitter),
         destinations=("analysis", END),
     )
     builder.add_node("result_qa", specialist_placeholder)

@@ -8,10 +8,12 @@ from langgraph.types import Command
 
 from backend.app.agent.dataset_profile import build_dataset_profiles
 from backend.app.agent.graph import (
+    AnalysisExecutionRequest,
     AgentDecision,
     DatasetLoadRequest,
     DatasetProfileRef,
     GraphState,
+    JobRef,
     MainModelContext,
     MainModelOutput,
     StepBudget,
@@ -50,6 +52,15 @@ class RecordingDatasetLoader:
     def __call__(self, request: DatasetLoadRequest) -> list[DatasetRef]:
         self.requests.append(request)
         return [item.model_copy(deep=True) for item in self.refs]
+
+
+class RecordingJobSubmitter:
+    def __init__(self) -> None:
+        self.requests: list[AnalysisExecutionRequest] = []
+
+    def __call__(self, request: AnalysisExecutionRequest) -> JobRef:
+        self.requests.append(request)
+        return JobRef(job_id=f"job-{len(self.requests)}", owner_id=request.user_id)
 
 
 def _dataset_refs(
@@ -101,8 +112,12 @@ def _state(**overrides: object) -> GraphState:
     return GraphState.model_validate(values)
 
 
+def _submitter() -> RecordingJobSubmitter:
+    return RecordingJobSubmitter()
+
+
 def _run(model: ScriptedMainModel, state: GraphState | None = None) -> GraphState:
-    result = build_agent_graph(model, lambda _request: []).invoke(state or _state())
+    result = build_agent_graph(model, lambda _request: [], _submitter()).invoke(state or _state())
     return GraphState.model_validate(result)
 
 
@@ -176,7 +191,7 @@ def test_result_qa_route_is_still_a_placeholder_without_side_effects() -> None:
 
 
 def test_graph_has_only_three_semantic_nodes() -> None:
-    graph = build_agent_graph(ScriptedMainModel([]), lambda _request: []).get_graph()
+    graph = build_agent_graph(ScriptedMainModel([]), lambda _request: [], _submitter()).get_graph()
 
     assert set(graph.nodes) == {"__start__", "main", "analysis", "result_qa", "__end__"}
 
@@ -225,6 +240,7 @@ def _analysis_model(proposal: AnalysisProposal) -> ScriptedMainModel:
 def test_complete_analysis_request_is_resolved_and_validated_before_confirmation() -> None:
     refs = _dataset_refs()
     loader = RecordingDatasetLoader(refs)
+    submitter = _submitter()
     model = _analysis_model(AnalysisProposal(
         analysis_type="DEG",
         compare_field="condition",
@@ -236,15 +252,16 @@ def test_complete_analysis_request_is_resolved_and_validated_before_confirmation
         dataset_profiles=_profile_refs(refs),
     )
 
-    result = GraphState.model_validate(build_agent_graph(model, loader).invoke(state))
+    result = build_agent_graph(model, loader, submitter).invoke(state, {
+        "configurable": {"thread_id": "confirmation-ready"},
+    })
 
-    assert result.resolved_request is not None
-    assert result.resolved_request.params is not None
-    assert result.validation_report is not None
-    assert result.validation_report.ok
-    assert result.validation_report.preview is not None
-    assert result.pending_interrupt is None
-    assert result.current_job is None
+    assert result["__interrupt__"][0].value["kind"] == "confirmation"
+    payload = result["__interrupt__"][0].value
+    assert payload["analysis_type"] == "DEG"
+    assert payload["resolved_params"]["contrast"]["tested_level"] == "salt"
+    assert payload["preview"]["tested_count"] == 2
+    assert not submitter.requests
     assert loader.requests == [DatasetLoadRequest(
         user_id="user-1",
         dataset_ids=["dataset-counts", "dataset-metadata"],
@@ -254,9 +271,11 @@ def test_complete_analysis_request_is_resolved_and_validated_before_confirmation
 def test_ambiguity_interrupt_resume_re_resolves_and_revalidates() -> None:
     refs = _dataset_refs()
     loader = RecordingDatasetLoader(refs)
+    submitter = _submitter()
     graph = build_agent_graph(
         _analysis_model(AnalysisProposal(analysis_type="DEG", compare_field="condition")),
         loader,
+        submitter,
         checkpointer=InMemorySaver(),
     )
     config = {"configurable": {"thread_id": "clarification-flow"}}
@@ -270,24 +289,24 @@ def test_ambiguity_interrupt_resume_re_resolves_and_revalidates() -> None:
     assert paused["__interrupt__"][0].value["kind"] == "clarification"
     assert paused["__interrupt__"][0].value["missing"][0]["field"] == "tested_level"
 
-    resumed = GraphState.model_validate(
-        graph.invoke(Command(resume={"answer": "compare salt and control"}), config)
+    resumed = graph.invoke(
+        Command(resume={"answer": "compare salt and control"}), config
     )
 
-    assert resumed.clarification_answer == "compare salt and control"
-    assert resumed.resolved_request is not None
-    assert resumed.resolved_request.params is not None
-    assert resumed.resolved_request.params.contrast.tested_level == "salt"
-    assert resumed.validation_report is not None
-    assert resumed.validation_report.ok
-    assert resumed.pending_interrupt is None
+    assert resumed["__interrupt__"][0].value["kind"] == "confirmation"
+    assert resumed["clarification_answer"] == "compare salt and control"
+    assert resumed["resolved_request"].params is not None
+    assert resumed["resolved_request"].params.contrast.tested_level == "salt"
+    assert resumed["validation_report"].ok
+    assert resumed["pending_interrupt"].kind == "confirmation"
     assert len(loader.requests) == 3
+    assert not submitter.requests
 
 
-def test_blocking_validation_interrupts_without_creating_a_job() -> None:
-    negative_counts = b"gene,s1,s2,s3,s4,s5,s6\ng1,10,-1,30,32,20,22\n"
-    refs = _dataset_refs(counts=negative_counts)
+def test_confirmation_run_submits_validated_params_once() -> None:
+    refs = _dataset_refs()
     loader = RecordingDatasetLoader(refs)
+    submitter = _submitter()
     graph = build_agent_graph(
         _analysis_model(AnalysisProposal(
             analysis_type="DEG",
@@ -296,6 +315,157 @@ def test_blocking_validation_interrupts_without_creating_a_job() -> None:
             reference_level="control",
         )),
         loader,
+        submitter,
+        checkpointer=InMemorySaver(),
+    )
+    config = {"configurable": {"thread_id": "confirmation-run"}}
+    graph.invoke(
+        _state(user_message="Run DEG", dataset_profiles=_profile_refs(refs)),
+        config,
+    )
+
+    completed = GraphState.model_validate(graph.invoke(Command(resume={
+        "action": "run",
+        "idempotency_key": "run-1",
+    }), config))
+
+    assert completed.current_job == JobRef(job_id="job-1", owner_id="user-1")
+    assert completed.recent_jobs == [completed.current_job]
+    assert completed.pending_interrupt is None
+    assert len(submitter.requests) == 1
+    request = submitter.requests[0]
+    assert request.user_id == "user-1"
+    assert request.dataset_ids == ["dataset-counts", "dataset-metadata"]
+    assert request.resolved_params.contrast.tested_level == "salt"
+    assert request.idempotency_key == "run-1"
+    assert len(loader.requests) == 2
+
+    repeated = GraphState.model_validate(graph.invoke(Command(resume={
+        "action": "run",
+        "idempotency_key": "run-1",
+    }), config))
+    assert repeated.current_job == completed.current_job
+    assert len(submitter.requests) == 1
+
+
+def test_confirmation_modify_re_resolves_and_revalidates() -> None:
+    refs = _dataset_refs()
+    loader = RecordingDatasetLoader(refs)
+    submitter = _submitter()
+    graph = build_agent_graph(
+        _analysis_model(AnalysisProposal(
+            analysis_type="DEG",
+            compare_field="condition",
+            tested_level="salt",
+            reference_level="control",
+        )),
+        loader,
+        submitter,
+        checkpointer=InMemorySaver(),
+    )
+    config = {"configurable": {"thread_id": "confirmation-modify"}}
+    graph.invoke(
+        _state(user_message="Run DEG", dataset_profiles=_profile_refs(refs)),
+        config,
+    )
+
+    modified = graph.invoke(Command(resume={
+        "action": "modify",
+        "modification": "compare drought and control",
+    }), config)
+
+    payload = modified["__interrupt__"][0].value
+    assert payload["kind"] == "confirmation"
+    assert payload["resolved_params"]["contrast"]["tested_level"] == "drought"
+    assert modified["validation_report"].ok
+    assert len(loader.requests) == 2
+    assert not submitter.requests
+
+
+def test_confirmation_cancel_does_not_create_a_job() -> None:
+    refs = _dataset_refs()
+    loader = RecordingDatasetLoader(refs)
+    submitter = _submitter()
+    graph = build_agent_graph(
+        _analysis_model(AnalysisProposal(
+            analysis_type="DEG",
+            compare_field="condition",
+            tested_level="salt",
+            reference_level="control",
+        )),
+        loader,
+        submitter,
+        checkpointer=InMemorySaver(),
+    )
+    config = {"configurable": {"thread_id": "confirmation-cancel"}}
+    graph.invoke(
+        _state(user_message="Run DEG", dataset_profiles=_profile_refs(refs)),
+        config,
+    )
+
+    cancelled = GraphState.model_validate(
+        graph.invoke(Command(resume={"action": "cancel"}), config)
+    )
+
+    assert cancelled.current_job is None
+    assert cancelled.pending_interrupt is None
+    assert cancelled.response_text == "Analysis cancelled."
+    assert len(loader.requests) == 1
+    assert not submitter.requests
+
+
+def test_changed_input_rejects_execution_and_asks_for_clarification() -> None:
+    refs = _dataset_refs()
+    loader = RecordingDatasetLoader(refs)
+    submitter = _submitter()
+    graph = build_agent_graph(
+        _analysis_model(AnalysisProposal(
+            analysis_type="DEG",
+            compare_field="condition",
+            tested_level="salt",
+            reference_level="control",
+        )),
+        loader,
+        submitter,
+        checkpointer=InMemorySaver(),
+    )
+    config = {"configurable": {"thread_id": "changed-input"}}
+    graph.invoke(
+        _state(user_message="Run DEG", dataset_profiles=_profile_refs(refs)),
+        config,
+    )
+    changed_counts = COUNTS.replace(b"g1,10", b"g1,11")
+    loader.refs[0] = loader.refs[0].model_copy(update={
+        "content": changed_counts,
+        "checksum": "sha256:" + sha256(changed_counts).hexdigest(),
+    })
+
+    rejected = graph.invoke(Command(resume={
+        "action": "run",
+        "idempotency_key": "changed-run",
+    }), config)
+
+    payload = rejected["__interrupt__"][0].value
+    assert payload["kind"] == "clarification"
+    assert payload["missing"][0]["field"] == "input_fingerprint"
+    assert rejected.get("current_job") is None
+    assert not submitter.requests
+
+
+def test_blocking_validation_interrupts_without_creating_a_job() -> None:
+    negative_counts = b"gene,s1,s2,s3,s4,s5,s6\ng1,10,-1,30,32,20,22\n"
+    refs = _dataset_refs(counts=negative_counts)
+    loader = RecordingDatasetLoader(refs)
+    submitter = _submitter()
+    graph = build_agent_graph(
+        _analysis_model(AnalysisProposal(
+            analysis_type="DEG",
+            compare_field="condition",
+            tested_level="salt",
+            reference_level="control",
+        )),
+        loader,
+        submitter,
         checkpointer=InMemorySaver(),
     )
 
@@ -313,6 +483,7 @@ def test_blocking_validation_interrupts_without_creating_a_job() -> None:
 def test_analysis_loader_rejects_cross_user_dataset() -> None:
     state_refs = _dataset_refs()
     loader = RecordingDatasetLoader(_dataset_refs(owner_id="user-2"))
+    submitter = _submitter()
     graph = build_agent_graph(
         _analysis_model(AnalysisProposal(
             analysis_type="DEG",
@@ -321,6 +492,7 @@ def test_analysis_loader_rejects_cross_user_dataset() -> None:
             reference_level="control",
         )),
         loader,
+        submitter,
     )
 
     with pytest.raises(DatasetLoadError, match="cross-user"):

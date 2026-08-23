@@ -1,17 +1,25 @@
 from __future__ import annotations
 
+import csv
+import io
 from collections.abc import Callable
 
 from langgraph.graph import END
 from langgraph.types import Command, interrupt
 
+from ..fingerprint import compute_input_fingerprint
 from ..graph import (
+    AnalysisExecutionRequest,
     ClarificationItem,
     ClarificationPayload,
     ClarificationResume,
+    ConfirmationPayload,
+    ConfirmationResume,
     DatasetLoadRequest,
     DatasetLoader,
     GraphState,
+    JobRef,
+    JobSubmitter,
 )
 from ..param_resolver import AnalysisProposal, ResolvedRequest, resolve_analysis_request
 from ..validation import DatasetRef, ValidationReport, validate_analysis_request
@@ -21,8 +29,18 @@ class DatasetLoadError(ValueError):
     """Loaded validation inputs do not match the ownership-bound state refs."""
 
 
-def analysis_node(dataset_loader: DatasetLoader) -> Callable[[GraphState], Command]:
+class ExecutionRejected(ValueError):
+    """Defensive execution checks rejected inputs changed after confirmation."""
+
+
+def analysis_node(
+    dataset_loader: DatasetLoader,
+    job_submitter: JobSubmitter,
+) -> Callable[[GraphState], Command]:
     def run(state: GraphState) -> Command:
+        if isinstance(state.pending_interrupt, ConfirmationPayload):
+            return _handle_confirmation(state, dataset_loader, job_submitter)
+
         if state.step_budget.used_steps >= state.step_budget.max_steps:
             return Command(
                 update={
@@ -43,15 +61,24 @@ def analysis_node(dataset_loader: DatasetLoader) -> Callable[[GraphState], Comma
         )
         report = validate_analysis_request(resolved, dataset_refs)
         if report.ok:
+            if resolved.analysis_type is None or resolved.params is None:
+                raise RuntimeError("successful validation must contain resolved parameters")
+            payload = ConfirmationPayload(
+                analysis_type=resolved.analysis_type,
+                resolved_params=resolved.params,
+                preview=report.preview,
+                warnings=report.warnings,
+                input_fingerprint=report.input_fingerprint,
+            )
             return Command(
                 update={
                     "resolved_request": resolved,
                     "validation_report": report,
-                    "pending_interrupt": None,
+                    "pending_interrupt": payload,
                     "response_text": None,
                     "step_budget": next_budget,
                 },
-                goto=END,
+                goto="analysis",
             )
 
         payload = _clarification_payload(resolved, report)
@@ -72,6 +99,124 @@ def analysis_node(dataset_loader: DatasetLoader) -> Callable[[GraphState], Comma
     return run
 
 
+def _handle_confirmation(
+    state: GraphState,
+    dataset_loader: DatasetLoader,
+    job_submitter: JobSubmitter,
+) -> Command:
+    payload = state.pending_interrupt
+    if not isinstance(payload, ConfirmationPayload):
+        raise RuntimeError("confirmation state is missing its typed payload")
+    resumed = ConfirmationResume.model_validate(
+        interrupt(payload.model_dump(mode="json"))
+    )
+    if resumed.action == "cancel":
+        return Command(
+            update={
+                "pending_interrupt": None,
+                "response_text": "Analysis cancelled.",
+            },
+            goto=END,
+        )
+    if resumed.action == "modify":
+        return Command(
+            update={
+                "clarification_answer": resumed.modification,
+                "pending_interrupt": None,
+                "response_text": None,
+            },
+            goto="analysis",
+        )
+
+    if state.step_budget.used_steps >= state.step_budget.max_steps:
+        return Command(
+            update={
+                "pending_interrupt": None,
+                "response_text": "Analysis was not submitted because the step budget was exhausted.",
+            },
+            goto=END,
+        )
+    next_budget = state.step_budget.model_copy(
+        update={"used_steps": state.step_budget.used_steps + 1}
+    )
+    try:
+        job_ref = run_analysis(
+            state, payload, resumed, dataset_loader, job_submitter
+        )
+    except (DatasetLoadError, ExecutionRejected) as exc:
+        clarification = ClarificationPayload(
+            missing=[ClarificationItem(
+                field="input_fingerprint",
+                reason=str(exc)[:500],
+            )],
+            question=(
+                "The analysis inputs changed after validation. Review the current "
+                "datasets and confirm the analysis request again."
+            ),
+        )
+        answer = ClarificationResume.model_validate(
+            interrupt(clarification.model_dump(mode="json"))
+        )
+        return Command(
+            update={
+                "clarification_answer": answer.answer,
+                "pending_interrupt": clarification,
+                "response_text": None,
+                "step_budget": next_budget,
+            },
+            goto="analysis",
+        )
+
+    recent_jobs = [
+        item for item in state.recent_jobs if item.job_id != job_ref.job_id
+    ]
+    recent_jobs.append(job_ref)
+    return Command(
+        update={
+            "current_job": job_ref,
+            "recent_jobs": recent_jobs[-20:],
+            "pending_interrupt": None,
+            "response_text": f"Analysis job {job_ref.job_id} was submitted.",
+            "step_budget": next_budget,
+        },
+        goto=END,
+    )
+
+
+def run_analysis(
+    state: GraphState,
+    payload: ConfirmationPayload,
+    resumed: ConfirmationResume,
+    dataset_loader: DatasetLoader,
+    job_submitter: JobSubmitter,
+) -> JobRef:
+    """Submit after low-cost ownership, fingerprint, and schema checks."""
+
+    if resumed.idempotency_key is None:
+        raise ExecutionRejected("run action is missing an idempotency key")
+    dataset_refs = _load_owned_refs(state, dataset_loader)
+    fingerprint = compute_input_fingerprint(
+        owner_id=state.user_id,
+        dataset_refs=dataset_refs,
+        profiles=[item.profile for item in state.dataset_profiles],
+    )
+    if fingerprint.casefold() != payload.input_fingerprint.casefold():
+        raise ExecutionRejected("input fingerprint no longer matches validation")
+    _check_metadata_fields(payload, dataset_refs)
+    request = AnalysisExecutionRequest(
+        user_id=state.user_id,
+        thread_id=state.thread_id,
+        dataset_ids=[item.dataset_id for item in state.dataset_profiles],
+        resolved_params=payload.resolved_params,
+        input_fingerprint=payload.input_fingerprint,
+        idempotency_key=resumed.idempotency_key,
+    )
+    job_ref = job_submitter(request)
+    if job_ref.owner_id != state.user_id:
+        raise ExecutionRejected("job submitter returned a cross-user job")
+    return job_ref
+
+
 def _analysis_proposal(state: GraphState) -> AnalysisProposal:
     decision = state.decision
     proposal = decision.proposal if decision is not None else None
@@ -90,6 +235,18 @@ def _analysis_request_text(state: GraphState) -> str:
 
 
 def _load_validation_refs(
+    state: GraphState,
+    dataset_loader: DatasetLoader,
+) -> list[DatasetRef]:
+    loaded = _load_owned_refs(state, dataset_loader)
+    profiles = {item.dataset_id: item.profile for item in state.dataset_profiles}
+    return [
+        item.model_copy(update={"profile": profiles[item.dataset_id]})
+        for item in loaded
+    ]
+
+
+def _load_owned_refs(
     state: GraphState,
     dataset_loader: DatasetLoader,
 ) -> list[DatasetRef]:
@@ -114,8 +271,35 @@ def _load_validation_refs(
             raise DatasetLoadError("dataset loader returned a different dataset role")
         if item.checksum.casefold() != profile_ref.checksum.casefold():
             raise DatasetLoadError("dataset loader returned a different dataset checksum")
-        normalized.append(item.model_copy(update={"profile": profile_ref.profile}))
+        normalized.append(item.model_copy(update={"profile": None}))
     return normalized
+
+
+def _check_metadata_fields(
+    payload: ConfirmationPayload,
+    dataset_refs: list[DatasetRef],
+) -> None:
+    params = payload.resolved_params
+    contrast = getattr(params, "contrast", None)
+    if contrast is None:
+        return
+    metadata = next(
+        (item for item in dataset_refs if item.role == "metadata"),
+        None,
+    )
+    if metadata is None:
+        raise ExecutionRejected("metadata dataset is no longer available")
+    header = next(
+        csv.reader(io.StringIO(metadata.content.decode("utf-8-sig", errors="replace"))),
+        [],
+    )
+    available = {item.strip() for item in header}
+    required = {contrast.compare_field, *contrast.same_fields}
+    missing = sorted(required - available)
+    if missing:
+        raise ExecutionRejected(
+            "metadata fields are no longer available: " + ", ".join(missing)
+        )
 
 
 def _clarification_payload(
