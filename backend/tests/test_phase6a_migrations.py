@@ -40,3 +40,26 @@ def test_phase6_role_migration_preserves_append_only_and_no_delete_contracts() -
     ):
         assert table in sql
     assert "revoke delete" in sql
+
+
+def test_phase5_cleanup_drops_only_legacy_control_plane_storage() -> None:
+    sql = (
+        ROOT / "migrations" / "006_drop_legacy_agent_control_plane.sql"
+    ).read_text(encoding="utf-8").lower()
+
+    assert "drop table agent_approvals" in sql
+    assert "drop table agent_plans" in sql
+    for column in ("plan_id", "plan_hash", "pending_approval_id"):
+        assert f"drop column {column}" in sql
+    for retained in (
+        "agent_runs",
+        "agent_threads",
+        "agent_messages",
+        "agent_turns",
+        "agent_input_bundles",
+        "agent_input_files",
+        "jobs",
+        "artifacts",
+        "agent_events",
+    ):
+        assert f"drop table {retained}" not in sql
