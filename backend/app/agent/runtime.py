@@ -453,7 +453,22 @@ class ProductionRunCoordinator:
                         "请说明你的分析目标，例如「比较 salt 和 control 做差异分析」。"
                     )))
                     break
-                analysis_type = decision.analysis_recommendations[0]
+                # 服务端过滤：只保留 required_inputs 全部满足的推荐项
+                valid_recommendations = []
+                for rec in decision.analysis_recommendations:
+                    spec = self.context_builder.analysis_specs.get(rec)
+                    required_inputs = {rule.name for rule in spec.input_rules if rule.required}
+                    if required_inputs.issubset(role_set):
+                        valid_recommendations.append(rec)
+                if not valid_recommendations:
+                    # 所有推荐都不满足必需输入，进入追问
+                    state.state = AgentState.NEED_USER_INPUT
+                    blocks.append(AgentAdvisoryBlock(
+                        category=AdvisoryCategory.ANALYSIS_GUIDANCE,
+                        text=self._input_receipt_narration(state, inspected.rows, call_model),
+                    ))
+                    break
+                analysis_type = valid_recommendations[0]
                 reasons = decision.feasibility.reasons if decision.feasibility else []
                 blocks.append(AgentRecommendationBlock(recommendations=[AgentRecommendationItem(
                     analysis_type=analysis_type,

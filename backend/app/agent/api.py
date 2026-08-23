@@ -204,7 +204,37 @@ def create_agent_router(
         )
         records: list[AgentInputFileRecord] = []
         total_size = 0
+        new_fields = set(fields)
         try:
+            # 查找同一 thread 内最近的 active bundle，继承未覆盖的文件
+            previous_bundle = ctx.product_store.get_latest_active_bundle(
+                thread_id=thread_id,
+                user_id=user_id,
+                before=now,
+            )
+            if previous_bundle is not None:
+                previous_files = ctx.product_store.list_input_files(
+                    bundle_id=previous_bundle.bundle_id,
+                    user_id=user_id,
+                )
+                for prev_file in previous_files:
+                    if prev_file.field not in new_fields:
+                        # 继承未被新上传覆盖的角色
+                        inherited = AgentInputFileRecord(
+                            file_id=f"file-{uuid4()}",
+                            bundle_id=bundle.bundle_id,
+                            user_id=user_id,
+                            field=prev_file.field,
+                            filename=prev_file.filename,
+                            storage_key=prev_file.storage_key,
+                            checksum=prev_file.checksum,
+                            content_type=prev_file.content_type,
+                            size_bytes=prev_file.size_bytes,
+                            created_at=now,
+                        )
+                        records.append(inherited)
+                        total_size += inherited.size_bytes
+
             for field, upload in zip(fields, files):
                 stored = await ctx.files.save_staged_upload(bundle.bundle_id, field, upload)
                 total_size += stored.size_bytes

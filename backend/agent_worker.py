@@ -229,6 +229,14 @@ class ProductionTurnProcessor:
                 approval_gate=self.approvals,
             )
 
+        # 构造 ModelRouter，传入真实的 has_inputs 判据
+        from .app.agent.router import ModelRouter, RuleRouter
+        router = ModelRouter(
+            model=self.model,
+            fallback=RuleRouter(),
+            has_inputs=lambda _state: bool(tool_runtime.inputs),
+        )
+
         return ProductionRunCoordinator(
             state_store=self.state_store,
             plan_store=self.plan_store,
@@ -236,6 +244,7 @@ class ProductionTurnProcessor:
             event_store=self.events,
             model=self.model,
             tool_runtime=tool_runtime,
+            router=router,
             timeout_seconds=self.timeout_seconds,
             max_model_calls=self.max_model_calls,
         ).execute_turn(

@@ -94,6 +94,9 @@ class AgentProductStore(Protocol):
     def list_input_files(self, *, bundle_id: str, user_id: str) -> list[AgentInputFileRecord]:
         ...
 
+    def get_latest_active_bundle(self, *, thread_id: str, user_id: str, before: datetime) -> AgentInputBundleRecord | None:
+        ...
+
 
 class InMemoryAgentProductStore:
     """普通 CI 使用的精确 repository 契约，不生成业务假数据。"""
@@ -303,6 +306,22 @@ class InMemoryAgentProductStore:
         ]
         records.sort(key=lambda item: (item.created_at, item.file_id))
         return records
+
+    def get_latest_active_bundle(self, *, thread_id: str, user_id: str, before: datetime) -> AgentInputBundleRecord | None:
+        self.get_thread(thread_id=thread_id, user_id=user_id)
+        candidates = [
+            AgentInputBundleRecord.model_validate(deepcopy(payload))
+            for payload in self._bundles.values()
+            if (payload["thread_id"] == thread_id
+                and payload["user_id"] == user_id
+                and payload["status"] == "active"
+                and payload["created_at"] < before)
+        ]
+        candidates = [b for b in candidates if b.expires_at > before]
+        if not candidates:
+            return None
+        candidates.sort(key=lambda item: item.created_at, reverse=True)
+        return candidates[0]
 
 
 class PostgresAgentProductStore:
@@ -867,6 +886,28 @@ class PostgresAgentProductStore:
             "checksum", "content_type", "size_bytes", "created_at",
         )
         return [AgentInputFileRecord.model_validate(dict(zip(fields, row))) for row in rows]
+
+    def get_latest_active_bundle(self, *, thread_id: str, user_id: str, before: datetime) -> AgentInputBundleRecord | None:
+        self.get_thread(thread_id=thread_id, user_id=user_id)
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                select bundle_id, thread_id, user_id, status, expires_at, created_at
+                from agent_input_bundles
+                where thread_id = %s and user_id = %s
+                  and status = 'active'
+                  and created_at < %s
+                  and expires_at > %s
+                order by created_at desc
+                limit 1
+                """,
+                (thread_id, user_id, before, before),
+            ).fetchone()
+        if row is None:
+            return None
+        return AgentInputBundleRecord.model_validate(dict(zip(
+            ("bundle_id", "thread_id", "user_id", "status", "expires_at", "created_at"), row,
+        )))
 
     def _connect(self):
         try:

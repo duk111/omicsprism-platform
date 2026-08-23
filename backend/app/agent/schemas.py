@@ -397,7 +397,18 @@ class ModelContext(ContractModel):
             elif isinstance(item, str):
                 if len(item) > 400:
                     raise ValueError("system_facts text is too long")
-                if re.search(r"[A-Za-z][A-Za-z0-9+.-]*://|[/\\]|sha256:[0-9a-fA-F]{16,}|\b[0-9a-fA-F]{32,}\b|Traceback \(most recent call last\)|[\r\n\t]", item, re.I):
+                # 收窄为真正的路径形态，避免误杀斜杠
+                if re.search(
+                    r"[A-Za-z][A-Za-z0-9+.-]*://|"  # scheme://
+                    r"(^|\s)[/~][A-Za-z0-9._-]|"  # 绝对路径
+                    r"\.\./|"  # 相对路径
+                    r"[A-Za-z]:\\|"  # Windows 路径
+                    r"sha256:[0-9a-fA-F]{16,}|"  # checksum
+                    r"\b[0-9a-fA-F]{32,}\b|"  # 长 hex
+                    r"Traceback \(most recent call last\)",  # 异常堆栈
+                    item,
+                    re.I
+                ):
                     raise ValueError("system_facts contains sensitive data")
 
         walk(value)
@@ -409,16 +420,30 @@ class ModelContext(ContractModel):
         if situation not in supported_situations:
             raise ValueError("system_facts does not match a supported situation")
         if situation == "pending_approval":
-            if not isinstance(value["contrast_count"], int) or isinstance(value["contrast_count"], bool) or value["contrast_count"] < 0:
+            contrast_count = value.get("contrast_count")
+            if contrast_count is None:
+                raise ValueError("pending_approval requires contrast_count")
+            if not isinstance(contrast_count, int) or isinstance(contrast_count, bool) or contrast_count < 0:
                 raise ValueError("contrast_count must be a non-negative integer")
-            if not isinstance(value["expires_in_minutes"], int) or isinstance(value["expires_in_minutes"], bool) or value["expires_in_minutes"] < 0:
+            expires_in_minutes = value.get("expires_in_minutes")
+            if expires_in_minutes is None:
+                raise ValueError("pending_approval requires expires_in_minutes")
+            if not isinstance(expires_in_minutes, int) or isinstance(expires_in_minutes, bool) or expires_in_minutes < 0:
                 raise ValueError("expires_in_minutes must be a non-negative integer")
-            if value["user_options"] != ["approve", "reject", "modify_params", "explain_plan"]:
+            user_options = value.get("user_options")
+            if user_options != ["approve", "reject", "modify_params", "explain_plan"]:
                 raise ValueError("user_options is not the server-defined list")
         elif situation == "preflight_blocked":
-            errors = value["errors"]
-            roles = value["roles_present"]
-            if not isinstance(value["error_count"], int) or isinstance(value["error_count"], bool) or value["error_count"] < 0:
+            errors = value.get("errors")
+            if errors is None:
+                raise ValueError("preflight_blocked requires errors")
+            roles = value.get("roles_present")
+            if roles is None:
+                raise ValueError("preflight_blocked requires roles_present")
+            error_count = value.get("error_count")
+            if error_count is None:
+                raise ValueError("preflight_blocked requires error_count")
+            if not isinstance(error_count, int) or isinstance(error_count, bool) or error_count < 0:
                 raise ValueError("error_count must be a non-negative integer")
             if not isinstance(errors, list) or len(errors) > 3 or any(not isinstance(item, str) or len(item) > 200 for item in errors):
                 raise ValueError("errors must contain at most three bounded strings")

@@ -121,6 +121,84 @@ class VllmModelAdapter(StructuredModelAdapter):
             repaired = self._repair_live(safe_context, response)
             return _validate_model_response(repaired, adapter=adapter)
 
+    def classify(self, user_message: str, state: Any) -> dict[str, Any]:
+        """独立的路由分类调用，只用于意图识别，不携带工具、输入或证据。"""
+        self.request_count += 1
+        headers = {"Content-Type": "application/json"}
+        if self.api_key:
+            headers["Authorization"] = f"Bearer {self.api_key}"
+
+        # 构造路由专用的 system prompt
+        route_system_prompt = """You are an intent classifier for a bioinformatics analysis assistant.
+Classify the user's message into one of these intents:
+- ANALYZE: user wants to run a new analysis
+- INTERPRET: user wants to interpret existing results
+- CHECK_STATUS: user wants to check job status
+- DESCRIBE_ONLY: user is asking about data or capabilities without running analysis
+- EXPLAIN_PLAN: user wants to understand a proposed analysis plan
+- HELP: user wants to know what the assistant can do
+- RERUN: user wants to rerun a previous analysis
+- UNCLEAR: cannot determine intent
+
+Set is_param_negotiation to true only if the user is providing or adjusting analysis parameters.
+Set confidence to "high" if you are confident about the classification, "low" otherwise."""
+
+        # 构造最小上下文
+        context_summary = {
+            "user_message": user_message,
+            "has_in_scope_jobs": bool(getattr(state.focus, "in_scope_job_ids", [])),
+            "current_state": state.state.value if hasattr(state, "state") else "unknown",
+        }
+
+        # 使用 ModelRouteDecision 的 schema
+        from .schemas import ModelRouteDecision
+        response_schema = ModelRouteDecision.model_json_schema()
+
+        messages = [
+            {"role": "system", "content": route_system_prompt},
+            {"role": "user", "content": json.dumps(context_summary, ensure_ascii=False)},
+        ]
+
+        response = self.client.post(
+            self.endpoint,
+            headers=headers,
+            json={
+                "model": self.model_name,
+                "temperature": 0,
+                "max_tokens": 128,
+                "response_format": {
+                    "type": "json_schema",
+                    "json_schema": {
+                        "name": "route_decision",
+                        "strict": True,
+                        "schema": response_schema,
+                    },
+                },
+                "chat_template_kwargs": {"enable_thinking": False},
+                "messages": messages,
+            },
+        )
+
+        try:
+            response.raise_for_status()
+        except httpx.HTTPStatusError as exc:
+            detail = _response_error_detail(response)
+            message = str(exc)
+            if detail:
+                message = f"{message}; vllm_error={detail}"
+            raise httpx.HTTPStatusError(
+                message,
+                request=exc.request,
+                response=exc.response,
+            ) from exc
+
+        payload = response.json()
+        try:
+            content = payload["choices"][0]["message"]["content"]
+            return json.loads(content)
+        except (KeyError, IndexError, TypeError, json.JSONDecodeError) as exc:
+            raise ModelBoundaryError("vLLM classify response invalid") from exc
+
     def _complete_live(self, context: Mapping[str, JsonValue]) -> Mapping[str, Any] | str:
         return self._request_live(context)
 
