@@ -12,6 +12,7 @@ from .param_resolver import AnalysisProposal, resolve_analysis_request
 
 AnalysisName = Literal["DEG", "DEM", "GMA"]
 DEFAULT_PARAMETER_CASES_PATH = Path(__file__).with_name("fixtures") / "parameter_inference_cases.json"
+DEFAULT_AMBIGUITY_CASES_PATH = Path(__file__).with_name("fixtures") / "ambiguity_cases.json"
 
 
 class ExpectedContrast(BaseModel):
@@ -43,6 +44,42 @@ class ParameterInferenceResult(BaseModel):
     pair_accuracy: float = Field(ge=0, le=1)
     full_contrast_exact_match: bool
     issues: list[str] = Field(default_factory=list)
+
+
+class AmbiguityCase(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    case_id: str = Field(min_length=1)
+    user_message: str
+    profiles: list[DatasetProfile]
+    proposal: AnalysisProposal
+    should_clarify: bool
+    expected_missing_field: str | None = None
+
+
+class AmbiguityCaseResult(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    case_id: str
+    should_clarify: bool
+    clarification_requested: bool
+    auto_run: bool
+    illegal_auto_run: bool
+    matched: bool
+    missing_field: str | None = None
+    issues: list[str] = Field(default_factory=list)
+
+
+class AmbiguityEvaluation(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    case_count: int = Field(ge=0)
+    clarification_case_count: int = Field(ge=0)
+    no_clarification_case_count: int = Field(ge=0)
+    clarification_recall: float = Field(ge=0, le=1)
+    false_positive_rate: float = Field(ge=0, le=1)
+    illegal_auto_run_count: int = Field(ge=0)
+    cases: list[AmbiguityCaseResult] = Field(default_factory=list)
 
 
 def load_parameter_inference_cases(
@@ -106,7 +143,78 @@ def evaluate_parameter_inference(case: ParameterInferenceCase) -> ParameterInfer
     )
 
 
+def load_ambiguity_cases(
+    path: Path = DEFAULT_AMBIGUITY_CASES_PATH,
+) -> list[AmbiguityCase]:
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(payload, list):
+        raise ValueError("ambiguity case file must contain a JSON array")
+    cases = [AmbiguityCase.model_validate(item) for item in payload]
+    case_ids = [case.case_id for case in cases]
+    if len(case_ids) != len(set(case_ids)):
+        raise ValueError("ambiguity case ids must be unique")
+    return cases
+
+
+def evaluate_ambiguity_case(case: AmbiguityCase) -> AmbiguityCaseResult:
+    resolved = resolve_analysis_request(case.user_message, case.profiles, case.proposal)
+    clarification_requested = bool(resolved.missing)
+    auto_run = resolved.params is not None and not resolved.missing
+    missing_field = resolved.missing[0].field if resolved.missing else None
+    illegal_auto_run = case.should_clarify and auto_run
+    matched = clarification_requested == case.should_clarify and (
+        case.expected_missing_field is None
+        or missing_field == case.expected_missing_field
+    )
+    issues: list[str] = []
+    if clarification_requested != case.should_clarify:
+        expected = "clarification" if case.should_clarify else "resolved execution"
+        actual = "clarification" if clarification_requested else "resolved execution"
+        issues.append(f"expected {expected}, got {actual}")
+    if case.expected_missing_field is not None and missing_field != case.expected_missing_field:
+        issues.append(
+            f"missing field: expected {case.expected_missing_field!r}, got {missing_field!r}"
+        )
+    if illegal_auto_run:
+        issues.append("ambiguous case resolved to executable parameters")
+    return AmbiguityCaseResult(
+        case_id=case.case_id,
+        should_clarify=case.should_clarify,
+        clarification_requested=clarification_requested,
+        auto_run=auto_run,
+        illegal_auto_run=illegal_auto_run,
+        matched=matched,
+        missing_field=missing_field,
+        issues=issues,
+    )
+
+
+def evaluate_ambiguity_cases(cases: list[AmbiguityCase]) -> AmbiguityEvaluation:
+    results = [evaluate_ambiguity_case(case) for case in cases]
+    clarification_cases = [result for result in results if result.should_clarify]
+    no_clarification_cases = [result for result in results if not result.should_clarify]
+    true_positives = sum(
+        result.clarification_requested for result in clarification_cases
+    )
+    false_positives = sum(
+        result.clarification_requested for result in no_clarification_cases
+    )
+    return AmbiguityEvaluation(
+        case_count=len(results),
+        clarification_case_count=len(clarification_cases),
+        no_clarification_case_count=len(no_clarification_cases),
+        clarification_recall=_rate(true_positives, len(clarification_cases)),
+        false_positive_rate=_rate(false_positives, len(no_clarification_cases)),
+        illegal_auto_run_count=sum(result.illegal_auto_run for result in results),
+        cases=results,
+    )
+
+
 def _accuracy(checks: list[tuple[str, object, object]]) -> float:
     if not checks:
         return 1.0
     return sum(actual == expected for _, actual, expected in checks) / len(checks)
+
+
+def _rate(numerator: int, denominator: int) -> float:
+    return numerator / denominator if denominator else 1.0
