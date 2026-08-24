@@ -1,0 +1,65 @@
+[
+  {
+    "case_id": "deg_explicit_pair_001",
+    "user_message": "Compare salt and control in the treatment experiment",
+    "profiles": [
+      {
+        "role": "metadata",
+        "columns": ["sample_id", "treatment"],
+        "levels": {"treatment": {"control": 2, "salt": 2}},
+        "sample_ids": ["s1", "s2", "s3", "s4"],
+        "rows": [["s1", "control"], ["s2", "control"], ["s3", "salt"], ["s4", "salt"]],
+        "alignment": {}
+      }
+    ],
+    "proposal": {"analysis_type": "DEG"},
+    "expected": {
+      "analysis_type": "DEG",
+      "compare_field": "treatment",
+      "tested_level": "salt",
+      "reference_level": "control",
+      "same_fields": {}
+    }
+  },
+  {
+    "case_id": "dem_multifactor_001",
+    "user_message": "Compare salt and control for WT at 24h",
+    "profiles": [
+      {
+        "role": "metadata",
+        "columns": ["sample_id", "genotype", "timepoint", "treatment"],
+        "levels": {
+          "genotype": {"WT": 8, "mutant": 8},
+          "timepoint": {"0h": 8, "24h": 8},
+          "treatment": {"control": 8, "salt": 8}
+        },
+        "sample_ids": ["s1", "s2", "s3", "s4", "s5", "s6", "s7", "s8", "s9", "s10", "s11", "s12", "s13", "s14", "s15", "s16"],
+        "rows": [
+          ["s1", "WT", "0h", "control"], ["s2", "WT", "0h", "control"], ["s3", "WT", "0h", "salt"], ["s4", "WT", "0h", "salt"],
+          ["s5", "WT", "24h", "control"], ["s6", "WT", "24h", "control"], ["s7", "WT", "24h", "salt"], ["s8", "WT", "24h", "salt"],
+          ["s9", "mutant", "0h", "control"], ["s10", "mutant", "0h", "control"], ["s11", "mutant", "0h", "salt"], ["s12", "mutant", "0h", "salt"],
+          ["s13", "mutant", "24h", "control"], ["s14", "mutant", "24h", "control"], ["s15", "mutant", "24h", "salt"], ["s16", "mutant", "24h", "salt"]
+        ],
+        "alignment": {}
+      }
+    ],
+    "proposal": {"analysis_type": "DEM"},
+    "expected": {
+      "analysis_type": "DEM",
+      "compare_field": "treatment",
+      "tested_level": "salt",
+      "reference_level": "control",
+      "same_fields": {"genotype": "WT", "timepoint": "24h"}
+    }
+  },
+  {
+    "case_id": "gma_defaults_001",
+    "user_message": "Run a gene-metabolite association analysis",
+    "profiles": [],
+    "proposal": {"analysis_type": "GMA"},
+    "expected": {
+      "analysis_type": "GMA",
+      "same_fields": {}
+    }
+  }
+]
