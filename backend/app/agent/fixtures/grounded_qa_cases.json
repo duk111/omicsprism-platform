@@ -1,0 +1,104 @@
+[
+  {
+    "case_id": "grounded_numeric_entity_001",
+    "user_id": "user-1",
+    "question": "What happened to GeneA?",
+    "job": {
+      "job_id": "job-qa-1",
+      "owner_id": "user-1",
+      "status": "succeeded",
+      "progress": 100,
+      "progress_step": null,
+      "error": null,
+      "artifacts": ["differential_gene_counts.csv"]
+    },
+    "evidence": {
+      "tool": "query_result_evidence",
+      "ok": true,
+      "rows": [{"_row_id": 4, "Gene": "GeneA", "log2FoldChange": "2.5", "padj": "0.01"}],
+      "truncated": false,
+      "row_count": 1,
+      "artifact": "differential_gene_counts.csv",
+      "checksum": "sha256:fixture-qa-1",
+      "filters": {},
+      "sort": null,
+      "error_code": null
+    },
+    "draft": {
+      "claims": [{
+        "text": "GeneA has log2FoldChange 2.5 and padj 0.01",
+        "citation": {"artifact": "differential_gene_counts.csv", "checksum": "sha256:fixture-qa-1", "row_ids": [4]}
+      }]
+    },
+    "entity_field": "Gene",
+    "claimed_entities": ["GeneA"],
+    "expected_evidence_sufficient": true,
+    "expected_refusal": false
+  },
+  {
+    "case_id": "grounded_hallucinated_entity_001",
+    "user_id": "user-1",
+    "question": "Does GeneZ have a significant change?",
+    "job": {
+      "job_id": "job-qa-2",
+      "owner_id": "user-1",
+      "status": "succeeded",
+      "progress": 100,
+      "progress_step": null,
+      "error": null,
+      "artifacts": ["differential_gene_counts.csv"]
+    },
+    "evidence": {
+      "tool": "query_result_evidence",
+      "ok": true,
+      "rows": [{"_row_id": 2, "Gene": "GeneA", "log2FoldChange": "1.2", "padj": "0.04"}],
+      "truncated": false,
+      "row_count": 1,
+      "artifact": "differential_gene_counts.csv",
+      "checksum": "sha256:fixture-qa-2",
+      "filters": {},
+      "sort": null,
+      "error_code": null
+    },
+    "draft": {
+      "claims": [{
+        "text": "GeneZ has log2FoldChange 1.2",
+        "citation": {"artifact": "differential_gene_counts.csv", "checksum": "sha256:fixture-qa-2", "row_ids": [2]}
+      }]
+    },
+    "entity_field": "Gene",
+    "claimed_entities": ["GeneZ"],
+    "expected_evidence_sufficient": true,
+    "expected_refusal": false
+  },
+  {
+    "case_id": "grounded_insufficient_evidence_001",
+    "user_id": "user-1",
+    "question": "What is the result for GeneA?",
+    "job": {
+      "job_id": "job-qa-3",
+      "owner_id": "user-1",
+      "status": "succeeded",
+      "progress": 100,
+      "progress_step": null,
+      "error": null,
+      "artifacts": ["differential_gene_counts.csv"]
+    },
+    "evidence": {
+      "tool": "query_result_evidence",
+      "ok": true,
+      "rows": [],
+      "truncated": false,
+      "row_count": 0,
+      "artifact": "differential_gene_counts.csv",
+      "checksum": "sha256:fixture-qa-3",
+      "filters": {"resolve_entity": "GeneA"},
+      "sort": null,
+      "error_code": null
+    },
+    "entity_field": "Gene",
+    "claimed_entities": [],
+    "expected_evidence_sufficient": false,
+    "expected_refusal": true
+  }
+]
