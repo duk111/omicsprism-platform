@@ -5,10 +5,9 @@ from copy import deepcopy
 import pytest
 from pydantic import ValidationError
 
+from backend.app.agent.graph import AgentDecision
 from backend.app.agent.schemas import (
-    AgentDecision,
     GroundedAnswer,
-    RouteDecision,
     RunState,
     ToolResult,
     VerifierVerdict,
@@ -16,27 +15,6 @@ from backend.app.agent.schemas import (
 
 
 VALID_SAMPLES = {
-    RouteDecision: {
-        "intent": "interpret",
-        "target_profile": "interpretation",
-        "reason": "已有完成的任务，用户正在追问结果",
-    },
-    AgentDecision: {
-        "action": "propose_plan",
-        "reasoning_summary": "现有输入支持生成分析计划",
-        "feasibility": {
-            "verdict": "answerable",
-            "reasons": ["输入类型齐全"],
-            "missing_information": [],
-        },
-        "analysis_recommendations": ["deg", "dem", "gma"],
-        "requires_approval": True,
-        "requested_params": {
-            "compare_field": "treatment",
-            "tested_levels": "salt",
-            "reference_level": "control",
-        },
-    },
     RunState: {
         "run_id": "run-1",
         "user_id": "user-1",
@@ -61,47 +39,34 @@ VALID_SAMPLES = {
     ToolResult: {
         "tool": "query_result_evidence",
         "ok": True,
-        "rows": [
-            {
-                "Source": "GeneA",
-                "Target": "M0123",
-                "EdgeWeight": 0.82,
-                "PearsonR": 0.71,
-                "RRARank": 3,
-                "Sign": "positive",
-            }
-        ],
+        "rows": [{"Target": "M0123", "PearsonR": 0.71}],
         "truncated": False,
-        "row_count": 12,
+        "row_count": 1,
         "artifact": "T02_High_Confidence_Network.csv",
         "checksum": "sha256:artifact",
         "filters": {"Target": "M0123"},
-        "sort": "EdgeWeight desc",
+        "sort": "PearsonR desc",
         "error_code": None,
     },
     GroundedAnswer: {
-        "claims": [
-            {
-                "text": "与脯氨酸边权最高的基因为 GeneA",
-                "citation": {
-                    "artifact": "T02_High_Confidence_Network.csv",
-                    "checksum": "sha256:artifact",
-                    "row_ids": [12],
-                },
-            }
-        ]
+        "claims": [{
+            "text": "GeneA has the strongest association.",
+            "citation": {
+                "artifact": "T02_High_Confidence_Network.csv",
+                "checksum": "sha256:artifact",
+                "row_ids": [12],
+            },
+        }],
     },
     VerifierVerdict: {
         "verdict": "approved",
-        "checks": [
-            {
-                "claim_index": 0,
-                "number_matches_evidence": True,
-                "citation_valid": True,
-                "beyond_evidence": False,
-                "issues": [],
-            }
-        ],
+        "checks": [{
+            "claim_index": 0,
+            "number_matches_evidence": True,
+            "citation_valid": True,
+            "beyond_evidence": False,
+            "issues": [],
+        }],
     },
 }
 
@@ -123,8 +88,6 @@ def test_missing_required_field_is_rejected(schema, payload) -> None:
 @pytest.mark.parametrize(
     ("schema", "payload", "field"),
     [
-        (RouteDecision, VALID_SAMPLES[RouteDecision], "intent"),
-        (AgentDecision, VALID_SAMPLES[AgentDecision], "action"),
         (RunState, VALID_SAMPLES[RunState], "active_profile"),
         (ToolResult, VALID_SAMPLES[ToolResult], "tool"),
         (VerifierVerdict, VALID_SAMPLES[VerifierVerdict], "verdict"),
@@ -139,60 +102,14 @@ def test_invalid_enum_value_is_rejected(schema, payload, field) -> None:
 
 
 def test_unknown_fields_are_rejected() -> None:
-    invalid = {**VALID_SAMPLES[RouteDecision], "unexpected": "value"}
+    invalid = {**VALID_SAMPLES[RunState], "unexpected": "value"}
 
     with pytest.raises(ValidationError):
-        RouteDecision.model_validate(invalid)
+        RunState.model_validate(invalid)
 
 
-@pytest.mark.parametrize(
-    ("field", "value"),
-    [
-        ("reasoning_summary", "x" * 241),
-        ("analysis_recommendations", ["deg", "dem", "gma", "deg"]),
-        ("requested_params", {f"param_{index}": index for index in range(33)}),
-        ("requested_params", {"nested": {"not": "a scalar"}}),
-    ],
-)
-def test_agent_decision_rejects_unbounded_model_output(field, value) -> None:
-    invalid = deepcopy(VALID_SAMPLES[AgentDecision])
-    invalid[field] = value
+def test_graph_agent_decision_is_the_single_dispatch_contract() -> None:
+    decision = AgentDecision(action="get_job", job_id="job-1")
 
-    with pytest.raises(ValidationError):
-        AgentDecision.model_validate(invalid)
-
-
-def test_agent_decision_json_schema_exposes_guided_output_bounds() -> None:
-    schema = AgentDecision.model_json_schema()
-    properties = schema["properties"]
-
-    assert properties["reasoning_summary"]["maxLength"] == 240
-    assert properties["analysis_recommendations"]["maxItems"] == 3
-    assert properties["requested_params"]["maxProperties"] == 32
-    advisory_schema = next(
-        item for item in properties["advisory_answer"]["anyOf"]
-        if item.get("type") == "string"
-    )
-    assert advisory_schema["maxLength"] == 1200
-    feasibility = schema["$defs"]["Feasibility"]["properties"]
-    assert feasibility["reasons"]["maxItems"] == 3
-    assert feasibility["missing_information"]["maxItems"] == 3
-
-
-def test_agent_decision_accepts_bounded_advisory_answer() -> None:
-    payload = {
-        "action": "answer",
-        "reasoning_summary": "General biology question",
-        "feasibility": None,
-        "analysis_recommendations": [],
-        "requires_approval": False,
-        "requested_params": {},
-        "grounded_answer": None,
-        "advisory_answer": "ABA is a plant hormone involved in stress responses.",
-    }
-
-    decision = AgentDecision.model_validate(payload)
-
-    assert decision.advisory_answer.startswith("ABA")
-    with pytest.raises(ValidationError):
-        AgentDecision.model_validate({**payload, "advisory_answer": "x" * 1201})
+    assert decision.action == "get_job"
+    assert not hasattr(decision, "requires_approval")

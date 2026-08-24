@@ -11,7 +11,6 @@ from backend.app.agent.product_store import (
     InMemoryAgentProductStore,
 )
 from backend.app.agent.schemas import (
-    AgentDecision,
     AgentInputBundleRecord,
     AgentMessageRecord,
     AgentThreadCreateRequest,
@@ -65,32 +64,6 @@ def test_agent_http_requests_reject_client_supplied_user_id(schema, payload) -> 
 
     with pytest.raises(ValidationError):
         schema.model_validate(payload)
-
-
-def test_grounded_answer_in_agent_decision_is_bounded() -> None:
-    payload = {
-        "action": "answer",
-        "reasoning_summary": "Answer from returned evidence",
-        "feasibility": None,
-        "analysis_recommendations": [],
-        "requires_approval": False,
-        "requested_params": {},
-        "grounded_answer": {
-            "claims": [{
-                "text": "GeneA has PearsonR 0.71",
-                "citation": {
-                    "artifact": "T02_High_Confidence_Network.csv",
-                    "checksum": "sha256:fixture",
-                    "row_ids": [7],
-                },
-            }],
-        },
-    }
-    assert AgentDecision.model_validate(payload).grounded_answer is not None
-
-    payload["grounded_answer"]["claims"][0]["text"] = "x" * 1001
-    with pytest.raises(ValidationError):
-        AgentDecision.model_validate(payload)
 
 
 def test_product_store_hides_cross_user_resources_as_not_found() -> None:
