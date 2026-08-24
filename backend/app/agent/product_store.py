@@ -280,10 +280,9 @@ class InMemoryAgentProductStore:
             for payload in self._bundles.values()
             if (payload["thread_id"] == thread_id
                 and payload["user_id"] == user_id
-                and payload["status"] == "active"
-                and payload["created_at"] < before)
+                and payload["status"] == "active")
         ]
-        candidates = [b for b in candidates if b.expires_at > before]
+        candidates = [b for b in candidates if b.created_at < before and b.expires_at > before]
         if not candidates:
             return None
         candidates.sort(key=lambda item: item.created_at, reverse=True)

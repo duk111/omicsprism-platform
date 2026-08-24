@@ -33,6 +33,7 @@ clean after each commit.
 | 6.5 | `15 passed` | `162 passed, 2 skipped, 3 failed` | Eval runner tests and domain evaluation runner. |
 | Schema cleanup | `54 passed` | `150 passed, 2 skipped, 3 failed` | Removed legacy decision/context contracts; the three known bundle inheritance failures remain. |
 | State/lease cleanup | `34 passed` | `150 passed, 2 skipped, 3 failed` | Removed zombie run-state fields and turn leases; the same three known bundle inheritance failures remain. |
+| Bundle inheritance fix | `5 passed` | `153 passed, 2 skipped` | Fixed in-memory bundle timestamp filtering; all backend tests now pass. |
 
 | Frontend unit tests | `4 files, 13 passed` | Not applicable | `npm --prefix frontend run test`. |
 | Frontend production build | Successful | Not applicable | `npm --prefix frontend run build`; Vite emitted a large-chunk warning only. |
@@ -41,9 +42,9 @@ The Phase 6 targeted suites were run with the relevant prior suites. For
 example, 6.3 included the Phase 4 grounding and JSON query tests, and 6.4
 included the complete graph flow suite.
 
-## Known Full-Test Failures
+## Historical Full-Test Failures (Resolved)
 
-The same three failures remained throughout the Phase 6 full backend runs:
+The following three failures appeared in earlier Phase 6 full backend runs:
 
 ```text
 backend/tests/test_fix02_bundle_inheritance.py::test_consecutive_bundles_inherit_previous_files
@@ -58,10 +59,11 @@ TypeError: '<' not supported between instances of 'str' and 'datetime.datetime'
 backend/app/agent/product_store.py:284
 ```
 
-These failures are in the pre-existing in-memory product store bundle
-inheritance path. They were not changed as part of Phase 6 because the Phase 6
-scope is domain evaluation and the product store is outside that task. No test
-was skipped, weakened, or altered to hide the failures.
+They were caused by comparing a JSON-serialized `created_at` string with a
+`datetime` in the in-memory product store. The query now compares timestamps
+after Pydantic deserialization, matching the existing expiration check. The
+bundle regression suite and the full backend suite pass without skipped or
+weakened assertions.
 
 ## Phase 6 Domain Evaluation
 
