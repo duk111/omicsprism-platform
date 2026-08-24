@@ -31,6 +31,7 @@ clean after each commit.
 | 6.3 | `25 passed` | `156 passed, 2 skipped, 3 failed` | Grounded QA cases and citation/evidence checks. |
 | 6.4 | `25 passed` | `160 passed, 2 skipped, 3 failed` | Capability isolation regressions. |
 | 6.5 | `15 passed` | `162 passed, 2 skipped, 3 failed` | Eval runner tests and domain evaluation runner. |
+| Schema cleanup | `54 passed` | `150 passed, 2 skipped, 3 failed` | Removed legacy decision/context contracts; the three known bundle inheritance failures remain. |
 
 | Frontend unit tests | `4 files, 13 passed` | Not applicable | `npm --prefix frontend run test`. |
 | Frontend production build | Successful | Not applicable | `npm --prefix frontend run build`; Vite emitted a large-chunk warning only. |
