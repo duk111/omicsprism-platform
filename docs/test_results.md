@@ -38,6 +38,8 @@ clean after each commit.
 
 | Frontend unit tests | `4 files, 13 passed` | Not applicable | `npm --prefix frontend run test`. |
 | Frontend production build | Successful | Not applicable | `npm --prefix frontend run build`; Vite emitted a large-chunk warning only. |
+| Frontend E2E after contract cleanup | `6 passed` | Not applicable | `npm --prefix frontend run test:e2e`; Vite logged expected job-progress proxy errors because no backend was running during the mocked browser run. |
+| Production deployment audit | Passed static checks | Not applicable | Compose YAML parsed; API model settings are injected and Uvicorn is fixed to one worker for `InMemorySaver`. Docker CLI was unavailable in the local verification environment. |
 
 The Phase 6 targeted suites were run with the relevant prior suites. For
 example, 6.3 included the Phase 4 grounding and JSON query tests, and 6.4

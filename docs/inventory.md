@@ -66,14 +66,12 @@ deletions.
 
 ## Frontend Agent Coupling
 
-- Approval API calls and `plan_hash` payloads live in
-  `frontend/src/copilot/agentApi.ts` (`decideApproval`) and are rendered by
-  `frontend/src/copilot/MessageBlocks.tsx` / `CopilotPage.tsx`.
-- Legacy approval, plan, and run state types are currently hand-maintained in
-  `frontend/src/api-types.ts`; they are not generated at build time.
-- `frontend/scripts/generate-api-types.mjs` exists for future regeneration from
-  the OpenAPI schema. Phase 4.9 and Phase 5.7 are the only authorized frontend
-  touch points for the graph interrupt contract and approval removal.
-- Existing frontend tests with legacy coupling include
-  `frontend/src/copilot/MessageBlocks.test.tsx` and
+- `frontend/src/api-types.ts` is generated from the current FastAPI OpenAPI
+  schema with `frontend/scripts/generate-api-types.mjs`.
+- Copilot uses the graph `clarification` / `confirmation` interrupt contract;
+  resume actions are sent through `frontend/src/copilot/agentApi.ts`.
+- Approval, `plan_hash`, `active_profile`, and legacy run-state fields are no
+  longer part of the frontend contract.
+- Current frontend regression coverage includes
+  `frontend/src/copilot/GraphInterruptPanel.test.tsx` and
   `frontend/e2e/copilot.spec.ts`.
