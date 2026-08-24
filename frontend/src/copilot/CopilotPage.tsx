@@ -94,6 +94,7 @@ export default function CopilotPage() {
 
   const pendingTurn = turns.some(turn => turn.status === "queued" || turn.status === "running");
   const focusIds = run?.focus.in_scope_job_ids ?? [];
+  const checkpointLabel = run ? `Version ${run.version}` : "Ready";
 
   async function send() {
     const text = draft.trim();
@@ -161,7 +162,7 @@ export default function CopilotPage() {
       </div>
     </section>
 
-    <aside className="copilot-context" aria-label="Conversation context"><section><span className="context-label">Profile</span><strong>{run?.active_profile === "interpretation" ? "Result interpretation" : "Analysis"}</strong><p>{run?.state ? run.state.replace(/_/g, " ").toLowerCase() : "Ready"}</p></section><section><span className="context-label">Focused jobs</span>{focusIds.length ? <ul>{focusIds.map(id => <li key={id}><a href={`/jobs/${encodeURIComponent(id)}`}>{id.slice(0, 8)}...</a></li>)}</ul> : <p>No job selected</p>}</section><section><span className="context-label">Input roles</span><p>Assign each CSV its role before sending. Copilot validates the files before confirmation.</p></section></aside>
+    <aside className="copilot-context" aria-label="Conversation context"><section><span className="context-label">Checkpoint</span><strong>{checkpointLabel}</strong><p>Graph checkpoint</p></section><section><span className="context-label">Focused jobs</span>{focusIds.length ? <ul>{focusIds.map(id => <li key={id}><a href={`/jobs/${encodeURIComponent(id)}`}>{id.slice(0, 8)}...</a></li>)}</ul> : <p>No job selected</p>}</section><section><span className="context-label">Input roles</span><p>Assign each CSV its role before sending. Copilot validates the files before confirmation.</p></section></aside>
     {railOpen && <button className="rail-backdrop" type="button" aria-label="Close conversations" onClick={() => setRailOpen(false)} />}
   </main>;
 }

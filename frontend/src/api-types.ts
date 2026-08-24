@@ -1,13 +1,9 @@
 // Auto-generated from FastAPI /openapi.json; run `npm run generate-api-types` to refresh
-// Source: http://127.0.0.1:8765/openapi.json
-
-export type ActiveProfile = "analysis" | "interpretation";
-
-export type AdvisoryCategory = "general_biology" | "analysis_guidance";
+// Source: FastAPI application export
 
 export interface AgentAdvisoryBlock {
   type?: "advisory";
-  category: AdvisoryCategory;
+  category: "general_biology" | "analysis_guidance";
   text: string;
 }
 
@@ -90,17 +86,9 @@ export interface AgentRecommendationItem {
 export interface AgentRunResponse {
   run_id: string;
   thread_id: string;
-  active_profile: ActiveProfile;
-  state: AgentState;
-  step_no: number;
   focus: RunFocus;
-  model_calls: number;
-  tool_calls: number;
-  status: RunStatus;
   version: number;
 }
-
-export type AgentState = "COLLECT_INTENT" | "ADVISE" | "CHECK_INPUTS" | "WAIT_PLAN_CONFIRMATION" | "WAIT_EXECUTION_CONFIRMATION" | "SUBMIT_JOBS" | "MONITOR_JOBS" | "ANSWER_WITH_EVIDENCE" | "AWAIT_FOLLOWUP" | "DONE" | "NEED_USER_INPUT" | "PREFLIGHT_BLOCKED" | "JOB_FAILED";
 
 export interface AgentStreamEvent {
   event_id: string;
@@ -537,8 +525,6 @@ export interface RunFocus {
   draft_analysis_type?: string | null;
   params_source_ref?: string | null;
 }
-
-export type RunStatus = "running" | "suspended" | "completed" | "failed" | "cancelled";
 
 export interface UploadedFileInfo {
   kind?: FileArtifactKind;
