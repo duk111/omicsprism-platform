@@ -12,34 +12,6 @@ class ContractModel(BaseModel):
     """所有 agent 契约默认拒绝未声明字段。"""
 
     model_config = ConfigDict(extra="forbid")
-
-class ActiveProfile(str, Enum):
-    ANALYSIS = "analysis"
-    INTERPRETATION = "interpretation"
-
-class AgentState(str, Enum):
-    COLLECT_INTENT = "COLLECT_INTENT"
-    ADVISE = "ADVISE"
-    CHECK_INPUTS = "CHECK_INPUTS"
-    # 仅 fixture 协调器使用；生产协调器直接生成审批进入 WAIT_EXECUTION_CONFIRMATION。
-    WAIT_PLAN_CONFIRMATION = "WAIT_PLAN_CONFIRMATION"
-    WAIT_EXECUTION_CONFIRMATION = "WAIT_EXECUTION_CONFIRMATION"
-    SUBMIT_JOBS = "SUBMIT_JOBS"
-    MONITOR_JOBS = "MONITOR_JOBS"
-    ANSWER_WITH_EVIDENCE = "ANSWER_WITH_EVIDENCE"
-    AWAIT_FOLLOWUP = "AWAIT_FOLLOWUP"
-    DONE = "DONE"
-    NEED_USER_INPUT = "NEED_USER_INPUT"
-    PREFLIGHT_BLOCKED = "PREFLIGHT_BLOCKED"
-    JOB_FAILED = "JOB_FAILED"
-
-class RunStatus(str, Enum):
-    RUNNING = "running"
-    SUSPENDED = "suspended"
-    COMPLETED = "completed"
-    FAILED = "failed"
-    CANCELLED = "cancelled"
-
 class AgentThreadStatus(str, Enum):
     ACTIVE = "active"
     ARCHIVED = "archived"
@@ -116,13 +88,7 @@ class RunState(ContractModel):
     run_id: str = Field(min_length=1)
     user_id: str = Field(min_length=1)
     thread_id: str = Field(min_length=1)
-    active_profile: ActiveProfile
-    state: AgentState
-    step_no: int = Field(ge=0)
     focus: RunFocus
-    model_calls: int = Field(ge=0)
-    tool_calls: int = Field(ge=0)
-    status: RunStatus
     version: int = Field(ge=0)
 
 class ToolResult(ContractModel):
@@ -243,13 +209,7 @@ class AgentThreadResponse(ContractModel):
 class AgentRunResponse(ContractModel):
     run_id: str = Field(min_length=1)
     thread_id: str = Field(min_length=1)
-    active_profile: ActiveProfile
-    state: AgentState
-    step_no: int = Field(ge=0)
     focus: RunFocus
-    model_calls: int = Field(ge=0)
-    tool_calls: int = Field(ge=0)
-    status: RunStatus
     version: int = Field(ge=0)
 
 class AgentThreadDetailResponse(ContractModel):
@@ -274,8 +234,6 @@ class AgentTurnRecord(ContractModel):
     request_hash: str = Field(min_length=1)
     status: AgentTurnStatus
     attempt: int = Field(ge=0)
-    lease_owner: str | None
-    lease_expires_at: datetime | None
     error_code: str | None
     created_at: datetime
     updated_at: datetime

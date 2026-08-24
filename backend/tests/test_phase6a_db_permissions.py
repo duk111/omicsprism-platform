@@ -50,9 +50,8 @@ def test_phase6_runtime_role_ownership_idempotency_and_append_only_permissions()
             conn.execute(
                 """
                 insert into agent_runs (
-                    run_id, user_id, thread_id, active_profile, state, step_no,
-                    focus, model_calls, tool_calls, status, version
-                ) values (%s, %s, %s, 'analysis', 'COLLECT_INTENT', 0, %s, 0, 0, 'running', 0)
+                    run_id, user_id, thread_id, focus, version
+                ) values (%s, %s, %s, %s, 0)
                 """,
                 (run_id, user_id, thread_id, psycopg.types.json.Jsonb({
                     "in_scope_job_ids": [], "resolved_entities": {}, "last_citation": None,
@@ -88,8 +87,6 @@ def test_phase6_runtime_role_ownership_idempotency_and_append_only_permissions()
             request_hash="sha256:a",
             status="queued",
             attempt=0,
-            lease_owner=None,
-            lease_expires_at=None,
             error_code=None,
             created_at=now,
             updated_at=now,

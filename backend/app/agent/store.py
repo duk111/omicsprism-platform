@@ -54,8 +54,7 @@ class PostgresStateStore:
         with self._connect() as conn:
             row = conn.execute(
                 """
-                select run_id, user_id, thread_id, active_profile, state, step_no,
-                       focus, model_calls, tool_calls, status, version
+                select run_id, user_id, thread_id, focus, version
                 from agent_runs where run_id = %s and user_id = %s
                 """,
                 (run_id, user_id),
@@ -63,8 +62,7 @@ class PostgresStateStore:
         if row is None:
             raise StateNotFound(run_id)
         fields = (
-            "run_id", "user_id", "thread_id", "active_profile", "state", "step_no",
-            "focus", "model_calls", "tool_calls", "status", "version",
+            "run_id", "user_id", "thread_id", "focus", "version",
         )
         return RunState.model_validate(dict(zip(fields, row)))
 
@@ -72,14 +70,7 @@ class PostgresStateStore:
         Jsonb = self._jsonb_type()
         next_version = expected_version + 1
         values = (
-            state.thread_id,
-            state.active_profile.value,
-            state.state.value,
-            state.step_no,
             Jsonb(state.focus.model_dump(mode="json")),
-            state.model_calls,
-            state.tool_calls,
-            state.status.value,
             next_version,
             state.run_id,
             state.user_id,
@@ -89,14 +80,7 @@ class PostgresStateStore:
             updated = conn.execute(
                 """
                 update agent_runs set
-                    thread_id = %s,
-                    active_profile = %s,
-                    state = %s,
-                    step_no = %s,
                     focus = %s,
-                    model_calls = %s,
-                    tool_calls = %s,
-                    status = %s,
                     version = %s,
                     updated_at = now()
                 where run_id = %s and user_id = %s and version = %s
@@ -112,21 +96,14 @@ class PostgresStateStore:
                 conn.execute(
                     """
                     insert into agent_runs (
-                        run_id, user_id, thread_id, active_profile, state, step_no,
-                        focus, model_calls, tool_calls, status, version
-                    ) values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                        run_id, user_id, thread_id, focus, version
+                    ) values (%s, %s, %s, %s, %s)
                     """,
                     (
                         state.run_id,
                         state.user_id,
                         state.thread_id,
-                        state.active_profile.value,
-                        state.state.value,
-                        state.step_no,
                         Jsonb(state.focus.model_dump(mode="json")),
-                        state.model_calls,
-                        state.tool_calls,
-                        state.status.value,
                         next_version,
                     ),
                 )

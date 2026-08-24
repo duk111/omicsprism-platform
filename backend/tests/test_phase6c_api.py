@@ -278,8 +278,6 @@ def test_stream_projection_contains_only_public_turn_and_message_dtos() -> None:
         request_hash="sha256:secret",
         status="completed",
         attempt=1,
-        lease_owner="secret-worker",
-        lease_expires_at=None,
         error_code=None,
         created_at=now,
         updated_at=now,
@@ -290,7 +288,7 @@ def test_stream_projection_contains_only_public_turn_and_message_dtos() -> None:
     payload = "\n".join(event.model_dump_json() for event in project_stream_events([turn], [message]))
     assert '"event_type":"turn.updated"' in payload
     assert '"event_type":"message.created"' in payload
-    for secret in ("secret-user", "secret-key", "secret-worker", "request_hash", "storage_key"):
+    for secret in ("secret-user", "secret-key", "request_hash", "storage_key"):
         assert secret not in payload
 
 

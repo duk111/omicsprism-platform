@@ -207,7 +207,7 @@ class InMemoryAgentProductStore:
         if status not in {AgentTurnStatus.COMPLETED, AgentTurnStatus.FAILED}:
             raise ValueError("inline turn may only finish as completed or failed")
         turn = self.get_turn(turn_id=turn_id, user_id=user_id)
-        if turn.status is not AgentTurnStatus.RUNNING or turn.lease_owner is not None:
+        if turn.status is not AgentTurnStatus.RUNNING:
             raise InlineTurnConflict(turn_id)
         if message is not None:
             if (message.thread_id, message.run_id, message.user_id) != (
@@ -410,7 +410,7 @@ class PostgresAgentProductStore:
                 existing_row = conn.execute(
                     """
                     select turn_id, thread_id, run_id, user_id, idempotency_key, request_hash,
-                           status, attempt, lease_owner, lease_expires_at, error_code,
+                           status, attempt, error_code,
                            created_at, updated_at, started_at, completed_at
                     from agent_turns where user_id = %s and idempotency_key = %s
                     """,
@@ -448,9 +448,9 @@ class PostgresAgentProductStore:
                     """
                     insert into agent_turns (
                         turn_id, thread_id, run_id, user_id, idempotency_key, request_hash,
-                        status, attempt, lease_owner, lease_expires_at, error_code,
+                        status, attempt, error_code,
                         created_at, updated_at, started_at, completed_at
-                    ) values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    ) values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                     on conflict (user_id, idempotency_key) do nothing
                     returning turn_id
                     """,
@@ -460,7 +460,7 @@ class PostgresAgentProductStore:
                     existing_row = conn.execute(
                         """
                         select turn_id, thread_id, run_id, user_id, idempotency_key, request_hash,
-                               status, attempt, lease_owner, lease_expires_at, error_code,
+                               status, attempt, error_code,
                                created_at, updated_at, started_at, completed_at
                         from agent_turns where user_id = %s and idempotency_key = %s
                         """,
@@ -508,7 +508,7 @@ class PostgresAgentProductStore:
             row = conn.execute(
                 """
                 select turn_id, thread_id, run_id, user_id, idempotency_key, request_hash,
-                       status, attempt, lease_owner, lease_expires_at, error_code,
+                       status, attempt, error_code,
                        created_at, updated_at, started_at, completed_at
                 from agent_turns where turn_id = %s and user_id = %s
                 """,
@@ -525,7 +525,7 @@ class PostgresAgentProductStore:
             rows = conn.execute(
                 """
                 select turn_id, thread_id, run_id, user_id, idempotency_key, request_hash,
-                       status, attempt, lease_owner, lease_expires_at, error_code,
+                       status, attempt, error_code,
                        created_at, updated_at, started_at, completed_at
                 from agent_turns
                 where thread_id = %s and user_id = %s
@@ -548,9 +548,9 @@ class PostgresAgentProductStore:
                 update agent_turns set status = %s, error_code = %s,
                     completed_at = %s, updated_at = %s
                 where turn_id = %s and user_id = %s
-                  and status = 'running' and lease_owner is null
+                  and status = 'running'
                 returning turn_id, thread_id, run_id, user_id, idempotency_key,
-                          request_hash, status, attempt, lease_owner, lease_expires_at,
+                          request_hash, status, attempt,
                           error_code, created_at, updated_at, started_at, completed_at
                 """,
                 (status.value, error_code, now, now, turn_id, user_id),
@@ -781,8 +781,6 @@ def _turn_values(turn: AgentTurnRecord) -> tuple[Any, ...]:
         turn.request_hash,
         turn.status.value,
         turn.attempt,
-        turn.lease_owner,
-        turn.lease_expires_at,
         turn.error_code,
         turn.created_at,
         turn.updated_at,
@@ -794,7 +792,7 @@ def _turn_values(turn: AgentTurnRecord) -> tuple[Any, ...]:
 def _turn_from_row(row) -> AgentTurnRecord:
     fields = (
         "turn_id", "thread_id", "run_id", "user_id", "idempotency_key", "request_hash",
-        "status", "attempt", "lease_owner", "lease_expires_at", "error_code",
+        "status", "attempt", "error_code",
         "created_at", "updated_at", "started_at", "completed_at",
     )
     return AgentTurnRecord.model_validate(dict(zip(fields, row)))

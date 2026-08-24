@@ -29,7 +29,6 @@ from .graph import (
 )
 from .product_store import ActiveTurnConflict, AgentResourceNotFound, IdempotencyConflict
 from .schemas import (
-    ActiveProfile,
     AgentInputBundleRecord,
     AgentInputBundleResponse,
     AgentInputFileRecord,
@@ -40,7 +39,6 @@ from .schemas import (
     AgentMessageResponse,
     AgentMessageRole,
     AgentRunResponse,
-    AgentState,
     AgentStreamEvent,
     AgentTextBlock,
     AgentThreadCreateRequest,
@@ -55,7 +53,6 @@ from .schemas import (
     AgentTurnStatus,
     RunFocus,
     RunState,
-    RunStatus,
 )
 from .store import StateConflict, StateNotFound
 
@@ -89,17 +86,11 @@ def create_agent_router(
             run_id=run_id,
             user_id=user_id,
             thread_id=thread_id,
-            active_profile=ActiveProfile.ANALYSIS,
-            state=AgentState.COLLECT_INTENT,
-            step_no=0,
             focus=RunFocus(
                 in_scope_job_ids=list(payload.focus_job_ids),
                 resolved_entities={},
                 last_citation=None,
             ),
-            model_calls=0,
-            tool_calls=0,
-            status=RunStatus.RUNNING,
             version=0,
         )
         thread = AgentThreadRecord(
@@ -312,8 +303,6 @@ def create_agent_router(
             request_hash=_request_hash(thread_id, payload.model_dump(mode="json")),
             status=AgentTurnStatus.RUNNING,
             attempt=1,
-            lease_owner=None,
-            lease_expires_at=None,
             error_code=None,
             created_at=now,
             updated_at=now,
@@ -391,7 +380,7 @@ def create_agent_router(
             raise _not_found() from exc
         if turn.thread_id != thread_id:
             raise _not_found()
-        if turn.status is not AgentTurnStatus.RUNNING or turn.lease_owner is not None:
+        if turn.status is not AgentTurnStatus.RUNNING:
             raise _conflict("Agent graph turn is no longer awaiting input")
 
         config = _graph_config(checkpoint_turn_id)
@@ -642,7 +631,7 @@ def _recover_inline_turn(
 ) -> None:
     turns = ctx.product_store.list_turns(thread_id=thread_id, user_id=user_id, limit=100)
     for turn in reversed(turns):
-        if turn.status is not AgentTurnStatus.RUNNING or turn.lease_owner is not None:
+        if turn.status is not AgentTurnStatus.RUNNING:
             continue
         try:
             _graph_turn_result(ctx, turn)
@@ -747,7 +736,7 @@ def _fail_inline_turn(
     error_code: str,
 ) -> None:
     current = ctx.product_store.get_turn(turn_id=turn.turn_id, user_id=turn.user_id)
-    if current.status is not AgentTurnStatus.RUNNING or current.lease_owner is not None:
+    if current.status is not AgentTurnStatus.RUNNING:
         return
     ctx.product_store.finish_inline_turn(
         turn_id=turn.turn_id,
@@ -810,7 +799,7 @@ def _run_response(state: RunState) -> AgentRunResponse:
 
 def _turn_response(record: AgentTurnRecord) -> AgentTurnResponse:
     return AgentTurnResponse.model_validate(record.model_dump(exclude={
-        "user_id", "idempotency_key", "request_hash", "lease_owner", "lease_expires_at",
+        "user_id", "idempotency_key", "request_hash",
     }))
 
 

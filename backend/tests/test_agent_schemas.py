@@ -19,9 +19,6 @@ VALID_SAMPLES = {
         "run_id": "run-1",
         "user_id": "user-1",
         "thread_id": "thread-1",
-        "active_profile": "interpretation",
-        "state": "AWAIT_FOLLOWUP",
-        "step_no": 8,
         "focus": {
             "in_scope_job_ids": ["job-gma-1"],
             "resolved_entities": {"proline": "M0123"},
@@ -31,10 +28,7 @@ VALID_SAMPLES = {
                 "row_ids": [12, 38],
             },
         },
-        "model_calls": 2,
-        "tool_calls": 3,
-        "status": "running",
-        "version": 9,
+        "version": 1,
     },
     ToolResult: {
         "tool": "query_result_evidence",
@@ -88,7 +82,6 @@ def test_missing_required_field_is_rejected(schema, payload) -> None:
 @pytest.mark.parametrize(
     ("schema", "payload", "field"),
     [
-        (RunState, VALID_SAMPLES[RunState], "active_profile"),
         (ToolResult, VALID_SAMPLES[ToolResult], "tool"),
         (VerifierVerdict, VALID_SAMPLES[VerifierVerdict], "verdict"),
     ],

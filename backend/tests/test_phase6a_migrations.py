@@ -76,3 +76,16 @@ def test_phase5_analysis_type_migration_updates_columns_and_payloads() -> None:
     assert "analysis_type = 'correlation'" in sql
     assert sql.count("jsonb_set(payload, '{analysis_type}'") == 2
     assert "analysis_type = 'dem'" not in sql
+
+
+def test_state_and_lease_cleanup_migration_drops_zombie_columns() -> None:
+    sql = (
+        ROOT / "migrations" / "008_remove_legacy_run_state_and_turn_leases.sql"
+    ).read_text(encoding="utf-8").lower()
+
+    for column in ("active_profile", "state", "step_no", "model_calls", "tool_calls", "status"):
+        assert f"drop column if exists {column}" in sql
+    for column in ("lease_owner", "lease_expires_at"):
+        assert f"drop column if exists {column}" in sql
+    assert "drop index if exists agent_runs_status_idx" in sql
+    assert "drop index if exists agent_turns_claim_idx" in sql
