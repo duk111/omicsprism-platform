@@ -89,3 +89,9 @@ def test_state_and_lease_cleanup_migration_drops_zombie_columns() -> None:
         assert f"drop column if exists {column}" in sql
     assert "drop index if exists agent_runs_status_idx" in sql
     assert "drop index if exists agent_turns_claim_idx" in sql
+
+
+def test_checkpointer_migration_drops_custom_run_state_table() -> None:
+    sql = (ROOT / "migrations" / "009_drop_agent_run_state_table.sql").read_text(encoding="utf-8").lower()
+
+    assert "drop table if exists agent_runs cascade" in sql

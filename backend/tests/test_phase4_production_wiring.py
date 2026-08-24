@@ -119,7 +119,6 @@ def _product_store() -> InMemoryAgentProductStore:
 
 def _patch_stores(monkeypatch: pytest.MonkeyPatch, store) -> None:
     monkeypatch.setattr(bootstrap, "PostgresAgentProductStore", lambda _url: store)
-    monkeypatch.setattr(bootstrap, "PostgresStateStore", lambda _url: object())
 
 
 def _settings(**changes) -> AppSettings:

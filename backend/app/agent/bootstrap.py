@@ -26,7 +26,6 @@ from .graph import (
 from .model import VllmGraphModel
 from .nodes.result_qa import job_reader_from_runtime, result_querier_from_runtime
 from .schemas import ToolResult
-from .store import PostgresStateStore, StateStore
 from .tools import AgentToolRuntime
 from .validation import DatasetRef
 
@@ -36,7 +35,6 @@ class AgentApiContext:
     """Application-scoped persistence and compiled semantic graph."""
 
     product_store: AgentProductStore
-    state_store: StateStore
     job_store: JobStorageService
     graph: object
     files: FileStorageService | None
@@ -162,7 +160,6 @@ def create_agent_api_context(
     )
     return AgentApiContext(
         product_store=product_store,
-        state_store=PostgresStateStore(database_url),
         job_store=job_store,
         graph=graph,
         files=files,

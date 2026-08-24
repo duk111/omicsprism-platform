@@ -9,12 +9,10 @@ from .schemas import (
     AgentInputFileRecord,
     AgentMessageRecord,
     AgentMessageRole,
-    RunFocus,
     AgentThreadRecord,
     AgentTurnRecord,
     AgentTurnStatus,
 )
-from .store import StateConflict
 
 
 class AgentResourceNotFound(LookupError):
@@ -52,9 +50,12 @@ class AgentProductStore(Protocol):
     def create_turn(self, turn: AgentTurnRecord) -> AgentTurnRecord:
         ...
 
-    def enqueue_turn(self, *, message: AgentMessageRecord | None, turn: AgentTurnRecord,
-                     focus: RunFocus | None = None,
-                     expected_run_version: int | None = None) -> tuple[AgentTurnRecord, bool]:
+    def enqueue_turn(
+        self,
+        *,
+        message: AgentMessageRecord | None,
+        turn: AgentTurnRecord,
+    ) -> tuple[AgentTurnRecord, bool]:
         ...
 
     def get_turn(self, *, turn_id: str, user_id: str) -> AgentTurnRecord:
@@ -146,9 +147,12 @@ class InMemoryAgentProductStore:
     def create_turn(self, turn: AgentTurnRecord) -> AgentTurnRecord:
         return self.enqueue_turn(message=None, turn=turn)[0]
 
-    def enqueue_turn(self, *, message: AgentMessageRecord | None, turn: AgentTurnRecord,
-                     focus: RunFocus | None = None,
-                     expected_run_version: int | None = None) -> tuple[AgentTurnRecord, bool]:
+    def enqueue_turn(
+        self,
+        *,
+        message: AgentMessageRecord | None,
+        turn: AgentTurnRecord,
+    ) -> tuple[AgentTurnRecord, bool]:
         self.get_thread(thread_id=turn.thread_id, user_id=turn.user_id)
         if message is not None:
             if (message.thread_id, message.run_id, message.user_id) != (
@@ -390,9 +394,12 @@ class PostgresAgentProductStore:
     def create_turn(self, turn: AgentTurnRecord) -> AgentTurnRecord:
         return self.enqueue_turn(message=None, turn=turn)[0]
 
-    def enqueue_turn(self, *, message: AgentMessageRecord | None, turn: AgentTurnRecord,
-                     focus: RunFocus | None = None,
-                     expected_run_version: int | None = None) -> tuple[AgentTurnRecord, bool]:
+    def enqueue_turn(
+        self,
+        *,
+        message: AgentMessageRecord | None,
+        turn: AgentTurnRecord,
+    ) -> tuple[AgentTurnRecord, bool]:
         Jsonb = _jsonb_type()
         try:
             with self._connect() as conn:
@@ -424,25 +431,6 @@ class PostgresAgentProductStore:
                     ):
                         raise IdempotencyConflict(turn.idempotency_key)
                     return existing, False
-                if focus is not None:
-                    if expected_run_version is None:
-                        raise ValueError("expected run version is required when focus changes")
-                    updated = conn.execute(
-                        """
-                        update agent_runs set focus = %s, version = version + 1, updated_at = now()
-                        where run_id = %s and user_id = %s and thread_id = %s and version = %s
-                        returning run_id
-                        """,
-                        (
-                            Jsonb(focus.model_dump(mode="json")),
-                            turn.run_id,
-                            turn.user_id,
-                            turn.thread_id,
-                            expected_run_version,
-                        ),
-                    ).fetchone()
-                    if updated is None:
-                        raise StateConflict(f"expected version {expected_run_version}")
                 row = conn.execute(
                     """
                     insert into agent_turns (

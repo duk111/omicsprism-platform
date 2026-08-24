@@ -19,7 +19,6 @@ from backend.app.agent.graph import (
 from backend.app.agent.param_resolver import AnalysisProposal
 from backend.app.agent.product_store import InMemoryAgentProductStore
 from backend.app.agent.schemas import AgentInputBundleRecord, AgentInputFileRecord
-from backend.app.agent.store import InMemoryStateStore
 from backend.app.agent.validation import DatasetRef
 
 
@@ -76,7 +75,7 @@ def _setup(proposal: AnalysisProposal):
     unavailable = lambda request: (_ for _ in ()).throw(LookupError(request.job_id))
     graph = build_agent_graph(_Model(proposal), load, submitter, unavailable, unavailable)
     context = AgentApiContext(
-        product_store=InMemoryAgentProductStore(), state_store=InMemoryStateStore(),
+        product_store=InMemoryAgentProductStore(),
         job_store=_Jobs(), files=None, graph=graph, dataset_loader=load)
     app = FastAPI()
     app.include_router(create_agent_router(context=context, session_dependency=_session))
@@ -124,7 +123,7 @@ def test_confirmation_resume_uses_header_and_persists_completed_turn() -> None:
     assert body["turn"]["status"] == "running"
     assert body["interrupt"]["payload"]["kind"] == "confirmation"
     snapshot = context.graph.get_state(
-        {"configurable": {"thread_id": body["checkpoint_turn_id"]}})
+        {"configurable": {"thread_id": thread["thread_id"]}})
     assert snapshot.values["recent_jobs"][0].job_id == "job-existing"
     resume_url = _resume_url(thread, body)
     request = {

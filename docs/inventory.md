@@ -38,7 +38,7 @@ changes). Phase 0 does not alter product code to hide those failures.
 | `router.py` | 205 | `RuleRouter`, `ModelRouter` and route heuristics | worker, runtime, eval, router tests | `delete in Phase 5`; replace with typed graph decision |
 | `runtime.py` | 1594 | `ProductionRunCoordinator`, fixture coordinator, resolver compatibility adapter, orchestration helpers | worker, API bootstrap, eval, end-to-end tests | `delete in Phase 5` coordinator after graph reconnect |
 | `schemas.py` | 909 | Graph-adjacent contracts, run/plan/approval/tool/message models | all Agent modules, API/frontend contracts, tests | `extract` typed v3 contracts; remove legacy schemas in Phase 5 |
-| `store.py` | 161 | `StateStore`, in-memory/Postgres run state persistence | API, runtime, worker, state tests | `replace` with graph checkpointer plus retained thread/message/job data |
+| `store.py` | 161 | `StateStore`, in-memory/Postgres run state persistence | API, runtime, worker, state tests | deleted; GraphState focus/version now use the LangGraph checkpointer |
 | `tools.py` | 748 | `AgentToolRuntime`, six legacy tools, input inspection, result evidence | runtime, worker, tool/input tests | `extract` profile/evidence services; four-tool surface in Phase 5 |
 | `validator.py` | 67 | `DecisionValidator`, invalid model decision checks | runtime, worker, validator tests | `replace` with typed graph decision validation |
 | `validation.py` | 187 | `DatasetRef`, `Issue`, `ContrastPreview`, `ValidationReport`, deterministic preflight adapter | Phase 2 tests; future Analysis node | `keep`; ordinary Python service, never an Agent Tool |

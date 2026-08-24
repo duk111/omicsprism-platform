@@ -34,6 +34,7 @@ clean after each commit.
 | Schema cleanup | `54 passed` | `150 passed, 2 skipped, 3 failed` | Removed legacy decision/context contracts; the three known bundle inheritance failures remain. |
 | State/lease cleanup | `34 passed` | `150 passed, 2 skipped, 3 failed` | Removed zombie run-state fields and turn leases; the same three known bundle inheritance failures remain. |
 | Bundle inheritance fix | `5 passed` | `153 passed, 2 skipped` | Fixed in-memory bundle timestamp filtering; all backend tests now pass. |
+| StateStore/checkpointer replacement | `44 passed` | `154 passed, 2 skipped` | GraphState focus/version now use the LangGraph checkpointer; custom StateStore and `agent_runs` storage were removed. |
 
 | Frontend unit tests | `4 files, 13 passed` | Not applicable | `npm --prefix frontend run test`. |
 | Frontend production build | Successful | Not applicable | `npm --prefix frontend run build`; Vite emitted a large-chunk warning only. |

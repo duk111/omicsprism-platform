@@ -19,7 +19,6 @@ from backend.app.agent.schemas import (
     AgentThreadRecord,
     AgentTurnRecord,
 )
-from backend.app.agent.store import InMemoryStateStore
 from backend.app.settings import AppSettings
 from backend.app.storage_service import FileStorageService
 
@@ -43,12 +42,17 @@ class _Graph:
         self.states: dict[str, GraphState] = {}
 
     def invoke(self, state: GraphState, config: dict) -> None:
-        turn_id = config["configurable"]["thread_id"]
-        self.states[turn_id] = state.model_copy(update={"response_text": "done"})
+        thread_id = config["configurable"]["thread_id"]
+        self.states[thread_id] = state.model_copy(update={"response_text": "done"})
+
+    def update_state(self, config: dict, values: dict) -> dict:
+        thread_id = config["configurable"]["thread_id"]
+        self.states[thread_id] = GraphState.model_validate(values)
+        return config
 
     def get_state(self, config: dict):
-        turn_id = config["configurable"]["thread_id"]
-        return SimpleNamespace(values=self.states[turn_id], tasks=())
+        thread_id = config["configurable"]["thread_id"]
+        return SimpleNamespace(values=self.states[thread_id], tasks=())
 
 
 def _session(request: Request, response: Response) -> str:
@@ -62,7 +66,6 @@ def _session(request: Request, response: Response) -> str:
 def _context() -> AgentApiContext:
     return AgentApiContext(
         product_store=InMemoryAgentProductStore(),
-        state_store=InMemoryStateStore(),
         job_store=_Jobs(),
         graph=_Graph(),
         files=None,
@@ -200,7 +203,9 @@ def test_turn_focus_jobs_are_owned_and_persisted_before_graph_invoke() -> None:
         json={"message": "interpret this result", "focus_job_ids": ["job-a"]},
     )
     assert accepted.status_code == 202
-    state = context.state_store.get(run_id=thread["current_run_id"], user_id="user-a")
+    state = context.graph.get_state(
+        {"configurable": {"thread_id": thread["thread_id"]}}
+    ).values
     assert state.focus.in_scope_job_ids == ["job-a"]
 
     other = _context()

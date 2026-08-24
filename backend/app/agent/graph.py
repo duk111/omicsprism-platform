@@ -11,6 +11,7 @@ from .schemas import (
     AgentMessageResponse,
     AgentTurnResponse,
     GroundedAnswer,
+    RunFocus,
     ToolResult,
 )
 from .validation import ContrastPreview, DatasetRef, Issue, ValidationReport
@@ -322,6 +323,12 @@ class GraphState(BaseModel):
     thread_id: str = Field(min_length=1, max_length=200)
     user_id: str = Field(min_length=1, max_length=200)
     user_message: str = Field(min_length=1, max_length=4000)
+    focus: RunFocus = Field(default_factory=lambda: RunFocus(
+        in_scope_job_ids=[],
+        resolved_entities={},
+        last_citation=None,
+    ))
+    version: int = Field(default=0, ge=0)
     conversation_summary: str | None = Field(default=None, max_length=4000)
     dataset_profiles: list[DatasetProfileRef] = Field(default_factory=list, max_length=6)
     current_job: JobRef | None = None

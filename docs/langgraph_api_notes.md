@@ -134,6 +134,15 @@ thread and message records, submitted Jobs, and produced artifacts remain in
 their current business stores and are unaffected. No PlanStore, ApprovalStore,
 or custom graph-state database is introduced.
 
+## API state ownership
+
+The Agent API uses the business `thread_id` as
+`configurable.thread_id` for every invoke, resume, and state lookup. `focus`
+and its monotonic `version` are fields in `GraphState`, so the LangGraph
+checkpointer is the sole owner of that conversational state. The public
+`checkpoint_turn_id` remains the turn record used for ownership and
+idempotency checks; it is not a second checkpoint namespace.
+
 ## Local sources inspected
 
 - `.venv/Lib/site-packages/langgraph/graph/state.py`: `StateGraph.compile`

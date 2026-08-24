@@ -29,7 +29,6 @@ def test_phase6_runtime_role_ownership_idempotency_and_append_only_permissions()
         AgentThreadRecord,
         AgentTurnRecord,
     )
-    from backend.app.agent.store import PostgresStateStore, StateNotFound
     from scripts.migrate import apply_migrations
 
     assert ADMIN_DSN and APP_DSN and APP_PASSWORD
@@ -46,18 +45,6 @@ def test_phase6_runtime_role_ownership_idempotency_and_append_only_permissions()
     now = datetime.now(timezone.utc)
 
     try:
-        with psycopg.connect(APP_DSN) as conn:
-            conn.execute(
-                """
-                insert into agent_runs (
-                    run_id, user_id, thread_id, focus, version
-                ) values (%s, %s, %s, %s, 0)
-                """,
-                (run_id, user_id, thread_id, psycopg.types.json.Jsonb({
-                    "in_scope_job_ids": [], "resolved_entities": {}, "last_citation": None,
-                })),
-            )
-
         store = PostgresAgentProductStore(APP_DSN)
         store.save_thread(AgentThreadRecord(
             thread_id=thread_id,
@@ -125,11 +112,6 @@ def test_phase6_runtime_role_ownership_idempotency_and_append_only_permissions()
         with pytest.raises(AgentResourceNotFound):
             store.get_input_bundle(bundle_id=bundle_id, user_id=other_user_id)
 
-        state_store = PostgresStateStore(APP_DSN)
-        assert state_store.get(run_id=run_id, user_id=user_id).run_id == run_id
-        with pytest.raises(StateNotFound):
-            state_store.get(run_id=run_id, user_id=other_user_id)
-
         with psycopg.connect(APP_DSN) as conn:
             assert conn.execute("select count(*) from jobs where owner_id = %s", (user_id,)).fetchone() == (0,)
 
@@ -153,4 +135,3 @@ def test_phase6_runtime_role_ownership_idempotency_and_append_only_permissions()
             ):
                 if value is not None:
                     conn.execute(f"delete from {table} where {column} = %s", (value,))
-            conn.execute("delete from agent_runs where run_id = %s and user_id = %s", (run_id, user_id))

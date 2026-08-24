@@ -52,9 +52,7 @@ from .schemas import (
     AgentTurnResponse,
     AgentTurnStatus,
     RunFocus,
-    RunState,
 )
-from .store import StateConflict, StateNotFound
 
 
 ALLOWED_INPUT_FIELDS = {"counts", "metadata", "metabs", "transcriptome", "metabolome", "group"}
@@ -82,16 +80,10 @@ def create_agent_router(
         now = datetime.now(timezone.utc)
         thread_id = f"thread-{uuid4()}"
         run_id = f"run-{uuid4()}"
-        state = RunState(
-            run_id=run_id,
-            user_id=user_id,
-            thread_id=thread_id,
-            focus=RunFocus(
-                in_scope_job_ids=list(payload.focus_job_ids),
-                resolved_entities={},
-                last_citation=None,
-            ),
-            version=0,
+        focus = RunFocus(
+            in_scope_job_ids=list(payload.focus_job_ids),
+            resolved_entities={},
+            last_citation=None,
         )
         thread = AgentThreadRecord(
             thread_id=thread_id,
@@ -104,9 +96,9 @@ def create_agent_router(
             updated_at=now,
         )
         try:
-            ctx.state_store.save(state, expected_version=0)
             ctx.product_store.save_thread(thread)
-        except StateConflict as exc:
+            _initialize_graph_checkpoint(ctx, thread_id, user_id, focus)
+        except Exception as exc:
             raise _conflict("Agent thread could not be created") from exc
         return _thread_response(thread)
 
@@ -131,8 +123,11 @@ def create_agent_router(
         ctx: AgentApiContext = Depends(current_context),
     ) -> AgentThreadDetailResponse:
         thread = _owned_thread(ctx, thread_id, user_id)
-        state = _owned_state(ctx, thread.current_run_id, user_id)
-        return AgentThreadDetailResponse(thread=_thread_response(thread), run=_run_response(state))
+        focus, version = _owned_graph_focus(ctx, thread_id, user_id)
+        return AgentThreadDetailResponse(
+            thread=_thread_response(thread),
+            run=_run_response(thread.current_run_id, thread_id, focus, version),
+        )
 
     @router.get("/threads/{thread_id}/messages", response_model=AgentMessageListResponse)
     def list_messages(
@@ -269,7 +264,7 @@ def create_agent_router(
         ctx: AgentApiContext = Depends(current_context),
     ) -> GraphTurnResult:
         thread = _owned_thread(ctx, thread_id, user_id)
-        state = _owned_state(ctx, thread.current_run_id, user_id)
+        focus, version = _owned_graph_focus(ctx, thread_id, user_id)
         _require_owned_jobs(ctx, payload.focus_job_ids, user_id)
         blocks = [AgentTextBlock(text=payload.message)]
         input_files: list[AgentInputFileRecord] = []
@@ -279,12 +274,17 @@ def create_agent_router(
                 bundle_id=bundle.bundle_id,
                 files=[_file_response(item) for item in input_files],
             ))
-        focus_job_ids = payload.focus_job_ids or state.focus.in_scope_job_ids
+        focus_job_ids = payload.focus_job_ids or focus.in_scope_job_ids
         _require_owned_jobs(ctx, focus_job_ids, user_id)
+        if payload.focus_job_ids:
+            focus = focus.model_copy(update={"in_scope_job_ids": list(payload.focus_job_ids)})
+            version += 1
         graph_state = GraphState(
             thread_id=thread_id,
             user_id=user_id,
             user_message=payload.message,
+            focus=focus,
+            version=version,
             dataset_profiles=_graph_dataset_profiles(ctx, input_files, user_id),
             recent_jobs=[
                 JobRef(job_id=job_id, owner_id=user_id)
@@ -318,25 +318,18 @@ def create_agent_router(
             blocks=blocks,
             created_at=now,
         )
-        desired_focus = None
-        if payload.focus_job_ids:
-            desired_focus = state.focus.model_copy(update={"in_scope_job_ids": list(payload.focus_job_ids)})
         try:
             queued, created = ctx.product_store.enqueue_turn(
                 message=message,
                 turn=turn,
-                focus=desired_focus,
-                expected_run_version=state.version if desired_focus is not None else None,
             )
-            if created and desired_focus is not None:
-                _persist_non_transactional_focus_if_needed(ctx, state.run_id, user_id, desired_focus)
-        except (IdempotencyConflict, ActiveTurnConflict, StateConflict) as exc:
+        except (IdempotencyConflict, ActiveTurnConflict) as exc:
             raise _conflict(str(exc) or "Agent turn conflicts with current state") from exc
         if not created:
             return _graph_turn_result(ctx, queued)
         started_at = perf_counter()
         try:
-            ctx.graph.invoke(graph_state, _graph_config(queued.turn_id))
+            ctx.graph.invoke(graph_state, _graph_config(thread_id))
             result = _graph_turn_result(ctx, queued)
             _log_graph_action(
                 thread_id=thread_id,
@@ -373,7 +366,7 @@ def create_agent_router(
         user_id: str = Depends(session_dependency),
         ctx: AgentApiContext = Depends(current_context),
     ) -> GraphTurnResult:
-        _owned_thread(ctx, thread_id, user_id)
+        thread = _owned_thread(ctx, thread_id, user_id)
         try:
             turn = ctx.product_store.get_turn(turn_id=checkpoint_turn_id, user_id=user_id)
         except AgentResourceNotFound as exc:
@@ -383,7 +376,7 @@ def create_agent_router(
         if turn.status is not AgentTurnStatus.RUNNING:
             raise _conflict("Agent graph turn is no longer awaiting input")
 
-        config = _graph_config(checkpoint_turn_id)
+        config = _graph_config(thread.thread_id)
         try:
             snapshot, _ = _owned_graph_snapshot(ctx, config, thread_id, user_id)
         except HTTPException:
@@ -533,13 +526,6 @@ def _owned_thread(ctx: AgentApiContext, thread_id: str, user_id: str) -> AgentTh
         raise _not_found() from exc
 
 
-def _owned_state(ctx: AgentApiContext, run_id: str, user_id: str) -> RunState:
-    try:
-        return ctx.state_store.get(run_id=run_id, user_id=user_id)
-    except StateNotFound as exc:
-        raise _not_found() from exc
-
-
 def _require_owned_jobs(ctx: AgentApiContext, job_ids: list[str], user_id: str) -> None:
     for job_id in job_ids:
         try:
@@ -620,8 +606,59 @@ def _graph_dataset_profiles(
     ]
 
 
-def _graph_config(turn_id: str) -> dict[str, dict[str, str]]:
-    return {"configurable": {"thread_id": turn_id}}
+def _graph_config(thread_id: str) -> dict[str, dict[str, str]]:
+    return {"configurable": {"thread_id": thread_id}}
+
+
+def _empty_focus() -> RunFocus:
+    return RunFocus(
+        in_scope_job_ids=[],
+        resolved_entities={},
+        last_citation=None,
+    )
+
+
+def _initialize_graph_checkpoint(
+    ctx: AgentApiContext,
+    thread_id: str,
+    user_id: str,
+    focus: RunFocus,
+) -> None:
+    state = GraphState(
+        thread_id=thread_id,
+        user_id=user_id,
+        user_message="Thread initialized",
+        focus=focus,
+        version=0,
+    )
+    ctx.graph.update_state(
+        _graph_config(thread_id),
+        state.model_dump(mode="json"),
+    )
+
+
+def _owned_graph_focus(
+    ctx: AgentApiContext,
+    thread_id: str,
+    user_id: str,
+) -> tuple[RunFocus, int]:
+    try:
+        snapshot = ctx.graph.get_state(_graph_config(thread_id))
+    except Exception as exc:
+        raise _conflict("Agent graph checkpoint is unavailable") from exc
+    values = getattr(snapshot, "values", {}) or {}
+    if isinstance(values, GraphState):
+        values = values.model_dump(mode="python")
+    if not values:
+        return _empty_focus(), 0
+    if values.get("thread_id") != thread_id or values.get("user_id") != user_id:
+        raise _not_found()
+    try:
+        focus = RunFocus.model_validate(values.get("focus", _empty_focus().model_dump()))
+        version = int(values.get("version", 0))
+    except (TypeError, ValueError) as exc:
+        raise _conflict("Agent graph checkpoint is invalid") from exc
+    return focus, version
 
 
 def _recover_inline_turn(
@@ -690,7 +727,7 @@ def _graph_turn_result(
 
     try:
         snapshot, state = _owned_graph_snapshot(
-            ctx, _graph_config(turn.turn_id), turn.thread_id, turn.user_id
+            ctx, _graph_config(turn.thread_id), turn.thread_id, turn.user_id
         )
     except HTTPException:
         _fail_inline_turn(ctx, current, "graph_checkpoint_unavailable")
@@ -747,19 +784,6 @@ def _fail_inline_turn(
     )
 
 
-def _persist_non_transactional_focus_if_needed(
-    ctx: AgentApiContext,
-    run_id: str,
-    user_id: str,
-    focus: RunFocus,
-) -> None:
-    current = ctx.state_store.get(run_id=run_id, user_id=user_id)
-    if current.focus == focus:
-        return
-    current.focus = focus
-    ctx.state_store.save(current, expected_version=current.version)
-
-
 def _result_node(result: GraphTurnResult) -> str:
     if result.interrupt is not None:
         return result.interrupt.payload.kind
@@ -793,8 +817,18 @@ def _thread_response(record: AgentThreadRecord) -> AgentThreadResponse:
     return AgentThreadResponse.model_validate(record.model_dump(exclude={"user_id"}))
 
 
-def _run_response(state: RunState) -> AgentRunResponse:
-    return AgentRunResponse.model_validate(state.model_dump(exclude={"user_id"}))
+def _run_response(
+    run_id: str,
+    thread_id: str,
+    focus: RunFocus,
+    version: int,
+) -> AgentRunResponse:
+    return AgentRunResponse(
+        run_id=run_id,
+        thread_id=thread_id,
+        focus=focus,
+        version=version,
+    )
 
 
 def _turn_response(record: AgentTurnRecord) -> AgentTurnResponse:
