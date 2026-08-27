@@ -8,7 +8,6 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_valida
 
 from ..models import AnalysisType
 from .dataset_profile import DatasetProfile, MetadataProfile
-from .schemas import InputInspectionSummary
 
 
 AnalysisName = Literal["DEG", "DEM", "GMA"]
@@ -251,8 +250,6 @@ def resolve_analysis_request(
         ) if analysis_type in {"DEG", "DEM"} else _build_params(analysis_type, proposal.requested_params, None)
 
     merged = _merge_params(proposal, prior_params)
-    if user_message:
-        merged = _apply_message_levels(merged, user_message, metadata)
     if analysis_type == "GMA":
         return _build_params(analysis_type, merged, None)
 
@@ -283,26 +280,6 @@ def resolve_analysis_request(
     if len(candidates) > 1:
         return _ambiguous_request(analysis_type, merged, candidates)
     return _missing_for_unresolved(analysis_type, metadata, merged, min_replicates)
-
-
-def profiles_from_input_summaries(summaries: Sequence[InputInspectionSummary]) -> list[DatasetProfile]:
-    """Bridge the legacy bounded context summary into the new profile contract."""
-
-    profiles: list[DatasetProfile] = []
-    for summary in summaries:
-        if summary.field in {"metadata", "group"}:
-            profiles.append(MetadataProfile(
-                role=summary.field,
-                columns=list(summary.columns),
-                levels={
-                    group.column: {item.value: item.count for item in group.values}
-                    for group in summary.group_levels
-                },
-                sample_ids=[],
-                rows=summary.raw_rows,
-                alignment={},
-            ))
-    return profiles
 
 
 def _enumerate_candidates(
@@ -545,63 +522,6 @@ def _merge_params(proposal: AnalysisProposal, prior_params: AnalysisParams | Non
     if proposal.scope.mode != "unknown":
         merged["scope"] = proposal.scope
     return merged
-
-
-def _apply_message_levels(params: dict[str, object], message: str, metadata: MetadataProfile) -> dict[str, object]:
-    mentioned = {
-        column: [value for value in values if _mentions_value(message, value)]
-        for column, values in metadata.levels.items()
-        if column != "sample_id"
-    }
-    mentioned = {column: values for column, values in mentioned.items() if values}
-    pair_columns = [column for column, values in mentioned.items() if len(values) >= 2]
-    old_field = _optional_text(params.get("compare_field"))
-    if len(pair_columns) == 1:
-        field = pair_columns[0]
-        if old_field and old_field != field:
-            params.pop("tested_levels", None)
-            params.pop("reference_level", None)
-            params["scope"] = ScopeSpec(mode="unknown")
-        params["compare_field"] = field
-    else:
-        field = old_field
-
-    if field and field in mentioned:
-        values = mentioned[field]
-        references = [value for value in values if _is_reference_level(value)]
-        tested_values = [value for value in values if value not in references]
-        explicit_pair = field in pair_columns
-        if len(references) == 1 and (explicit_pair or not _optional_text(params.get("reference_level"))):
-            params["reference_level"] = references[0]
-        elif len(references) > 1:
-            params.pop("reference_level", None)
-        if len(tested_values) == 1 and (explicit_pair or not _optional_text(params.get("tested_levels"))):
-            params["tested_levels"] = tested_values[0]
-        elif len(tested_values) > 1:
-            params.pop("tested_levels", None)
-
-    scope = _scope(params.get("scope"))
-    if scope.mode == "unknown":
-        return params
-    for column, values in mentioned.items():
-        if column == field:
-            continue
-        if len(values) == 1 and scope.mode == "fixed":
-            fixed = dict(scope.fixed_filters)
-            fixed[column] = values[0]
-            scope = ScopeSpec(mode="fixed", fixed_filters=fixed)
-    params["scope"] = scope
-    return params
-
-
-def _mentions_value(message: str, value: str) -> bool:
-    lowered_message = message.casefold()
-    lowered_value = value.casefold().strip()
-    if not lowered_value:
-        return False
-    if any(ord(character) > 127 for character in lowered_value):
-        return lowered_value in lowered_message
-    return re.search(rf"(?<![a-z0-9_]){re.escape(lowered_value)}(?![a-z0-9_])", lowered_message) is not None
 
 
 def _row_value(row: list[str], metadata: MetadataProfile, field: str) -> str:

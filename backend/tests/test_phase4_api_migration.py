@@ -152,7 +152,7 @@ def test_confirmation_resume_uses_header_and_persists_completed_turn() -> None:
     assert len(submitter.requests) == 1
 
 
-def test_clarification_resume_checks_ownership_and_returns_confirmation() -> None:
+def test_clarification_resume_checks_ownership_and_preserves_missing_semantics() -> None:
     client, _context, thread, submitter = _setup(AnalysisProposal(
         analysis_type="DEG", compare_field="condition", scope=ScopeSpec(mode="all")
     ))
@@ -170,7 +170,7 @@ def test_clarification_resume_checks_ownership_and_returns_confirmation() -> Non
     client.cookies.set(COOKIE, "user-a")
     resumed = client.post(url, json=request)
     assert resumed.status_code == 200
-    assert resumed.json()["interrupt"]["payload"]["kind"] == "confirmation"
+    assert resumed.json()["interrupt"]["payload"]["kind"] == "clarification"
     assert not submitter.requests
 
 

@@ -35,6 +35,11 @@ class AgentInputBundleStatus(str, Enum):
 class ToolName(str, Enum):
     """Internal result contracts; graph actions define the Agent-visible surface."""
 
+    DESCRIBE_METADATA = "describe_metadata"
+    ENUMERATE_CONTRASTS = "enumerate_contrasts"
+    LIST_JOBS = "list_jobs"
+    DESCRIBE_ARTIFACTS = "describe_artifacts"
+    QUERY_ARTIFACT = "query_artifact"
     GET_JOBS_STATUS = "get_jobs_status"
     QUERY_RESULT_EVIDENCE = "query_result_evidence"
 

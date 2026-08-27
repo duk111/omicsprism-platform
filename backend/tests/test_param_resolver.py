@@ -100,7 +100,9 @@ def test_three_levels_use_explicit_user_comparison_without_guessing() -> None:
     )
 
     explicit = resolve_analysis_request(
-        "compare salt and control", [profile], _proposal()
+        "compare salt and control",
+        [profile],
+        _proposal(compare_field="condition", tested_level="salt", reference_level="control"),
     )
     unspecified = resolve_analysis_request(
         "analyze treatment response", [profile], _proposal(compare_field="condition")
@@ -156,7 +158,12 @@ def test_unbounded_secondary_factor_returns_all_legal_candidates_for_clarificati
     result = resolve_analysis_request(
         "compare salt and control",
         [profile],
-        _proposal(compare_field="treatment", scope=ScopeSpec(mode="unknown")),
+        _proposal(
+            compare_field="treatment",
+            tested_level="salt",
+            reference_level="control",
+            scope=ScopeSpec(mode="unknown"),
+        ),
     )
 
     assert result.params is None
@@ -206,7 +213,7 @@ def test_two_legal_compare_fields_require_clarification() -> None:
     assert len(result.missing[0].options) == 2
 
 
-def test_new_user_semantics_override_conflicting_prior_contrast() -> None:
+def test_prior_contrast_is_not_rewritten_from_user_text() -> None:
     profile = _metadata(
         [["s1", "control"], ["s2", "control"],
          ["s3", "salt"], ["s4", "salt"],
@@ -222,7 +229,7 @@ def test_new_user_semantics_override_conflicting_prior_contrast() -> None:
     )
 
     assert result.params is not None
-    assert result.params.contrast.tested_level == "drought"
+    assert result.params.contrast.tested_level == "salt"
 
 
 def test_same_field_value_and_typed_min_replicates_are_preserved() -> None:

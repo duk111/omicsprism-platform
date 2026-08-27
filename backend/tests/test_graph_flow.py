@@ -540,7 +540,7 @@ def test_fixed_scope_preview_matches_execution_inputs() -> None:
     assert len(scoped_metadata.content.splitlines()) == 5
 
 
-def test_default_checkpointer_resumes_clarification_flow() -> None:
+def test_default_checkpointer_preserves_clarification_without_model_reparse() -> None:
     refs = _dataset_refs()
     loader = RecordingDatasetLoader(refs)
     submitter = _submitter()
@@ -567,12 +567,12 @@ def test_default_checkpointer_resumes_clarification_flow() -> None:
         Command(resume={"answer": "compare salt and control"}), config
     )
 
-    assert resumed["__interrupt__"][0].value["kind"] == "confirmation"
+    assert resumed["__interrupt__"][0].value["kind"] == "clarification"
     assert resumed["clarification_answer"] == "compare salt and control"
-    assert resumed["resolved_request"].params is not None
-    assert resumed["resolved_request"].params.contrast.tested_level == "salt"
-    assert resumed["validation_report"].ok
-    assert resumed["pending_interrupt"].kind == "confirmation"
+    assert resumed["resolved_request"].params is None
+    assert resumed["resolved_request"].missing[0].field == "tested_level"
+    assert not resumed["validation_report"].ok
+    assert resumed["pending_interrupt"].kind == "clarification"
     assert len(loader.requests) == 3
     assert not submitter.requests
 
@@ -626,9 +626,11 @@ def test_default_checkpointer_isolates_interrupted_threads() -> None:
     )
 
     assert salt_resumed["thread_id"] == "isolated-salt"
-    assert salt_resumed["resolved_request"].params.contrast.tested_level == "salt"
+    assert salt_resumed["resolved_request"].params is None
+    assert salt_resumed["resolved_request"].missing[0].field == "tested_level"
     assert drought_resumed["thread_id"] == "isolated-drought"
-    assert drought_resumed["resolved_request"].params.contrast.tested_level == "drought"
+    assert drought_resumed["resolved_request"].params is None
+    assert drought_resumed["resolved_request"].missing[0].field == "tested_level"
 
 
 def test_default_checkpointer_resumes_confirmation_flow_once() -> None:
@@ -717,7 +719,7 @@ def test_explicit_checkpointer_resumes_confirmation_modify() -> None:
 
     payload = modified["__interrupt__"][0].value
     assert payload["kind"] == "confirmation"
-    assert payload["resolved_params"]["contrast"]["tested_level"] == "drought"
+    assert payload["resolved_params"]["contrast"]["tested_level"] == "salt"
     assert modified["validation_report"].ok
     assert len(loader.requests) == 2
     assert not submitter.requests

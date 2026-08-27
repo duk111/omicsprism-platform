@@ -20,7 +20,7 @@
         "alignment": {}
       }
     ],
-    "proposal": {"analysis_type": "DEG", "compare_field": "treatment", "scope": {"mode": "unknown"}},
+    "proposal": {"analysis_type": "DEG", "compare_field": "treatment", "tested_level": "salt", "reference_level": "control", "scope": {"mode": "unknown"}},
     "should_clarify": true,
     "expected_missing_field": "scope"
   },
@@ -62,7 +62,7 @@
         "alignment": {}
       }
     ],
-    "proposal": {"analysis_type": "DEG", "scope": {"mode": "all"}},
+    "proposal": {"analysis_type": "DEG", "compare_field": "treatment", "tested_level": "salt", "reference_level": "control", "scope": {"mode": "all"}},
     "should_clarify": false
   },
   {
