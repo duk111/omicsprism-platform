@@ -9,7 +9,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from .dataset_profile import DatasetProfile
 from .graph import JobSummary
 from .grounding import NO_EVIDENCE_TEXT, EvidenceGroundingError, EvidenceGrounder
-from .param_resolver import AnalysisProposal, resolve_analysis_request
+from .param_resolver import AnalysisProposal, ScopeSpec, resolve_analysis_request
 from .schemas import GroundedAnswer, ToolName, ToolResult
 from .verifier import AnswerVerifier
 
@@ -27,7 +27,7 @@ class ExpectedContrast(BaseModel):
     compare_field: str | None = None
     tested_level: str | None = None
     reference_level: str | None = None
-    same_fields: dict[str, str] = Field(default_factory=dict)
+    scope: ScopeSpec = Field(default_factory=lambda: ScopeSpec(mode="all"))
 
 
 class ParameterInferenceCase(BaseModel):
@@ -162,11 +162,12 @@ def evaluate_parameter_inference(case: ParameterInferenceCase) -> ParameterInfer
     ]
     compared_pair = [(name, actual, wanted) for name, actual, wanted in pair_checks if wanted is not None]
     pair_accuracy = _accuracy(compared_pair)
-    actual_same = getattr(actual_contrast, "same_fields", {})
+    actual_scope = getattr(actual_contrast, "scope", None)
+    scope_matches = actual_contrast is None or actual_scope == expected.scope
     full_match = (
         field_accuracy == 1
         and pair_accuracy == 1
-        and actual_same == expected.same_fields
+        and scope_matches
         and (params is not None)
     )
     issues = [
@@ -174,8 +175,8 @@ def evaluate_parameter_inference(case: ParameterInferenceCase) -> ParameterInfer
         for name, actual, wanted in compared_fields + compared_pair
         if actual != wanted
     ]
-    if actual_same != expected.same_fields:
-        issues.append(f"same_fields: expected {expected.same_fields!r}, got {actual_same!r}")
+    if actual_contrast is not None and actual_scope != expected.scope:
+        issues.append(f"scope: expected {expected.scope!r}, got {actual_scope!r}")
     if not resolved.missing and params is None:
         issues.append("resolver returned no parameters")
     return ParameterInferenceResult(

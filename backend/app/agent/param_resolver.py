@@ -4,7 +4,7 @@ import re
 from collections.abc import Mapping, Sequence
 from typing import Annotated, Literal, TypeAlias
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
 from ..models import AnalysisType
 from .dataset_profile import DatasetProfile, MetadataProfile
@@ -13,6 +13,46 @@ from .schemas import InputInspectionSummary
 
 AnalysisName = Literal["DEG", "DEM", "GMA"]
 ParamValue = str | int | float | bool | None
+ScopeMode = Literal["fixed", "stratified", "all", "unknown"]
+
+
+class ScopeSpec(BaseModel):
+    """Explicit sample-scope semantics for a contrast.
+
+    Fixed filters select one sample subset before execution. Blocking fields
+    remain in the analysis input and define per-stratum contrasts. The two
+    representations are intentionally disjoint so a value cannot be silently
+    dropped while crossing the legacy analysis boundary.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    mode: ScopeMode
+    fixed_filters: dict[str, str] = Field(default_factory=dict, max_length=16)
+    blocking_fields: list[str] = Field(default_factory=list, max_length=16)
+
+    @model_validator(mode="after")
+    def _validate_mode_payload(self) -> "ScopeSpec":
+        self.fixed_filters = {
+            str(field).strip(): str(value).strip()
+            for field, value in self.fixed_filters.items()
+            if str(field).strip()
+        }
+        self.blocking_fields = [
+            str(field).strip() for field in self.blocking_fields if str(field).strip()
+        ]
+        if len(self.blocking_fields) != len(set(self.blocking_fields)):
+            raise ValueError("blocking_fields must not contain duplicates")
+        if self.mode == "fixed":
+            if not self.fixed_filters or self.blocking_fields:
+                raise ValueError("fixed scope requires fixed_filters and no blocking_fields")
+        elif self.mode == "stratified":
+            if not self.blocking_fields or self.fixed_filters:
+                raise ValueError("stratified scope requires blocking_fields and no fixed_filters")
+        elif self.mode in {"all", "unknown"}:
+            if self.fixed_filters or self.blocking_fields:
+                raise ValueError(f"{self.mode} scope cannot carry filters or blocking_fields")
+        return self
 
 
 class AnalysisProposal(BaseModel):
@@ -22,7 +62,7 @@ class AnalysisProposal(BaseModel):
     compare_field: str | None = None
     tested_level: str | None = None
     reference_level: str | None = None
-    same_fields: dict[str, str] = Field(default_factory=dict)
+    scope: ScopeSpec = Field(default_factory=lambda: ScopeSpec(mode="unknown"))
     requested_params: dict[str, ParamValue] = Field(default_factory=dict, max_length=32)
 
     @classmethod
@@ -32,7 +72,7 @@ class AnalysisProposal(BaseModel):
         params: Mapping[str, object],
     ) -> "AnalysisProposal":
         name = _analysis_name(analysis_type)
-        same_fields = _same_fields(params.get("same_fields"))
+        scope = _scope_from_legacy(params.get("same_fields"))
         tested = str(params.get("tested_level") or params.get("tested_levels") or "").strip() or None
         reference = str(params.get("reference_level") or "").strip() or None
         allowed: dict[str, ParamValue] = {}
@@ -44,7 +84,7 @@ class AnalysisProposal(BaseModel):
             compare_field=_optional_text(params.get("compare_field")),
             tested_level=tested,
             reference_level=reference,
-            same_fields=same_fields,
+            scope=scope,
             requested_params=allowed,
         )
 
@@ -55,7 +95,7 @@ class ContrastSpec(BaseModel):
     compare_field: str
     tested_level: str
     reference_level: str
-    same_fields: dict[str, str] = Field(default_factory=dict)
+    scope: ScopeSpec = Field(default_factory=lambda: ScopeSpec(mode="all"))
 
 
 class _ContrastParams(BaseModel):
@@ -69,7 +109,11 @@ class _ContrastParams(BaseModel):
             "compare_field": self.contrast.compare_field,
             "tested_levels": self.contrast.tested_level,
             "reference_level": self.contrast.reference_level,
-            "same_fields": ",".join(self.contrast.same_fields),
+            # The legacy engine understands blocking field names only. Fixed
+            # filters remain explicit metadata for the new execution boundary.
+            "same_fields": ",".join(self.contrast.scope.blocking_fields),
+            "scope_mode": self.contrast.scope.mode,
+            "fixed_filters": _serialize_fixed_filters(self.contrast.scope),
             "min_replicates": self.min_replicates,
         }
         values.update(self._legacy_extra_params())
@@ -212,6 +256,19 @@ def resolve_analysis_request(
     if analysis_type == "GMA":
         return _build_params(analysis_type, merged, None)
 
+    scope = _scope(merged.get("scope"))
+    if scope.mode == "unknown" and _has_explicit_contrast(merged):
+        return ResolvedRequest(
+            analysis_type=analysis_type,
+            params=None,
+            partial_params=_scalar_params(merged),
+            missing=[MissingParam(
+                field="scope",
+                options=["all", "stratified", "fixed"],
+                reason="必须明确比较全部样本、按字段分层，还是固定条件筛选样本",
+            )],
+        )
+
     min_replicates = _positive_int(merged.get("min_replicates"), 2)
     candidates = _enumerate_candidates(metadata, merged, min_replicates)
     explicit = _has_explicit_contrast(merged)
@@ -252,12 +309,12 @@ def _enumerate_candidates(
     metadata: MetadataProfile,
     params: Mapping[str, object],
     min_replicates: int,
-) -> list[tuple[str, str, str, dict[str, str]]]:
+) -> list[tuple[str, str, str, ScopeSpec]]:
     compare_field = _optional_text(params.get("compare_field"))
     tested = _optional_text(params.get("tested_level") or params.get("tested_levels"))
     reference = _optional_text(params.get("reference_level"))
-    fixed_same = _same_fields(params.get("same_fields"))
-    candidates: list[tuple[str, str, str, dict[str, str]]] = []
+    scope = _scope(params.get("scope"))
+    candidates: list[tuple[str, str, str, ScopeSpec]] = []
     for field, raw_values in metadata.levels.items():
         if compare_field and field != compare_field:
             continue
@@ -275,40 +332,40 @@ def _enumerate_candidates(
             for test in tested_values:
                 if test == ref:
                     continue
-                same_options = _same_field_options(metadata, field, test, ref, fixed_same, min_replicates)
-                for same_fields in same_options:
-                    candidates.append((field, test, ref, same_fields))
+                scope_options = _scope_options(metadata, field, test, ref, scope, min_replicates)
+                for candidate_scope in scope_options:
+                    candidates.append((field, test, ref, candidate_scope))
     return _dedupe_candidates(candidates)
 
 
-def _same_field_options(
+def _scope_options(
     metadata: MetadataProfile,
     compare_field: str,
     tested: str,
     reference: str,
-    fixed_same: dict[str, str],
+    scope: ScopeSpec,
     min_replicates: int,
-) -> list[dict[str, str]]:
-    requested_fields = list(fixed_same)
+) -> list[ScopeSpec]:
+    if scope.mode == "unknown":
+        return []
+    if scope.mode == "all":
+        return [scope]
+    if scope.mode == "fixed":
+        requested_fields = list(scope.fixed_filters)
+    else:
+        requested_fields = list(scope.blocking_fields)
     if any(field == compare_field or field not in metadata.levels for field in requested_fields):
         return []
-    fixed_constraints = {field: value for field, value in fixed_same.items() if value}
-    dimension_only = bool(requested_fields) and not fixed_constraints
-    if requested_fields and not dimension_only and len(fixed_constraints) != len(requested_fields):
-        return []
+    fixed_constraints = dict(scope.fixed_filters) if scope.mode == "fixed" else {}
     if any(value not in metadata.levels[field] for field, value in fixed_constraints.items()):
         return []
-
-    secondary_fields = requested_fields or [
-        field
-        for field in metadata.levels
-        if field not in {compare_field, "sample_id"}
-    ]
-    if not secondary_fields:
-        return [{}]
     if metadata.rows is None:
         # Aggregate level counts cannot prove per-stratum replicate counts.
         return []
+
+    secondary_fields = requested_fields
+    if scope.mode == "fixed":
+        secondary_fields = []
 
     strata: dict[tuple[str, ...], list[list[str]]] = {}
     for row in metadata.rows:
@@ -317,43 +374,41 @@ def _same_field_options(
         if any(_row_value(row, metadata, field) != value for field, value in fixed_constraints.items()):
             continue
         key = tuple(_row_value(row, metadata, field) for field in secondary_fields)
-        if all(key):
+        if scope.mode == "fixed":
+            strata.setdefault((), []).append(row)
+        elif all(key):
             strata.setdefault(key, []).append(row)
 
-    options: list[dict[str, str]] = []
+    valid = False
     for key, rows in strata.items():
         if sum(_row_value(row, metadata, compare_field) == tested for row in rows) < min_replicates:
             continue
         if sum(_row_value(row, metadata, compare_field) == reference for row in rows) < min_replicates:
             continue
-        options.append(dict(zip(secondary_fields, key)))
-    if dimension_only:
-        return [dict(fixed_same)] if options else []
-    return options
+        valid = True
+    return [scope] if valid else []
 
 
 def _build_resolved(
     analysis_type: AnalysisName,
     params: Mapping[str, object],
-    candidate: tuple[str, str, str, dict[str, str]],
+    candidate: tuple[str, str, str, ScopeSpec],
     metadata: MetadataProfile,
 ) -> ResolvedRequest:
-    field, tested, reference, same_fields = candidate
-    if not same_fields:
-        same_fields = _same_fields(params.get("same_fields"))
+    field, tested, reference, scope = candidate
     merged = dict(params)
     merged.update({
         "compare_field": field,
         "tested_level": tested,
         "tested_levels": tested,
         "reference_level": reference,
-        "same_fields": same_fields,
+        "scope": scope,
     })
-    built = _build_params(analysis_type, merged, (field, tested, reference, same_fields))
+    built = _build_params(analysis_type, merged, (field, tested, reference, scope))
     if built.params is not None:
         built.inference_note = (
             f"参数依据 metadata 的 {field} 分组水平 {tested} 与 {reference}"
-            + (f"，并限定 {', '.join(f'{key}={value}' for key, value in same_fields.items())}" if same_fields else "")
+            + _scope_note(scope)
             + "；请在确认前核对。"
         )
     return built
@@ -362,13 +417,13 @@ def _build_resolved(
 def _build_params(
     analysis_type: AnalysisName,
     params: Mapping[str, object],
-    candidate: tuple[str, str, str, dict[str, str]] | None,
+    candidate: tuple[str, str, str, ScopeSpec] | None,
 ) -> ResolvedRequest:
     merged = dict(params)
     if candidate is not None:
-        field, tested, reference, same_fields = candidate
-        merged.update({"compare_field": field, "tested_levels": tested, "reference_level": reference, "same_fields": same_fields})
-        contrast = ContrastSpec(compare_field=field, tested_level=tested, reference_level=reference, same_fields=same_fields)
+        field, tested, reference, scope = candidate
+        merged.update({"compare_field": field, "tested_levels": tested, "reference_level": reference, "scope": scope})
+        contrast = ContrastSpec(compare_field=field, tested_level=tested, reference_level=reference, scope=scope)
     elif analysis_type in {"DEG", "DEM"}:
         return ResolvedRequest(analysis_type=analysis_type, params=None, partial_params=_scalar_params(merged))
     try:
@@ -410,14 +465,17 @@ def _missing_for_invalid_candidate(
     tested = _optional_text(params.get("tested_levels"))
     reference = _optional_text(params.get("reference_level"))
     observed = metadata.levels.get(field or "", {})
-    same_fields = _same_fields(params.get("same_fields"))
+    scope = _scope(params.get("scope"))
     invalid_same = [
         f"{name}={value}"
-        for name, value in same_fields.items()
+        for name, value in scope.fixed_filters.items()
         if name not in metadata.levels or (value and value not in metadata.levels[name])
     ]
+    invalid_same.extend(
+        name for name in scope.blocking_fields if name not in metadata.levels
+    )
     if invalid_same:
-        reason = f"same_fields 不存在于真实 metadata：{', '.join(invalid_same)}"
+        reason = f"scope 条件不存在于真实 metadata：{', '.join(invalid_same)}"
     elif tested and tested not in observed:
         reason = f"metadata 列 {field} 中不存在 tested level {tested}"
     elif reference and reference not in observed:
@@ -425,7 +483,7 @@ def _missing_for_invalid_candidate(
     elif tested and reference and (observed[tested] < min_replicates or observed[reference] < min_replicates):
         reason = "模型给出的分组样本数不足 min_replicates，请重新选择分组"
     else:
-        reason = "应用 same_fields 后分组样本数不足 min_replicates，无法形成合法 contrast"
+        reason = "应用 scope 后分组样本数不足 min_replicates，无法形成合法 contrast"
     return ResolvedRequest(analysis_type=analysis_type, params=None, partial_params=_scalar_params(params), missing=[MissingParam(field="contrast", options=options, reason=reason)])
 
 
@@ -457,12 +515,12 @@ def _missing_for_unresolved(
 def _ambiguous_request(
     analysis_type: AnalysisName,
     params: Mapping[str, object],
-    candidates: Sequence[tuple[str, str, str, dict[str, str]]],
+    candidates: Sequence[tuple[str, str, str, ScopeSpec]],
 ) -> ResolvedRequest:
     options = [
         f"{field}: {tested} vs {reference}"
-        + (f" ({', '.join(f'{key}={value}' for key, value in same.items())})" if same else "")
-        for field, tested, reference, same in candidates[:20]
+        + _scope_note(scope)
+        for field, tested, reference, scope in candidates[:20]
     ]
     return ResolvedRequest(
         analysis_type=analysis_type,
@@ -476,6 +534,7 @@ def _merge_params(proposal: AnalysisProposal, prior_params: AnalysisParams | Non
     merged: dict[str, object] = {}
     if prior_params is not None and (proposal.analysis_type is None or proposal.analysis_type == prior_params.analysis_type):
         merged.update(prior_params.legacy_params())
+        merged["scope"] = prior_params.contrast.scope if hasattr(prior_params, "contrast") else ScopeSpec(mode="all")
     merged.update(proposal.requested_params)
     if proposal.compare_field is not None:
         merged["compare_field"] = proposal.compare_field
@@ -483,8 +542,8 @@ def _merge_params(proposal: AnalysisProposal, prior_params: AnalysisParams | Non
         merged["tested_levels"] = proposal.tested_level
     if proposal.reference_level is not None:
         merged["reference_level"] = proposal.reference_level
-    if proposal.same_fields:
-        merged["same_fields"] = proposal.same_fields
+    if proposal.scope.mode != "unknown":
+        merged["scope"] = proposal.scope
     return merged
 
 
@@ -502,7 +561,7 @@ def _apply_message_levels(params: dict[str, object], message: str, metadata: Met
         if old_field and old_field != field:
             params.pop("tested_levels", None)
             params.pop("reference_level", None)
-            params["same_fields"] = {}
+            params["scope"] = ScopeSpec(mode="unknown")
         params["compare_field"] = field
     else:
         field = old_field
@@ -521,16 +580,17 @@ def _apply_message_levels(params: dict[str, object], message: str, metadata: Met
         elif len(tested_values) > 1:
             params.pop("tested_levels", None)
 
-    same_fields = _same_fields(params.get("same_fields"))
+    scope = _scope(params.get("scope"))
+    if scope.mode == "unknown":
+        return params
     for column, values in mentioned.items():
         if column == field:
             continue
-        if len(values) == 1:
-            same_fields[column] = values[0]
-        else:
-            same_fields.pop(column, None)
-    if same_fields:
-        params["same_fields"] = same_fields
+        if len(values) == 1 and scope.mode == "fixed":
+            fixed = dict(scope.fixed_filters)
+            fixed[column] = values[0]
+            scope = ScopeSpec(mode="fixed", fixed_filters=fixed)
+    params["scope"] = scope
     return params
 
 
@@ -552,11 +612,17 @@ def _row_value(row: list[str], metadata: MetadataProfile, field: str) -> str:
     return row[index].strip() if index < len(row) else ""
 
 
-def _dedupe_candidates(candidates: Sequence[tuple[str, str, str, dict[str, str]]]) -> list[tuple[str, str, str, dict[str, str]]]:
-    result: list[tuple[str, str, str, dict[str, str]]] = []
-    seen: set[tuple[str, str, str, tuple[tuple[str, str], ...]]] = set()
+def _dedupe_candidates(candidates: Sequence[tuple[str, str, str, ScopeSpec]]) -> list[tuple[str, str, str, ScopeSpec]]:
+    result: list[tuple[str, str, str, ScopeSpec]] = []
+    seen: set[tuple[str, str, str, str, tuple[tuple[str, str], ...], tuple[str, ...]]] = set()
     for candidate in candidates:
-        key = (*candidate[:3], tuple(sorted(candidate[3].items())))
+        scope = candidate[3]
+        key = (
+            *candidate[:3],
+            scope.mode,
+            tuple(sorted(scope.fixed_filters.items())),
+            tuple(scope.blocking_fields),
+        )
         if key not in seen:
             seen.add(key)
             result.append(candidate)
@@ -585,14 +651,55 @@ def _scalar_params(params: Mapping[str, object]) -> dict[str, ParamValue]:
     }
 
 
-def _same_fields(value: object) -> dict[str, str]:
+def _scope(value: object) -> ScopeSpec:
+    if isinstance(value, ScopeSpec):
+        return value
     if isinstance(value, Mapping):
-        return {str(key): str(item) for key, item in value.items() if str(key).strip()}
+        try:
+            return ScopeSpec.model_validate(value)
+        except ValidationError:
+            return ScopeSpec(mode="unknown")
+    return ScopeSpec(mode="unknown")
+
+
+def _scope_from_legacy(value: object) -> ScopeSpec:
+    if isinstance(value, Mapping):
+        values = {
+            str(key).strip(): str(item).strip()
+            for key, item in value.items()
+            if str(key).strip()
+        }
+        if values and all(values.values()):
+            return ScopeSpec(mode="fixed", fixed_filters=values)
+        if values and not any(values.values()):
+            return ScopeSpec(mode="stratified", blocking_fields=list(values))
+        return ScopeSpec(mode="unknown")
     if isinstance(value, str):
-        return {item.strip(): "" for item in value.split(",") if item.strip()}
+        fields = [item.strip() for item in value.split(",") if item.strip()]
+        return ScopeSpec(mode="stratified", blocking_fields=fields) if fields else ScopeSpec(mode="all")
     if isinstance(value, (list, tuple, set)):
-        return {str(item).strip(): "" for item in value if str(item).strip()}
-    return {}
+        fields = [str(item).strip() for item in value if str(item).strip()]
+        return ScopeSpec(mode="stratified", blocking_fields=fields) if fields else ScopeSpec(mode="all")
+    return ScopeSpec(mode="all")
+
+
+def _serialize_fixed_filters(scope: ScopeSpec) -> str:
+    if not scope.fixed_filters:
+        return ""
+    import json
+    return json.dumps(scope.fixed_filters, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+
+
+def _scope_note(scope: ScopeSpec) -> str:
+    if scope.mode == "fixed":
+        return "，并固定 " + ", ".join(
+            f"{key}={value}" for key, value in scope.fixed_filters.items()
+        )
+    if scope.mode == "stratified":
+        return "，并按 " + ", ".join(scope.blocking_fields) + " 分层"
+    if scope.mode == "all":
+        return "，覆盖全部样本"
+    return ""
 
 
 def _optional_text(value: object) -> str | None:

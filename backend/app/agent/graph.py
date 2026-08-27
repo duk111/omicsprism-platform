@@ -310,6 +310,9 @@ class AnalysisExecutionRequest(BaseModel):
     resolved_params: AnalysisParams
     input_fingerprint: str = Field(pattern=r"^sha256:[0-9a-fA-F]{64}$")
     idempotency_key: str = Field(min_length=1, max_length=200)
+    # Fixed scopes carry materialized inputs only across the submission boundary;
+    # raw bytes must never be persisted in graph state or checkpoints.
+    scoped_inputs: list[DatasetRef] = Field(default_factory=list, max_length=6, exclude=True)
 
 
 JobSubmitter = Callable[[AnalysisExecutionRequest], JobRef]

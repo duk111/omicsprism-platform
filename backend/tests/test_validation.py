@@ -4,8 +4,18 @@ from hashlib import sha256
 
 from backend.app.agent.dataset_profile import MetadataProfile, build_dataset_profiles
 from backend.app.agent.fingerprint import compute_input_fingerprint
-from backend.app.agent.param_resolver import ContrastSpec, DEGParams, MissingParam, ResolvedRequest
-from backend.app.agent.validation import DatasetRef, validate_analysis_request
+from backend.app.agent.param_resolver import (
+    ContrastSpec,
+    DEGParams,
+    MissingParam,
+    ResolvedRequest,
+    ScopeSpec,
+)
+from backend.app.agent.validation import (
+    DatasetRef,
+    derive_scoped_dataset_refs,
+    validate_analysis_request,
+)
 
 
 COUNTS = b"gene,s1,s2,s3,s4\ng1,10,12,30,32\ng2,8,9,20,22\n"
@@ -37,12 +47,15 @@ def _refs(
     ]
 
 
-def _request(*, min_replicates: int = 2) -> ResolvedRequest:
+def _request(*, min_replicates: int = 2, scope: ScopeSpec | None = None) -> ResolvedRequest:
     return ResolvedRequest(
         analysis_type="DEG",
         params=DEGParams(
             contrast=ContrastSpec(
-                compare_field="treatment", tested_level="salt", reference_level="control"
+                compare_field="treatment",
+                tested_level="salt",
+                reference_level="control",
+                scope=scope or ScopeSpec(mode="all"),
             ),
             min_replicates=min_replicates,
         ),
@@ -153,3 +166,58 @@ def test_fingerprint_changes_when_contrast_relevant_structure_changes() -> None:
     )
 
     assert before != after
+
+
+def test_fixed_scope_subsets_metadata_and_matrix_before_validation() -> None:
+    counts = b"gene,s1,s2,s3,s4,s5,s6\ng1,10,12,30,32,20,22\n"
+    metadata = (
+        b"sample_id,genotype,treatment\n"
+        b"s1,WT,control\ns2,WT,control\ns3,WT,salt\ns4,WT,salt\n"
+        b"s5,mutant,control\ns6,mutant,salt\n"
+    )
+    refs = _refs(counts=counts, metadata=metadata)
+    scope = ScopeSpec(mode="fixed", fixed_filters={"genotype": "WT"})
+    scoped = derive_scoped_dataset_refs(scope, refs)
+
+    scoped_counts = next(item for item in scoped if item.role == "counts")
+    scoped_metadata = next(item for item in scoped if item.role == "metadata")
+    assert scoped_counts.content.splitlines()[0] == b"gene,s1,s2,s3,s4"
+    assert len(scoped_metadata.content.splitlines()) == 5
+    assert scoped_counts.checksum != next(item for item in refs if item.role == "counts").checksum
+    assert DEGParams(contrast=ContrastSpec(
+        compare_field="treatment",
+        tested_level="salt",
+        reference_level="control",
+        scope=scope,
+    )).legacy_params()["same_fields"] == ""
+
+    report = validate_analysis_request(_request(scope=scope), refs)
+    assert report.ok
+    assert report.preview is not None
+    assert report.preview.scope == scope
+    assert report.preview.tested_count == 2
+    assert report.preview.reference_count == 2
+
+
+def test_stratified_scope_keeps_inputs_and_maps_blocking_fields() -> None:
+    counts = b"gene," + b",".join(f"s{i}".encode() for i in range(1, 9)) + b"\ng1," + b",".join(b"10" for _ in range(8)) + b"\n"
+    rows: list[bytes] = []
+    sample = 1
+    for timepoint in ("0h", "24h"):
+        for treatment in ("control", "salt"):
+            for _ in range(2):
+                rows.append(f"s{sample},{timepoint},{treatment}".encode())
+                sample += 1
+    metadata = b"sample_id,timepoint,treatment\n" + b"\n".join(rows) + b"\n"
+    refs = _refs(counts=counts, metadata=metadata)
+    scope = ScopeSpec(mode="stratified", blocking_fields=["timepoint"])
+    scoped = derive_scoped_dataset_refs(scope, refs)
+    assert [item.content for item in scoped] == [item.content for item in refs]
+
+    params = _request(scope=scope).params
+    assert params is not None
+    assert params.legacy_params()["same_fields"] == "timepoint"
+    report = validate_analysis_request(_request(scope=scope), refs)
+    assert report.ok
+    assert report.preview is not None
+    assert report.preview.scope == scope

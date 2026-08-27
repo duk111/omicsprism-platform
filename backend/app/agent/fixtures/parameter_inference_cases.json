@@ -12,13 +12,13 @@
         "alignment": {}
       }
     ],
-    "proposal": {"analysis_type": "DEG"},
+    "proposal": {"analysis_type": "DEG", "scope": {"mode": "all", "fixed_filters": {}, "blocking_fields": []}},
     "expected": {
       "analysis_type": "DEG",
       "compare_field": "treatment",
       "tested_level": "salt",
       "reference_level": "control",
-      "same_fields": {}
+      "scope": {"mode": "all", "fixed_filters": {}, "blocking_fields": []}
     }
   },
   {
@@ -43,13 +43,13 @@
         "alignment": {}
       }
     ],
-    "proposal": {"analysis_type": "DEM"},
+    "proposal": {"analysis_type": "DEM", "scope": {"mode": "fixed", "fixed_filters": {"genotype": "WT", "timepoint": "24h"}, "blocking_fields": []}},
     "expected": {
       "analysis_type": "DEM",
       "compare_field": "treatment",
       "tested_level": "salt",
       "reference_level": "control",
-      "same_fields": {"genotype": "WT", "timepoint": "24h"}
+      "scope": {"mode": "fixed", "fixed_filters": {"genotype": "WT", "timepoint": "24h"}, "blocking_fields": []}
     }
   },
   {
@@ -59,7 +59,7 @@
     "proposal": {"analysis_type": "GMA"},
     "expected": {
       "analysis_type": "GMA",
-      "same_fields": {}
+      "scope": {"mode": "all", "fixed_filters": {}, "blocking_fields": []}
     }
   }
 ]

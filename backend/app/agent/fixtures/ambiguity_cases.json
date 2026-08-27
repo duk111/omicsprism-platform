@@ -20,9 +20,9 @@
         "alignment": {}
       }
     ],
-    "proposal": {"analysis_type": "DEG", "compare_field": "treatment"},
+    "proposal": {"analysis_type": "DEG", "compare_field": "treatment", "scope": {"mode": "unknown"}},
     "should_clarify": true,
-    "expected_missing_field": "contrast"
+    "expected_missing_field": "scope"
   },
   {
     "case_id": "ambiguous_compare_fields_001",
@@ -45,9 +45,9 @@
         "alignment": {}
       }
     ],
-    "proposal": {"analysis_type": "DEG"},
+    "proposal": {"analysis_type": "DEG", "scope": {"mode": "unknown"}},
     "should_clarify": true,
-    "expected_missing_field": "contrast"
+    "expected_missing_field": "compare_field"
   },
   {
     "case_id": "unique_explicit_pair_001",
@@ -62,7 +62,7 @@
         "alignment": {}
       }
     ],
-    "proposal": {"analysis_type": "DEG"},
+    "proposal": {"analysis_type": "DEG", "scope": {"mode": "all"}},
     "should_clarify": false
   },
   {
@@ -86,7 +86,7 @@
         "alignment": {}
       }
     ],
-    "proposal": {"analysis_type": "DEG"},
+    "proposal": {"analysis_type": "DEG", "scope": {"mode": "fixed", "fixed_filters": {"genotype": "WT"}}},
     "should_clarify": false
   }
 ]

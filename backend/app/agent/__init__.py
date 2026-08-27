@@ -12,9 +12,17 @@ from .param_resolver import (
     GMAParams,
     MissingParam,
     ResolvedRequest,
+    ScopeSpec,
+    ScopeMode,
     resolve_analysis_request,
 )
-from .validation import DatasetRef, Issue, ValidationReport, validate_analysis_request
+from .validation import (
+    DatasetRef,
+    Issue,
+    ValidationReport,
+    derive_scoped_dataset_refs,
+    validate_analysis_request,
+)
 from .model import VllmGraphModel
 from .product_store import InMemoryAgentProductStore, PostgresAgentProductStore
 from .tools import (
@@ -40,10 +48,13 @@ __all__ = [
     "GMAParams",
     "MissingParam",
     "ResolvedRequest",
+    "ScopeSpec",
+    "ScopeMode",
     "resolve_analysis_request",
     "DatasetRef",
     "Issue",
     "ValidationReport",
+    "derive_scoped_dataset_refs",
     "validate_analysis_request",
     "compute_input_fingerprint",
     "VllmGraphModel",

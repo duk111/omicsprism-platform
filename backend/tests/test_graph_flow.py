@@ -26,7 +26,7 @@ from backend.app.agent.graph import (
 )
 from backend.app.agent.nodes.analysis import DatasetLoadError, analysis_node
 from backend.app.agent.nodes.result_qa import ResultAccessError, result_qa_node
-from backend.app.agent.param_resolver import AnalysisProposal
+from backend.app.agent.param_resolver import AnalysisProposal, ScopeSpec
 from backend.app.agent.schemas import ToolName, ToolResult
 from backend.app.agent.validation import DatasetRef
 
@@ -466,6 +466,7 @@ def test_complete_analysis_request_is_resolved_and_validated_before_confirmation
         compare_field="condition",
         tested_level="salt",
         reference_level="control",
+        scope=ScopeSpec(mode="all"),
     ))
     state = _state(
         thread_id="confirmation-ready",
@@ -489,12 +490,61 @@ def test_complete_analysis_request_is_resolved_and_validated_before_confirmation
     )]
 
 
+def test_fixed_scope_preview_matches_execution_inputs() -> None:
+    counts = b"gene," + b",".join(f"s{i}".encode() for i in range(1, 9)) + b"\ng1," + b",".join(b"10" for _ in range(8)) + b"\n"
+    metadata = (
+        b"sample_id,genotype,treatment\n"
+        b"s1,WT,control\ns2,WT,control\ns3,WT,salt\ns4,WT,salt\n"
+        b"s5,mutant,control\ns6,mutant,control\ns7,mutant,salt\ns8,mutant,salt\n"
+    )
+    refs = _dataset_refs(counts=counts, metadata=metadata)
+    loader = RecordingDatasetLoader(refs)
+    submitter = _submitter()
+    scope = ScopeSpec(mode="fixed", fixed_filters={"genotype": "WT"})
+    graph = build_agent_graph(
+        _analysis_model(AnalysisProposal(
+            analysis_type="DEG",
+            compare_field="treatment",
+            tested_level="salt",
+            reference_level="control",
+            scope=scope,
+        )),
+        loader,
+        submitter,
+        _reader(),
+        _querier(),
+    )
+    config = _config("fixed-scope")
+    paused = graph.invoke(_state(
+        thread_id="fixed-scope",
+        user_message="Compare salt and control in WT",
+        dataset_profiles=_profile_refs(refs),
+    ), config)
+    payload = paused["__interrupt__"][0].value
+    assert payload["kind"] == "confirmation"
+    assert payload["preview"]["scope"]["mode"] == "fixed"
+    assert payload["preview"]["tested_count"] == 2
+    assert payload["preview"]["reference_count"] == 2
+
+    completed = graph.invoke(Command(resume={
+        "action": "run",
+        "idempotency_key": "fixed-run",
+    }), config)
+    assert completed["current_job"].job_id == "job-1"
+    request = submitter.requests[0]
+    assert request.resolved_params.legacy_params()["same_fields"] == ""
+    scoped_counts = next(item for item in request.scoped_inputs if item.role == "counts")
+    scoped_metadata = next(item for item in request.scoped_inputs if item.role == "metadata")
+    assert scoped_counts.content.splitlines()[0] == b"gene,s1,s2,s3,s4"
+    assert len(scoped_metadata.content.splitlines()) == 5
+
+
 def test_default_checkpointer_resumes_clarification_flow() -> None:
     refs = _dataset_refs()
     loader = RecordingDatasetLoader(refs)
     submitter = _submitter()
     graph = build_agent_graph(
-        _analysis_model(AnalysisProposal(analysis_type="DEG", compare_field="condition")),
+        _analysis_model(AnalysisProposal(analysis_type="DEG", compare_field="condition", scope=ScopeSpec(mode="all"))),
         loader,
         submitter,
         _reader(),
@@ -528,7 +578,7 @@ def test_default_checkpointer_resumes_clarification_flow() -> None:
 
 def test_default_checkpointer_isolates_interrupted_threads() -> None:
     refs = _dataset_refs()
-    proposal = AnalysisProposal(analysis_type="DEG", compare_field="condition")
+    proposal = AnalysisProposal(analysis_type="DEG", compare_field="condition", scope=ScopeSpec(mode="all"))
     model = ScriptedMainModel([
         MainModelOutput(decision=AgentDecision(
             action="run_analysis",
@@ -590,6 +640,7 @@ def test_default_checkpointer_resumes_confirmation_flow_once() -> None:
             compare_field="condition",
             tested_level="salt",
             reference_level="control",
+            scope=ScopeSpec(mode="all"),
         )),
         loader,
         submitter,
@@ -640,6 +691,7 @@ def test_explicit_checkpointer_resumes_confirmation_modify() -> None:
             compare_field="condition",
             tested_level="salt",
             reference_level="control",
+            scope=ScopeSpec(mode="all"),
         )),
         loader,
         submitter,
@@ -680,6 +732,7 @@ def test_confirmation_cancel_does_not_create_a_job() -> None:
             compare_field="condition",
             tested_level="salt",
             reference_level="control",
+            scope=ScopeSpec(mode="all"),
         )),
         loader,
         submitter,
@@ -718,6 +771,7 @@ def test_changed_input_rejects_execution_and_asks_for_clarification() -> None:
             compare_field="condition",
             tested_level="salt",
             reference_level="control",
+            scope=ScopeSpec(mode="all"),
         )),
         loader,
         submitter,
@@ -763,6 +817,7 @@ def test_blocking_validation_interrupts_without_creating_a_job() -> None:
             compare_field="condition",
             tested_level="salt",
             reference_level="control",
+            scope=ScopeSpec(mode="all"),
         )),
         loader,
         submitter,
@@ -796,6 +851,7 @@ def test_analysis_loader_rejects_cross_user_dataset() -> None:
             compare_field="condition",
             tested_level="salt",
             reference_level="control",
+            scope=ScopeSpec(mode="all"),
         )),
         loader,
         submitter,

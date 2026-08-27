@@ -9,7 +9,14 @@ from fastapi import HTTPException
 
 from ..job_execution import JobExecutor
 from ..job_store import JobStorageService
-from ..models import AnalysisType, JobOwnerType, JobRecord, JobStatus
+from ..models import (
+    AnalysisType,
+    FileArtifactKind,
+    JobOwnerType,
+    JobRecord,
+    JobStatus,
+    UploadedFileInfo,
+)
 from ..settings import AppSettings
 from ..storage_service import CSV_MAX_BYTES, FileStorageService
 from .product_store import AgentProductStore, PostgresAgentProductStore
@@ -109,7 +116,47 @@ def create_agent_api_context(
             product_store.get_input_file(file_id=file_id, user_id=request.user_id)
             for file_id in request.dataset_ids
         ]
-        inputs = [files.copy_staged_input(job_id, item) for item in input_records]
+        scoped_by_id = {item.dataset_id: item for item in request.scoped_inputs}
+        inputs: list[UploadedFileInfo] = []
+        for item in input_records:
+            scoped = scoped_by_id.get(item.file_id)
+            if scoped is None:
+                inputs.append(files.copy_staged_input(job_id, item))
+                continue
+            if scoped.owner_id != request.user_id or scoped.role != item.field:
+                raise HTTPException(status_code=409, detail="Scoped dataset ownership or role changed")
+            content = scoped.content
+            checksum = sha256(content).hexdigest()
+            if "sha256:" + checksum != scoped.checksum:
+                raise HTTPException(status_code=409, detail=f"{item.field} scoped input checksum changed")
+            relative_path = f"inputs/{item.field}.csv"
+            storage_key = files.storage_key(job_id, relative_path)
+            files.backend.put_bytes(
+                content,
+                storage_key,
+                content_type=item.content_type or "text/csv",
+                metadata={
+                    "checksum": checksum,
+                    "created_at": datetime.now(timezone.utc).isoformat(),
+                    "kind": FileArtifactKind.INPUT.value,
+                    "field": item.field,
+                    "filename": item.filename,
+                    "path": relative_path,
+                    "source_bundle_id": item.bundle_id,
+                    "scope_mode": request.resolved_params.legacy_params().get("scope_mode", ""),
+                },
+            )
+            inputs.append(UploadedFileInfo(
+                kind=FileArtifactKind.INPUT,
+                field=item.field,
+                filename=item.filename,
+                path=relative_path,
+                storage_key=storage_key,
+                checksum=checksum,
+                content_type=item.content_type or "text/csv",
+                size_bytes=len(content),
+                created_at=datetime.now(timezone.utc),
+            ))
         analysis_type = {
             "DEG": AnalysisType.DEG,
             "DEM": AnalysisType.DEM,

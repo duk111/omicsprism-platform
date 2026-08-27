@@ -16,7 +16,7 @@ from backend.app.agent.graph import (
     MainModelOutput,
     build_agent_graph,
 )
-from backend.app.agent.param_resolver import AnalysisProposal
+from backend.app.agent.param_resolver import AnalysisProposal, ScopeSpec
 from backend.app.agent.product_store import InMemoryAgentProductStore
 from backend.app.agent.schemas import AgentInputBundleRecord, AgentInputFileRecord
 from backend.app.agent.validation import DatasetRef
@@ -116,6 +116,7 @@ def test_confirmation_resume_uses_header_and_persists_completed_turn() -> None:
     client, context, thread, submitter = _setup(AnalysisProposal(
         analysis_type="DEG", compare_field="condition",
         tested_level="salt", reference_level="control",
+        scope=ScopeSpec(mode="all"),
     ))
     paused = _start(client, thread)
     assert paused.status_code == 202
@@ -153,7 +154,7 @@ def test_confirmation_resume_uses_header_and_persists_completed_turn() -> None:
 
 def test_clarification_resume_checks_ownership_and_returns_confirmation() -> None:
     client, _context, thread, submitter = _setup(AnalysisProposal(
-        analysis_type="DEG", compare_field="condition"
+        analysis_type="DEG", compare_field="condition", scope=ScopeSpec(mode="all")
     ))
     body = _start(client, thread, "clarify-1").json()
     assert body["interrupt"]["payload"]["kind"] == "clarification"
@@ -174,7 +175,7 @@ def test_clarification_resume_checks_ownership_and_returns_confirmation() -> Non
 
 
 def test_openapi_exposes_typed_graph_resume_contract() -> None:
-    client, _context, _thread, _submitter = _setup(AnalysisProposal(analysis_type="DEG"))
+    client, _context, _thread, _submitter = _setup(AnalysisProposal(analysis_type="DEG", scope=ScopeSpec(mode="all")))
     schema = client.get("/openapi.json").json()
     path = "/api/agent/threads/{thread_id}/turns/{checkpoint_turn_id}/resume"
     request_schema = schema["paths"][path]["post"]["requestBody"]["content"][
@@ -187,6 +188,7 @@ def test_new_turn_releases_inline_turn_with_lost_checkpoint() -> None:
     proposal = AnalysisProposal(
         analysis_type="DEG", compare_field="condition",
         tested_level="salt", reference_level="control",
+        scope=ScopeSpec(mode="all"),
     )
     client, context, thread, submitter = _setup(proposal)
     previous = _start(client, thread, "before-restart").json()["turn"]

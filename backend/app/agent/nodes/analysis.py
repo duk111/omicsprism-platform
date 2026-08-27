@@ -23,7 +23,12 @@ from ..graph import (
     NodeCapabilityError,
 )
 from ..param_resolver import AnalysisProposal, ResolvedRequest, resolve_analysis_request
-from ..validation import DatasetRef, ValidationReport, validate_analysis_request
+from ..validation import (
+    DatasetRef,
+    ValidationReport,
+    derive_scoped_dataset_refs,
+    validate_analysis_request,
+)
 
 
 class DatasetLoadError(ValueError):
@@ -202,11 +207,21 @@ def run_analysis(
 
     if resumed.idempotency_key is None:
         raise ExecutionRejected("run action is missing an idempotency key")
-    dataset_refs = _load_owned_refs(state, dataset_loader)
+    dataset_refs = _load_validation_refs(state, dataset_loader)
+    try:
+        contrast = getattr(payload.resolved_params, "contrast", None)
+        scope = contrast.scope if contrast is not None else None
+        scoped_refs = (
+            derive_scoped_dataset_refs(scope, dataset_refs)
+            if scope is not None
+            else [item.model_copy(deep=True) for item in dataset_refs]
+        )
+    except ValueError as exc:
+        raise ExecutionRejected(str(exc)) from exc
     fingerprint = compute_input_fingerprint(
         owner_id=state.user_id,
-        dataset_refs=dataset_refs,
-        profiles=[item.profile for item in state.dataset_profiles],
+        dataset_refs=scoped_refs,
+        profiles=[item.profile for item in scoped_refs if item.profile is not None],
     )
     if fingerprint.casefold() != payload.input_fingerprint.casefold():
         raise ExecutionRejected("input fingerprint no longer matches validation")
@@ -218,6 +233,7 @@ def run_analysis(
         resolved_params=payload.resolved_params,
         input_fingerprint=payload.input_fingerprint,
         idempotency_key=resumed.idempotency_key,
+        scoped_inputs=scoped_refs if scope is not None and scope.mode == "fixed" else [],
     )
     job_ref = job_submitter(request)
     if job_ref.owner_id != state.user_id:
@@ -302,7 +318,11 @@ def _check_metadata_fields(
         [],
     )
     available = {item.strip() for item in header}
-    required = {contrast.compare_field, *contrast.same_fields}
+    required = {
+        contrast.compare_field,
+        *contrast.scope.fixed_filters,
+        *contrast.scope.blocking_fields,
+    }
     missing = sorted(required - available)
     if missing:
         raise ExecutionRejected(

@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import pytest
+
 from backend.app.agent.dataset_profile import MetadataProfile
 from backend.app.agent.param_resolver import (
     AnalysisProposal,
     ContrastSpec,
     DEGParams,
+    ScopeSpec,
     resolve_analysis_request,
 )
 
@@ -35,9 +38,27 @@ def _two_level(*, reference: str = "control", tested: str = "salt", tested_count
 
 
 def _proposal(**updates: object) -> AnalysisProposal:
-    values: dict[str, object] = {"analysis_type": "DEG"}
+    values: dict[str, object] = {
+        "analysis_type": "DEG",
+        "scope": ScopeSpec(mode="all"),
+    }
     values.update(updates)
     return AnalysisProposal.model_validate(values)
+
+
+def test_scope_spec_enforces_disjoint_modes() -> None:
+    assert ScopeSpec(mode="all") == ScopeSpec(mode="all")
+    assert ScopeSpec(mode="unknown") == ScopeSpec(mode="unknown")
+    assert ScopeSpec(mode="fixed", fixed_filters={"genotype": "WT"})
+    assert ScopeSpec(mode="stratified", blocking_fields=["timepoint"])
+    with pytest.raises(ValueError, match="fixed scope"):
+        ScopeSpec(mode="fixed")
+    with pytest.raises(ValueError, match="stratified scope"):
+        ScopeSpec(mode="stratified")
+    with pytest.raises(ValueError, match="cannot carry"):
+        ScopeSpec(mode="all", blocking_fields=["timepoint"])
+    with pytest.raises(ValueError, match="duplicates"):
+        ScopeSpec(mode="stratified", blocking_fields=["timepoint", "timepoint"])
 
 
 def test_two_groups_with_explicit_reference_are_resolved() -> None:
@@ -105,12 +126,20 @@ def test_genotype_and_timepoint_constraints_are_resolved_from_real_rows() -> Non
     profile = _metadata(rows, ["sample_id", "genotype", "timepoint", "treatment"])
 
     result = resolve_analysis_request(
-        "在 WT 的 24h 比较 salt 和 control", [profile], _proposal()
+        "在 WT 的 24h 比较 salt 和 control",
+        [profile],
+        _proposal(scope=ScopeSpec(
+            mode="fixed",
+            fixed_filters={"genotype": "WT", "timepoint": "24h"},
+        )),
     )
 
     assert result.params is not None
     assert result.params.contrast.compare_field == "treatment"
-    assert result.params.contrast.same_fields == {"genotype": "WT", "timepoint": "24h"}
+    assert result.params.contrast.scope == ScopeSpec(
+        mode="fixed",
+        fixed_filters={"genotype": "WT", "timepoint": "24h"},
+    )
 
 
 def test_unbounded_secondary_factor_returns_all_legal_candidates_for_clarification() -> None:
@@ -125,15 +154,14 @@ def test_unbounded_secondary_factor_returns_all_legal_candidates_for_clarificati
     profile = _metadata(rows, ["sample_id", "timepoint", "treatment"])
 
     result = resolve_analysis_request(
-        "compare salt and control", [profile], _proposal(compare_field="treatment")
+        "compare salt and control",
+        [profile],
+        _proposal(compare_field="treatment", scope=ScopeSpec(mode="unknown")),
     )
 
     assert result.params is None
-    assert result.missing[0].field == "contrast"
-    assert result.missing[0].options == [
-        "treatment: salt vs control (timepoint=0h)",
-        "treatment: salt vs control (timepoint=24h)",
-    ]
+    assert result.missing[0].field == "scope"
+    assert set(result.missing[0].options) == {"all", "stratified", "fixed"}
 
 
 def test_invalid_facts_and_replicates_are_rejected_without_fuzzy_correction() -> None:
@@ -175,7 +203,7 @@ def test_two_legal_compare_fields_require_clarification() -> None:
 
     assert result.params is None
     assert result.missing[0].field == "contrast"
-    assert len(result.missing[0].options) == 4
+    assert len(result.missing[0].options) == 2
 
 
 def test_new_user_semantics_override_conflicting_prior_contrast() -> None:
@@ -209,14 +237,16 @@ def test_same_field_value_and_typed_min_replicates_are_preserved() -> None:
             compare_field="treatment",
             tested_level="salt",
             reference_level="control",
-            same_fields={"genotype": "WT"},
+            scope=ScopeSpec(mode="fixed", fixed_filters={"genotype": "WT"}),
             requested_params={"min_replicates": 2},
         ),
     )
 
     assert result.params is not None
     assert result.params.min_replicates == 2
-    assert result.params.contrast.same_fields == {"genotype": "WT"}
+    assert result.params.contrast.scope == ScopeSpec(
+        mode="fixed", fixed_filters={"genotype": "WT"}
+    )
 
 
 def test_legacy_same_fields_column_keeps_all_valid_strata() -> None:
@@ -245,5 +275,7 @@ def test_legacy_same_fields_column_keeps_all_valid_strata() -> None:
     )
 
     assert result.params is not None
-    assert result.params.contrast.same_fields == {"batch": ""}
+    assert result.params.contrast.scope == ScopeSpec(
+        mode="stratified", blocking_fields=["batch"]
+    )
     assert result.legacy_params()["same_fields"] == "batch"
