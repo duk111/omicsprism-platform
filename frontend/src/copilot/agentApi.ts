@@ -49,6 +49,10 @@ export const agentApi = {
       },
     ) as Promise<GraphTurnResult>;
   },
+  cancelTurn: (threadId: string, turnId: string) =>
+    apiFetchJson(`${root}/${encodeURIComponent(threadId)}/turns/${encodeURIComponent(turnId)}/cancel`, { method: "POST" }) as Promise<AgentTurnResponse>,
+  deleteThread: (threadId: string) =>
+    apiFetch(`${root}/${encodeURIComponent(threadId)}`, { method: "DELETE" }),
   uploadBundle: async (threadId: string, attachments: { file: File; field: string }[]) => {
     const body = new FormData();
     attachments.forEach(({ file, field }) => { body.append("files", file); body.append("fields", field); });

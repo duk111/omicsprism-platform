@@ -151,7 +151,7 @@ export interface AgentTurnResponse {
   completed_at: string | null;
 }
 
-export type AgentTurnStatus = "queued" | "running" | "completed" | "failed";
+export type AgentTurnStatus = "queued" | "running" | "completed" | "failed" | "cancelled";
 
 export type AnalysisType = "deg" | "dem" | "gma";
 

@@ -21,6 +21,7 @@ class AgentTurnStatus(str, Enum):
     RUNNING = "running"
     COMPLETED = "completed"
     FAILED = "failed"
+    CANCELLED = "cancelled"
 
 class AgentMessageRole(str, Enum):
     USER = "user"

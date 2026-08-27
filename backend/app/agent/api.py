@@ -129,6 +129,36 @@ def create_agent_router(
             run=_run_response(thread.current_run_id, thread_id, focus, version),
         )
 
+    @router.delete("/threads/{thread_id}", status_code=204)
+    def delete_thread(
+        thread_id: str,
+        user_id: str = Depends(session_dependency),
+        ctx: AgentApiContext = Depends(current_context),
+    ) -> None:
+        _owned_thread(ctx, thread_id, user_id)
+        active_turns = [
+            item for item in ctx.product_store.list_turns(
+                thread_id=thread_id, user_id=user_id, limit=100
+            ) if item.status in {AgentTurnStatus.QUEUED, AgentTurnStatus.RUNNING}
+        ]
+        if active_turns:
+            raise _conflict("Stop the active request before deleting this conversation")
+        try:
+            _delete_graph_checkpoint(ctx, thread_id)
+            files = ctx.product_store.delete_thread(thread_id=thread_id, user_id=user_id)
+            if ctx.files is not None:
+                for item in files:
+                    try:
+                        ctx.files.delete_staged_upload(item.storage_key)
+                    except Exception:
+                        LOG.warning("agent input file cleanup failed", extra={"thread_id": thread_id, "storage_key": item.storage_key})
+        except AgentResourceNotFound as exc:
+            raise _not_found() from exc
+        except HTTPException:
+            raise
+        except Exception as exc:
+            raise _conflict("Agent thread could not be deleted") from exc
+
     @router.get("/threads/{thread_id}/messages", response_model=AgentMessageListResponse)
     def list_messages(
         thread_id: str,
@@ -442,6 +472,33 @@ def create_agent_router(
             raise _not_found()
         return _turn_response(turn)
 
+    @router.post("/threads/{thread_id}/turns/{turn_id}/cancel", response_model=AgentTurnResponse)
+    def cancel_turn(
+        thread_id: str,
+        turn_id: str,
+        user_id: str = Depends(session_dependency),
+        ctx: AgentApiContext = Depends(current_context),
+    ) -> AgentTurnResponse:
+        _owned_thread(ctx, thread_id, user_id)
+        try:
+            turn = ctx.product_store.get_turn(turn_id=turn_id, user_id=user_id)
+        except AgentResourceNotFound as exc:
+            raise _not_found() from exc
+        if turn.thread_id != thread_id:
+            raise _not_found()
+        try:
+            cancelled = ctx.product_store.cancel_turn(
+                turn_id=turn_id,
+                user_id=user_id,
+                now=datetime.now(timezone.utc),
+                error_code="cancelled_by_user",
+            )
+        except AgentResourceNotFound as exc:
+            raise _not_found() from exc
+        except Exception as exc:
+            raise _conflict("Agent turn is no longer running") from exc
+        return _turn_response(cancelled)
+
 
     @router.get(
         "/threads/{thread_id}/stream",
@@ -724,6 +781,11 @@ def _graph_turn_result(
             checkpoint_turn_id=turn.turn_id,
             turn=_turn_response(current),
         )
+    if current.status is AgentTurnStatus.CANCELLED:
+        return GraphTurnResult(
+            checkpoint_turn_id=turn.turn_id,
+            turn=_turn_response(current),
+        )
 
     try:
         snapshot, state = _owned_graph_snapshot(
@@ -782,6 +844,13 @@ def _fail_inline_turn(
         now=datetime.now(timezone.utc),
         error_code=error_code,
     )
+
+
+def _delete_graph_checkpoint(ctx: AgentApiContext, thread_id: str) -> None:
+    checkpointer = getattr(ctx.graph, "checkpointer", None)
+    delete_thread = getattr(checkpointer, "delete_thread", None)
+    if callable(delete_thread):
+        delete_thread(thread_id)
 
 
 def _result_node(result: GraphTurnResult) -> str:

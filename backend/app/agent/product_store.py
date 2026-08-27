@@ -41,6 +41,9 @@ class AgentProductStore(Protocol):
     def list_threads(self, *, user_id: str, limit: int = 100) -> list[AgentThreadRecord]:
         ...
 
+    def delete_thread(self, *, thread_id: str, user_id: str) -> list[AgentInputFileRecord]:
+        ...
+
     def append_message(self, message: AgentMessageRecord) -> None:
         ...
 
@@ -68,6 +71,9 @@ class AgentProductStore(Protocol):
         self, *, turn_id: str, user_id: str, status: AgentTurnStatus, now: datetime,
         message: AgentMessageRecord | None = None, error_code: str | None = None,
     ) -> AgentTurnRecord:
+        ...
+
+    def cancel_turn(self, *, turn_id: str, user_id: str, now: datetime, error_code: str) -> AgentTurnRecord:
         ...
 
     def save_input_bundle(self, bundle: AgentInputBundleRecord) -> None:
@@ -126,6 +132,38 @@ class InMemoryAgentProductStore:
         ]
         records.sort(key=lambda item: (item.updated_at, item.thread_id), reverse=True)
         return records[:bounded]
+
+    def delete_thread(self, *, thread_id: str, user_id: str) -> list[AgentInputFileRecord]:
+        self.get_thread(thread_id=thread_id, user_id=user_id)
+        files = [
+            AgentInputFileRecord.model_validate(deepcopy(payload))
+            for payload in self._files.values()
+            if payload["user_id"] == user_id
+            and any(
+                bundle["bundle_id"] == payload["bundle_id"]
+                and bundle["thread_id"] == thread_id
+                and bundle["user_id"] == user_id
+                for bundle in self._bundles.values()
+            )
+        ]
+        bundle_ids = {
+            bundle_id for bundle_id, payload in self._bundles.items()
+            if payload["thread_id"] == thread_id and payload["user_id"] == user_id
+        }
+        for file_id, payload in list(self._files.items()):
+            if payload["bundle_id"] in bundle_ids and payload["user_id"] == user_id:
+                del self._files[file_id]
+        for bundle_id in bundle_ids:
+            del self._bundles[bundle_id]
+        for message_id, payload in list(self._messages.items()):
+            if payload["thread_id"] == thread_id and payload["user_id"] == user_id:
+                del self._messages[message_id]
+        for turn_id, payload in list(self._turns.items()):
+            if payload["thread_id"] == thread_id and payload["user_id"] == user_id:
+                self._turn_keys.pop((user_id, payload["idempotency_key"]), None)
+                del self._turns[turn_id]
+        del self._threads[thread_id]
+        return files
 
     def append_message(self, message: AgentMessageRecord) -> None:
         self.get_thread(thread_id=message.thread_id, user_id=message.user_id)
@@ -220,6 +258,17 @@ class InMemoryAgentProductStore:
                 raise ValueError("inline turn message does not match ownership")
             self.append_message(message)
         turn.status = status
+        turn.error_code = error_code
+        turn.completed_at = now
+        turn.updated_at = now
+        self._turns[turn.turn_id] = turn.model_dump(mode="json")
+        return turn.model_copy(deep=True)
+
+    def cancel_turn(self, *, turn_id: str, user_id: str, now: datetime, error_code: str) -> AgentTurnRecord:
+        turn = self.get_turn(turn_id=turn_id, user_id=user_id)
+        if turn.status not in {AgentTurnStatus.QUEUED, AgentTurnStatus.RUNNING}:
+            raise InlineTurnConflict(turn_id)
+        turn.status = AgentTurnStatus.CANCELLED
         turn.error_code = error_code
         turn.completed_at = now
         turn.updated_at = now
@@ -354,6 +403,31 @@ class PostgresAgentProductStore:
                 (user_id, bounded),
             ).fetchall()
         return [_thread_from_row(row) for row in rows]
+
+    def delete_thread(self, *, thread_id: str, user_id: str) -> list[AgentInputFileRecord]:
+        with self._connect() as conn:
+            owned = conn.execute(
+                "select 1 from agent_threads where thread_id = %s and user_id = %s for update",
+                (thread_id, user_id),
+            ).fetchone()
+            if owned is None:
+                raise AgentResourceNotFound(thread_id)
+            rows = conn.execute(
+                """
+                select f.file_id, f.bundle_id, f.user_id, f.field, f.filename, f.storage_key,
+                       f.checksum, f.content_type, f.size_bytes, f.created_at
+                from agent_input_files f
+                join agent_input_bundles b on b.bundle_id = f.bundle_id and b.user_id = f.user_id
+                where b.thread_id = %s and b.user_id = %s
+                """,
+                (thread_id, user_id),
+            ).fetchall()
+            conn.execute("delete from agent_input_files where user_id = %s and bundle_id in (select bundle_id from agent_input_bundles where thread_id = %s and user_id = %s)", (user_id, thread_id, user_id))
+            conn.execute("delete from agent_input_bundles where thread_id = %s and user_id = %s", (thread_id, user_id))
+            conn.execute("delete from agent_messages where thread_id = %s and user_id = %s", (thread_id, user_id))
+            conn.execute("delete from agent_turns where thread_id = %s and user_id = %s", (thread_id, user_id))
+            conn.execute("delete from agent_threads where thread_id = %s and user_id = %s", (thread_id, user_id))
+        return [_input_file_from_row(row) for row in rows]
 
     def append_message(self, message: AgentMessageRecord) -> None:
         self.get_thread(thread_id=message.thread_id, user_id=message.user_id)
@@ -563,6 +637,24 @@ class PostgresAgentProductStore:
                 )
         return turn
 
+    def cancel_turn(self, *, turn_id: str, user_id: str, now: datetime, error_code: str) -> AgentTurnRecord:
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                update agent_turns set status = 'cancelled', error_code = %s,
+                    completed_at = %s, updated_at = %s
+                where turn_id = %s and user_id = %s
+                  and status in ('queued', 'running')
+                returning turn_id, thread_id, run_id, user_id, idempotency_key,
+                          request_hash, status, attempt, error_code,
+                          created_at, updated_at, started_at, completed_at
+                """,
+                (error_code, now, now, turn_id, user_id),
+            ).fetchone()
+        if row is None:
+            raise InlineTurnConflict(turn_id)
+        return _turn_from_row(row)
+
     def save_input_bundle(self, bundle: AgentInputBundleRecord) -> None:
         self.get_thread(thread_id=bundle.thread_id, user_id=bundle.user_id)
         with self._connect() as conn:
@@ -756,6 +848,14 @@ def _thread_from_row(row) -> AgentThreadRecord:
 def _message_from_row(row) -> AgentMessageRecord:
     fields = ("message_id", "thread_id", "run_id", "user_id", "role", "blocks", "created_at")
     return AgentMessageRecord.model_validate(dict(zip(fields, row)))
+
+
+def _input_file_from_row(row) -> AgentInputFileRecord:
+    fields = (
+        "file_id", "bundle_id", "user_id", "field", "filename", "storage_key",
+        "checksum", "content_type", "size_bytes", "created_at",
+    )
+    return AgentInputFileRecord.model_validate(dict(zip(fields, row)))
 
 
 def _turn_values(turn: AgentTurnRecord) -> tuple[Any, ...]:

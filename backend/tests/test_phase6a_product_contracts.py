@@ -7,6 +7,7 @@ from pydantic import ValidationError
 
 from backend.app.agent.product_store import (
     AgentResourceNotFound,
+    InlineTurnConflict,
     IdempotencyConflict,
     InMemoryAgentProductStore,
 )
@@ -119,3 +120,54 @@ def test_turn_idempotency_key_cannot_cross_thread_even_with_same_hash() -> None:
 
     with pytest.raises(IdempotencyConflict):
         store.create_turn(_turn().model_copy(update={"thread_id": "thread-2", "run_id": "run-2"}))
+
+
+def test_cancel_turn_marks_active_turn_cancelled() -> None:
+    store = InMemoryAgentProductStore()
+    store.save_thread(_thread())
+    store.create_turn(_turn())
+    cancelled = store.cancel_turn(
+        turn_id="turn-1",
+        user_id="user-1",
+        now=datetime.now(timezone.utc),
+        error_code="cancelled_by_user",
+    )
+    assert cancelled.status.value == "cancelled"
+    assert cancelled.error_code == "cancelled_by_user"
+    with pytest.raises(InlineTurnConflict):
+        store.cancel_turn(
+            turn_id="turn-1",
+            user_id="user-1",
+            now=datetime.now(timezone.utc),
+            error_code="cancelled_by_user",
+        )
+
+
+def test_delete_thread_removes_owned_history_and_input_files() -> None:
+    store = InMemoryAgentProductStore()
+    store.save_thread(_thread())
+    store.create_turn(_turn())
+    store.append_message(AgentMessageRecord(
+        message_id="message-1",
+        thread_id="thread-1",
+        run_id="run-1",
+        user_id="user-1",
+        role="user",
+        blocks=[{"type": "text", "text": "hello"}],
+        created_at=datetime.now(timezone.utc),
+    ))
+    store.save_input_bundle_with_files(
+        bundle=AgentInputBundleRecord(
+            bundle_id="bundle-1", thread_id="thread-1", user_id="user-1",
+            status="active", expires_at=datetime.now(timezone.utc) + timedelta(hours=1),
+            created_at=datetime.now(timezone.utc),
+        ),
+        files=[],
+    )
+    deleted_files = store.delete_thread(thread_id="thread-1", user_id="user-1")
+    assert deleted_files == []
+    with pytest.raises(AgentResourceNotFound):
+        store.get_thread(thread_id="thread-1", user_id="user-1")
+    assert store._messages == {}
+    assert store._turns == {}
+    assert store._bundles == {}
