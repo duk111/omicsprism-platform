@@ -112,7 +112,7 @@ services:
       OMICS_PRISM_LOG_LEVEL: ${LOG_LEVEL:-INFO}
     volumes:
       - app_data:/app/data
-    # InMemorySaver is process-local; keep API single-process so resume finds its checkpoint.
+    # Graph checkpoints are shared in Postgres; one API process is still sufficient.
     command: >
       python -m uvicorn backend.app.main:app
       --host 0.0.0.0

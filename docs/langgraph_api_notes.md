@@ -121,10 +121,10 @@ returned the saved checkpoint. Phase 4 code should use the canonical
 ## Postgres checkpointer
 
 The installed extension is `langgraph-checkpoint-postgres==3.1.2`. Its
-`PostgresSaver` accepts either a psycopg connection or a `ConnectionPool` and
-requires `setup()` once before the graph writes its first checkpoint. The
-application-owned pool must be configured for autocommit because the setup
-migrations include `CREATE INDEX CONCURRENTLY`:
+`PostgresSaver` accepts either a psycopg connection or a `ConnectionPool`.
+`setup()` is run by the migration command with the administrator DSN; the API
+process must not run setup. The application-owned pool must be configured for
+autocommit because the setup migrations include `CREATE INDEX CONCURRENTLY`:
 
 ```python
 from psycopg.rows import dict_row
@@ -142,14 +142,16 @@ pool = ConnectionPool(
 )
 pool.open(wait=True)
 checkpointer = PostgresSaver(pool)
-checkpointer.setup()
 ```
 
 `PostgresSaver.from_conn_string()` is a context manager intended for scoped
 usage. The long-lived application path must keep the pool alive for the graph
-lifetime and close it during application shutdown. No custom graph-state table
-or PlanStore is introduced: the saver owns LangGraph checkpoint tables, while
-business thread, turn, and message records remain in their existing stores.
+lifetime and close it during application shutdown. The migration command calls
+`PostgresSaver(pool).setup()` before applying the SQL migrations, and
+`011_agent_checkpoint_roles.sql` grants `omics_app` DML access to the three
+runtime tables. No custom graph-state table or PlanStore is introduced: the
+saver owns LangGraph checkpoint tables, while business thread, turn, and
+message records remain in their existing stores.
 
 ## API state ownership
 

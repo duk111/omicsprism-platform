@@ -6,6 +6,9 @@ from hashlib import sha256
 from uuid import NAMESPACE_URL, uuid5
 
 from fastapi import HTTPException
+from langgraph.checkpoint.postgres import PostgresSaver
+from psycopg.rows import dict_row
+from psycopg_pool import ConnectionPool
 
 from ..job_execution import JobExecutor
 from ..job_store import JobStorageService
@@ -47,6 +50,34 @@ class AgentApiContext:
     files: FileStorageService | None
     dataset_loader: DatasetLoader | None = None
     stream_poll_seconds: float = 1.0
+
+    def close(self) -> None:
+        """Release application-owned graph checkpoint resources."""
+        checkpointer = getattr(self.graph, "checkpointer", None)
+        pool = getattr(checkpointer, "conn", None)
+        close = getattr(pool, "close", None)
+        if callable(close):
+            close()
+
+
+def _create_postgres_checkpointer(database_url: str) -> PostgresSaver:
+    pool = ConnectionPool(
+        database_url,
+        min_size=1,
+        max_size=4,
+        kwargs={
+            "autocommit": True,
+            "prepare_threshold": 0,
+            "row_factory": dict_row,
+        },
+        open=False,
+    )
+    try:
+        pool.open(wait=True)
+        return PostgresSaver(pool)
+    except Exception:
+        pool.close()
+        raise
 
 
 def create_agent_api_context(
@@ -198,13 +229,19 @@ def create_agent_api_context(
         )
         return result_querier_from_runtime(runtime)(request)
 
-    graph = build_agent_graph(
-        model,
-        load_datasets,
-        submit_job,
-        read_job,
-        query_result,
-    )
+    checkpointer = _create_postgres_checkpointer(database_url)
+    try:
+        graph = build_agent_graph(
+            model,
+            load_datasets,
+            submit_job,
+            read_job,
+            query_result,
+            checkpointer=checkpointer,
+        )
+    except Exception:
+        checkpointer.conn.close()
+        raise
     return AgentApiContext(
         product_store=product_store,
         job_store=job_store,

@@ -4,14 +4,38 @@ import os
 from pathlib import Path
 
 import psycopg
+from langgraph.checkpoint.postgres import PostgresSaver
+from psycopg.rows import dict_row
+from psycopg_pool import ConnectionPool
 
 
 ROOT = Path(__file__).resolve().parents[1]
 MIGRATIONS = ROOT / "migrations"
 
 
+def setup_agent_checkpointer(database_url: str) -> None:
+    """Create LangGraph checkpoint tables with the migration administrator."""
+    pool = ConnectionPool(
+        database_url,
+        min_size=1,
+        max_size=1,
+        kwargs={
+            "autocommit": True,
+            "prepare_threshold": 0,
+            "row_factory": dict_row,
+        },
+        open=False,
+    )
+    try:
+        pool.open(wait=True)
+        PostgresSaver(pool).setup()
+    finally:
+        pool.close()
+
+
 def apply_migrations(database_url: str, app_password: str) -> list[str]:
     applied_now: list[str] = []
+    setup_agent_checkpointer(database_url)
     with psycopg.connect(database_url) as conn:
         conn.execute(
             """

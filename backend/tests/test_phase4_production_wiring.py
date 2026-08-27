@@ -157,13 +157,15 @@ def test_context_builds_one_graph_with_owned_deterministic_adapters(
     files = _Files()
     jobs = _Jobs()
     executor = _Executor()
+    checkpointer = object()
     captured: list[tuple[object, ...]] = []
     graph = object()
     _patch_stores(monkeypatch, store)
     monkeypatch.setattr(bootstrap, "VllmGraphModel", lambda **_kwargs: object())
+    monkeypatch.setattr(bootstrap, "_create_postgres_checkpointer", lambda _url: checkpointer)
 
-    def build(*dependencies):
-        captured.append(dependencies)
+    def build(*dependencies, **kwargs):
+        captured.append((*dependencies, kwargs))
         return graph
 
     monkeypatch.setattr(bootstrap, "build_agent_graph", build)
@@ -180,7 +182,8 @@ def test_context_builds_one_graph_with_owned_deterministic_adapters(
     assert context is not None
     assert context.graph is graph
     assert len(captured) == 1
-    _, load_datasets, submit_job, _, _ = captured[0]
+    _, load_datasets, submit_job, _, _, kwargs = captured[0]
+    assert kwargs["checkpointer"] is checkpointer
     refs = load_datasets(DatasetLoadRequest(
         user_id="user-1", dataset_ids=["file-1"]
     ))

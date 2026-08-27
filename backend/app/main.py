@@ -73,6 +73,12 @@ SESSION_COOKIE = "omicsprism_session"
 
 app = FastAPI(title="OmicsPrism Platform API", version="0.5.0")
 
+
+@app.on_event("shutdown")
+async def shutdown_agent_context() -> None:
+    if AGENT_API_CONTEXT is not None:
+        AGENT_API_CONTEXT.close()
+
 _cors_origins = os.getenv(
     "OMICS_PRISM_CORS_ORIGINS",
     "http://localhost:5173,http://127.0.0.1:5173",
