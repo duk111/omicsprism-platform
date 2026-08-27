@@ -8,8 +8,6 @@
 
 本文档记录当前 Agent 在真实分析场景中暴露出的业务问题，并从 Agent 落地所需的能力边界出发总结根因。
 
-本文档不把问题归结为某个字段遗漏、某个 prompt 示例不足或某一次模型回答错误。目标是明确：用户用自然语言描述一个组学问题后，系统如何把它转换为一个用户真正授权、数据事实支持、可以复核和执行的分析请求。
-
 ## 2. 核心结论
 
 当前系统已经具备 typed proposal、deterministic resolver、validation、confirmation 和 HITL interrupt 的技术骨架，但这些部件之间还没有形成完整的业务闭环：

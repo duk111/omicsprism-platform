@@ -26,6 +26,9 @@ storage/
 *-server.log
 *.log
 
+# Local development documentation
+/docs/
+
 # IDE / 工具配置
 .idea/
 .claude/
