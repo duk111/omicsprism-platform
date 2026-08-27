@@ -9,6 +9,8 @@ compatibility branches.
 - Python: `3.13.7`
 - `langgraph==1.2.11`
 - `langgraph-checkpoint==4.2.0`
+- `langgraph-checkpoint-postgres==3.1.2`
+- `psycopg-pool==3.3.1`
 
 `langgraph` 1.2.11 has no top-level `__version__` attribute. The installed
 versions were confirmed with:
@@ -18,10 +20,12 @@ from importlib.metadata import version
 
 assert version("langgraph") == "1.2.11"
 assert version("langgraph-checkpoint") == "4.2.0"
+assert version("langgraph-checkpoint-postgres") == "3.1.2"
+assert version("psycopg-pool") == "3.3.1"
 ```
 
-The Postgres checkpointer extension is not installed. Phase 4.7 selected the
-documented `InMemorySaver` fallback for the reasons recorded below.
+The Postgres checkpointer extension is installed and pinned for the persistent
+runtime path. `InMemorySaver` remains a test-only checkpointer.
 
 ## Graph definition and compilation
 
@@ -114,25 +118,38 @@ local smoke check used direct construction and confirmed `get_tuple(config)`
 returned the saved checkpoint. Phase 4 code should use the canonical
 `InMemorySaver` name.
 
-## Phase 4.7 checkpointer decision
+## Postgres checkpointer
 
-The application currently opens direct `psycopg.connect(...)` connections and
-does not have a shared connection pool. The installed environment also lacks
-both `langgraph-checkpoint-postgres` and `psycopg_pool`. Adding the Postgres
-checkpointer would therefore require another package, pool integration, and
-checkpoint schema management instead of lightly reusing the existing stack.
+The installed extension is `langgraph-checkpoint-postgres==3.1.2`. Its
+`PostgresSaver` accepts either a psycopg connection or a `ConnectionPool` and
+requires `setup()` once before the graph writes its first checkpoint. The
+application-owned pool must be configured for autocommit because the setup
+migrations include `CREATE INDEX CONCURRENTLY`:
 
-Phase 4.7 consequently compiles each graph instance with one `InMemorySaver` by
-default. Callers may still inject a checkpointer directly, without a persistence
-abstraction or configuration layer. Interrupt and resume calls must use the same
-compiled graph instance and the same `configurable.thread_id`; different thread
-IDs have isolated checkpoints.
+```python
+from psycopg.rows import dict_row
+from psycopg_pool import ConnectionPool
+from langgraph.checkpoint.postgres import PostgresSaver
 
-The accepted limitation is that a process restart loses a turn that is currently
-waiting at an interrupt, so the user must initiate that turn again. Existing
-thread and message records, submitted Jobs, and produced artifacts remain in
-their current business stores and are unaffected. No PlanStore, ApprovalStore,
-or custom graph-state database is introduced.
+pool = ConnectionPool(
+    database_url,
+    kwargs={
+        "autocommit": True,
+        "prepare_threshold": 0,
+        "row_factory": dict_row,
+    },
+    open=False,
+)
+pool.open(wait=True)
+checkpointer = PostgresSaver(pool)
+checkpointer.setup()
+```
+
+`PostgresSaver.from_conn_string()` is a context manager intended for scoped
+usage. The long-lived application path must keep the pool alive for the graph
+lifetime and close it during application shutdown. No custom graph-state table
+or PlanStore is introduced: the saver owns LangGraph checkpoint tables, while
+business thread, turn, and message records remain in their existing stores.
 
 ## API state ownership
 
@@ -149,6 +166,9 @@ idempotency checks; it is not a second checkpoint namespace.
 - `.venv/Lib/site-packages/langgraph/types.py`: `Command` and `interrupt`
 - `.venv/Lib/site-packages/langgraph/checkpoint/memory/__init__.py`:
   `InMemorySaver` lifecycle and `MemorySaver` alias
+- `.venv/Lib/site-packages/langgraph/checkpoint/postgres/__init__.py`:
+  `PostgresSaver` constructor, `setup()`, and `delete_thread()`
+- `.venv/Lib/site-packages/psycopg_pool/__init__.py`: `ConnectionPool` lifecycle
 
 The signatures were inspected with `inspect.signature`, and the interrupt/resume
 contract was additionally exercised with a local minimal graph.
