@@ -45,6 +45,10 @@ class NodeCapabilityError(ValueError):
     """A semantic node received an action outside its capability whitelist."""
 
 
+class PlanVersionConflict(ValueError):
+    """A confirmation resume references a plan other than the current one."""
+
+
 class StepBudget(BaseModel):
     """Independent model, tool, and token budgets for one graph turn."""
 

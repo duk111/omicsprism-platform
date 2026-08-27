@@ -136,6 +136,14 @@ def test_confirmation_resume_uses_header_and_persists_completed_turn() -> None:
     assert client.post(resume_url, json=request).status_code == 422
     assert client.post(resume_url, json={**request, "interrupt_id": "stale"},
                        headers={"Idempotency-Key": "job-key"}).status_code == 409
+    stale_version = {**request, "plan_version": request["plan_version"] + 1}
+    assert client.post(
+        resume_url, json=stale_version, headers={"Idempotency-Key": "job-key"}
+    ).status_code == 409
+    assert submitter.requests == []
+    assert client.get(
+        f"/api/agent/threads/{thread['thread_id']}/turns/{body['turn']['turn_id']}"
+    ).json()["status"] == "running"
 
     completed = client.post(
         resume_url, json=request, headers={"Idempotency-Key": "job-key"})

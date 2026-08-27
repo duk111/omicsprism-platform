@@ -24,6 +24,7 @@ from ..graph import (
     JobSubmitter,
     NodeCapabilityError,
     PendingPlan,
+    PlanVersionConflict,
     StratumSummary,
 )
 from ..param_resolver import AnalysisProposal, ResolvedRequest, resolve_analysis_request
@@ -267,12 +268,12 @@ def _validate_plan_reference(
     resumed: ConfirmationResume,
 ) -> None:
     if resumed.plan_id != payload.plan_id or resumed.plan_version != payload.plan_version:
-        raise ExecutionRejected("confirmation does not reference the current pending plan")
-    if state.pending_plan is not None and (
+        raise PlanVersionConflict("confirmation does not reference the current pending plan")
+    if state.pending_plan is None or (
         state.pending_plan.plan_id != resumed.plan_id
         or state.pending_plan.plan_version != resumed.plan_version
     ):
-        raise ExecutionRejected("confirmation does not reference the current pending plan")
+        raise PlanVersionConflict("confirmation does not reference the current pending plan")
 
 
 def _analysis_proposal(state: GraphState) -> AnalysisProposal:

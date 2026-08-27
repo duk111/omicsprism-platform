@@ -19,6 +19,7 @@ from backend.app.agent.graph import (
     JobSummary,
     MainModelOutput,
     NodeCapabilityError,
+    PlanVersionConflict,
     ResultEvidenceRequest,
     ResultQuerySpec,
     StepBudget,
@@ -850,6 +851,61 @@ def test_confirmation_message_merges_local_parameter_revision_and_tracks_provena
     assert plan.provenance["padj_cutoff"] == "user_explicit"
     assert plan.contrast.compare_field == initial.compare_field
     assert plan.contrast.tested_level == initial.tested_level
+    assert not submitter.requests
+
+
+def test_stale_confirmation_plan_version_is_rejected_without_creating_a_job() -> None:
+    refs = _dataset_refs()
+    loader = RecordingDatasetLoader(refs)
+    submitter = _submitter()
+    first = AnalysisProposal(
+        analysis_type="DEG",
+        compare_field="condition",
+        tested_level="salt",
+        reference_level="control",
+        scope=ScopeSpec(mode="all"),
+    )
+    second = AnalysisProposal(
+        analysis_type="DEG",
+        compare_field="condition",
+        tested_level="drought",
+        reference_level="control",
+        scope=ScopeSpec(mode="all"),
+    )
+    model = ScriptedMainModel([
+        MainModelOutput(decision=AgentDecision(
+            action="run_analysis", analysis_type="DEG", proposal=first,
+        )),
+        MainModelOutput(decision=AgentDecision(
+            action="run_analysis", analysis_type="DEG", proposal=second,
+        )),
+    ])
+    graph = build_agent_graph(
+        model, loader, submitter, _reader(), _querier(), checkpointer=InMemorySaver()
+    )
+    config = _config("stale-plan")
+    paused = graph.invoke(_state(
+        thread_id="stale-plan",
+        user_message="Run DEG",
+        dataset_profiles=_profile_refs(refs),
+    ), config)
+    original = paused["__interrupt__"][0].value
+    revised = graph.invoke(Command(resume={
+        "plan_id": original["plan_id"],
+        "plan_version": original["plan_version"],
+        "message": "compare drought and control",
+    }), config)
+    current = revised["__interrupt__"][0].value
+    assert current["plan_version"] == original["plan_version"] + 1
+
+    with pytest.raises(PlanVersionConflict, match="current pending plan"):
+        graph.invoke(Command(resume={
+            "plan_id": original["plan_id"],
+            "plan_version": original["plan_version"],
+            "approve": True,
+            "idempotency_key": "stale-run",
+        }), config)
+
     assert not submitter.requests
 
 

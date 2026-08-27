@@ -26,6 +26,8 @@ from .graph import (
     GraphState,
     GraphTurnResult,
     JobRef,
+    ConfirmationPayload,
+    PlanVersionConflict,
 )
 from .product_store import ActiveTurnConflict, AgentResourceNotFound, IdempotencyConflict
 from .schemas import (
@@ -418,6 +420,17 @@ def create_agent_router(
         interrupt_item = interrupts[0]
         if interrupt_item.payload.kind != payload.kind:
             raise _conflict("Resume payload does not match the pending interrupt")
+        if isinstance(payload, GraphConfirmationResumeRequest):
+            current_payload = interrupt_item.payload
+            if not isinstance(current_payload, ConfirmationPayload):
+                raise _conflict("Resume payload does not match the pending interrupt")
+            if (
+                payload.plan_id != current_payload.plan_id
+                or payload.plan_version != current_payload.plan_version
+            ):
+                raise _conflict(
+                    "Pending analysis plan is stale; review the current plan before resuming"
+                )
         if isinstance(payload, GraphClarificationResumeRequest):
             resume_value = {"answer": payload.answer}
         else:
@@ -446,6 +459,8 @@ def create_agent_router(
                 started_at=started_at,
             )
             return result
+        except PlanVersionConflict as exc:
+            raise _conflict(str(exc)) from exc
         except Exception as exc:
             _fail_inline_turn(ctx, turn, "graph_execution_failed")
             _log_graph_action(
