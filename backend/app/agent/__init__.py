@@ -24,6 +24,7 @@ from .validation import (
     validate_analysis_request,
 )
 from .model import VllmGraphModel
+from .context import ContextAssembler, DecisionLedger, FactIndex, MainModelContext, WorkingSet
 from .product_store import InMemoryAgentProductStore, PostgresAgentProductStore
 from .tools import (
     AgentInputFile,
@@ -58,6 +59,11 @@ __all__ = [
     "validate_analysis_request",
     "compute_input_fingerprint",
     "VllmGraphModel",
+    "ContextAssembler",
+    "FactIndex",
+    "DecisionLedger",
+    "WorkingSet",
+    "MainModelContext",
     "InMemoryAgentProductStore",
     "PostgresAgentProductStore",
     "AgentInputFile",

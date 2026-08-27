@@ -9,10 +9,10 @@ from ..graph import (
     AgentDecision,
     GraphState,
     MainDecisionModel,
-    MainModelContext,
     MainModelOutput,
     StepBudget,
 )
+from ..context import ContextAssembler, MainModelContext
 
 
 _MODEL_FALLBACK_QUESTION = (
@@ -63,13 +63,7 @@ def route_after_main(state: GraphState) -> Literal["analysis", "result_qa", "end
 
 
 def _main_context(state: GraphState) -> MainModelContext:
-    return MainModelContext(
-        user_message=state.user_message,
-        conversation_summary=state.conversation_summary,
-        dataset_roles=[item.profile.role for item in state.dataset_profiles],
-        current_job_id=state.current_job.job_id if state.current_job is not None else None,
-        recent_job_ids=[item.job_id for item in state.recent_jobs],
-    )
+    return ContextAssembler().assemble(state)
 
 
 def _ask_user_update(

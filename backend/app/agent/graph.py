@@ -15,6 +15,13 @@ from .schemas import (
     ToolResult,
 )
 from .validation import ContrastPreview, DatasetRef, Issue, ValidationReport
+from .context import (
+    ContextAssembler,
+    DecisionLedger,
+    FactIndex,
+    MainModelContext,
+    WorkingSet,
+)
 
 
 AnalysisTypeName = Literal["DEG", "DEM", "GMA"]
@@ -251,18 +258,6 @@ class AgentDecision(BaseModel):
         if self.action != "query_result" and self.result_query is not None:
             raise ValueError("result_query is only valid for query_result")
         return self
-
-
-class MainModelContext(BaseModel):
-    """Prompt-safe context for the top-level semantic decision."""
-
-    model_config = ConfigDict(extra="forbid")
-
-    user_message: str = Field(min_length=1, max_length=4000)
-    conversation_summary: str | None = Field(default=None, max_length=4000)
-    dataset_roles: list[str] = Field(default_factory=list, max_length=6)
-    current_job_id: str | None = Field(default=None, max_length=200)
-    recent_job_ids: list[str] = Field(default_factory=list, max_length=20)
 
 
 class MainModelOutput(BaseModel):

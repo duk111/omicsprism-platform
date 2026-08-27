@@ -7,6 +7,7 @@ from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.types import Command
 
 from backend.app.agent.dataset_profile import build_dataset_profiles
+from backend.app.agent.context import MainModelContext
 from backend.app.agent.graph import (
     AnalysisExecutionRequest,
     AgentDecision,
@@ -16,7 +17,6 @@ from backend.app.agent.graph import (
     JobLookupRequest,
     JobRef,
     JobSummary,
-    MainModelContext,
     MainModelOutput,
     NodeCapabilityError,
     ResultEvidenceRequest,
@@ -428,12 +428,13 @@ def test_main_model_context_excludes_owner_and_dataset_payloads() -> None:
     assert set(payload) == {
         "user_message",
         "conversation_summary",
-        "dataset_roles",
-        "current_job_id",
-        "recent_job_ids",
+        "fact_index",
+        "decision_ledger",
+        "working_set",
     }
     assert "user_id" not in payload
     assert "owner_id" not in payload
+    assert "dataset_roles" not in payload
 
 
 def test_exhausted_step_budget_does_not_call_model() -> None:

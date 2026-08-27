@@ -7,7 +7,8 @@ import httpx
 from pydantic import ValidationError
 
 if TYPE_CHECKING:
-    from .graph import MainModelContext, MainModelOutput
+    from .context import MainModelContext
+    from .graph import MainModelOutput
 
 
 class ModelBoundaryError(ValueError):
@@ -34,7 +35,8 @@ class VllmGraphModel:
         self.client = client or httpx.Client(timeout=timeout_seconds)
 
     def __call__(self, context: MainModelContext) -> MainModelOutput:
-        from .graph import MainModelContext, MainModelOutput
+        from .context import MainModelContext
+        from .graph import MainModelOutput
 
         if not isinstance(context, MainModelContext):
             raise ModelBoundaryError("graph model context has an invalid type")

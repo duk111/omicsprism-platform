@@ -13,10 +13,10 @@ from backend.app.agent import bootstrap
 from backend.app.agent.graph import (
     AnalysisExecutionRequest,
     DatasetLoadRequest,
-    MainModelContext,
     MainModelOutput,
 )
 from backend.app.agent.model import VllmGraphModel
+from backend.app.agent.context import DecisionLedger, FactIndex, MainModelContext, WorkingSet
 from backend.app.agent.param_resolver import ContrastSpec, DEGParams
 from backend.app.agent.product_store import (
     AgentResourceNotFound,
@@ -243,7 +243,10 @@ def test_vllm_graph_model_uses_main_output_schema_and_returns_typed_output() -> 
         client=httpx.Client(transport=httpx.MockTransport(handle)),
     )
     context = MainModelContext(
-        user_message="analyze my data", dataset_roles=["counts"]
+        user_message="analyze my data",
+        fact_index=FactIndex(context_version="facts.v1:test", dataset_roles=["counts"]),
+        decision_ledger=DecisionLedger(context_version="ledger.v1:test"),
+        working_set=WorkingSet(context_version="working.v1:test"),
     )
 
     result = model(context)
