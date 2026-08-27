@@ -3,6 +3,8 @@ from __future__ import annotations
 import csv
 import io
 from collections.abc import Callable
+from datetime import datetime, timedelta, timezone
+from uuid import uuid4
 
 from langgraph.graph import END
 from langgraph.types import Command, interrupt
@@ -21,6 +23,8 @@ from ..graph import (
     JobRef,
     JobSubmitter,
     NodeCapabilityError,
+    PendingPlan,
+    StratumSummary,
 )
 from ..param_resolver import AnalysisProposal, ResolvedRequest, resolve_analysis_request
 from ..validation import (
@@ -76,17 +80,21 @@ def analysis_node(
         if report.ok:
             if resolved.analysis_type is None or resolved.params is None:
                 raise RuntimeError("successful validation must contain resolved parameters")
+            pending_plan = _build_pending_plan(state, resolved, report)
             payload = ConfirmationPayload(
                 analysis_type=resolved.analysis_type,
                 resolved_params=resolved.params,
                 preview=report.preview,
                 warnings=report.warnings,
                 input_fingerprint=report.input_fingerprint,
+                plan_id=pending_plan.plan_id,
+                plan_version=pending_plan.plan_version,
             )
             return Command(
                 update={
                     "resolved_request": resolved,
                     "validation_report": report,
+                    "pending_plan": pending_plan,
                     "pending_interrupt": payload,
                     "response_text": None,
                     "step_budget": next_budget,
@@ -127,6 +135,7 @@ def _handle_confirmation(
         return Command(
             update={
                 "pending_interrupt": None,
+                "pending_plan": None,
                 "response_text": "Analysis cancelled.",
             },
             goto=END,
@@ -189,6 +198,7 @@ def _handle_confirmation(
             "current_job": job_ref,
             "recent_jobs": recent_jobs[-20:],
             "pending_interrupt": None,
+            "pending_plan": None,
             "response_text": f"Analysis job {job_ref.job_id} was submitted.",
             "step_budget": next_budget,
         },
@@ -250,6 +260,62 @@ def _analysis_proposal(state: GraphState) -> AnalysisProposal:
     if proposal.analysis_type is None and analysis_type is not None:
         return proposal.model_copy(update={"analysis_type": analysis_type})
     return proposal
+
+
+def _build_pending_plan(
+    state: GraphState,
+    resolved: ResolvedRequest,
+    report: ValidationReport,
+) -> PendingPlan:
+    if resolved.analysis_type is None or resolved.params is None:
+        raise ValueError("a pending plan requires resolved analysis parameters")
+    contrast = getattr(resolved.params, "contrast", None)
+    if contrast is None:
+        raise ValueError("a pending plan requires a contrast")
+    previous = state.pending_plan
+    plan_id = previous.plan_id if previous is not None else f"plan-{uuid4().hex}"
+    plan_version = previous.plan_version + 1 if previous is not None else 1
+    sample_scope: list[StratumSummary] = []
+    if report.preview is not None:
+        sample_scope.append(StratumSummary(
+            stratum=dict(report.preview.same_values),
+            tested_count=report.preview.tested_count,
+            reference_count=report.preview.reference_count,
+        ))
+    return PendingPlan(
+        plan_id=plan_id,
+        plan_version=plan_version,
+        thread_id=state.thread_id,
+        analysis_type=resolved.analysis_type,
+        scope=contrast.scope,
+        contrast=contrast,
+        params=resolved.params,
+        provenance=_plan_provenance(state, resolved.params),
+        sample_scope=sample_scope,
+        input_fingerprint=report.input_fingerprint,
+        expires_at=datetime.now(timezone.utc) + timedelta(minutes=30),
+    )
+
+
+def _plan_provenance(state: GraphState, params: object) -> dict[str, str]:
+    proposal = _analysis_proposal(state)
+    result: dict[str, str] = {}
+    if proposal.analysis_type is not None:
+        result["analysis_type"] = "user_explicit"
+    for name in ("compare_field", "tested_level", "reference_level"):
+        if getattr(proposal, name) is not None:
+            result[f"contrast.{name}"] = "user_explicit"
+        else:
+            result[f"contrast.{name}"] = "tool_derived"
+    result["scope"] = (
+        "user_explicit" if proposal.scope.mode != "unknown" else "tool_derived"
+    )
+    requested = set(proposal.requested_params)
+    for name in getattr(type(params), "model_fields", {}):
+        if name == "contrast":
+            continue
+        result[name] = "user_explicit" if name in requested else "system_default"
+    return result
 
 
 def _analysis_request_text(state: GraphState) -> str:

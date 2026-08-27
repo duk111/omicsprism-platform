@@ -482,8 +482,12 @@ def test_complete_analysis_request_is_resolved_and_validated_before_confirmation
     assert result["__interrupt__"][0].value["kind"] == "confirmation"
     payload = result["__interrupt__"][0].value
     assert payload["analysis_type"] == "DEG"
+    assert payload["plan_id"].startswith("plan-")
+    assert payload["plan_version"] == 1
     assert payload["resolved_params"]["contrast"]["tested_level"] == "salt"
     assert payload["preview"]["tested_count"] == 2
+    assert result["pending_plan"].plan_id == payload["plan_id"]
+    assert result["pending_plan"].plan_version == payload["plan_version"]
     assert not submitter.requests
     assert loader.requests == [DatasetLoadRequest(
         user_id="user-1",
@@ -668,6 +672,7 @@ def test_default_checkpointer_resumes_confirmation_flow_once() -> None:
     assert completed.current_job == JobRef(job_id="job-1", owner_id="user-1")
     assert completed.recent_jobs == [completed.current_job]
     assert completed.pending_interrupt is None
+    assert completed.pending_plan is None
     assert len(submitter.requests) == 1
     request = submitter.requests[0]
     assert request.user_id == "user-1"

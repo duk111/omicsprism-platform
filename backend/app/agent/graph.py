@@ -1,12 +1,19 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from datetime import datetime
 from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from .dataset_profile import DatasetProfile
-from .param_resolver import AnalysisParams, AnalysisProposal, ResolvedRequest
+from .param_resolver import (
+    AnalysisParams,
+    AnalysisProposal,
+    ContrastSpec,
+    ResolvedRequest,
+    ScopeSpec,
+)
 from .schemas import (
     AgentMessageResponse,
     AgentTurnResponse,
@@ -26,6 +33,12 @@ from .context import (
 
 
 AnalysisTypeName = Literal["DEG", "DEM", "GMA"]
+ProvenanceSource = Literal[
+    "user_explicit",
+    "tool_derived",
+    "system_default",
+    "user_confirmed",
+]
 
 
 class NodeCapabilityError(ValueError):
@@ -150,6 +163,48 @@ class ClarificationResume(BaseModel):
     answer: str = Field(min_length=1, max_length=1000)
 
 
+class StratumSummary(BaseModel):
+    """Bounded sample counts shown as part of a pending analysis plan."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    stratum: dict[str, str] = Field(default_factory=dict, max_length=16)
+    tested_count: int = Field(default=0, ge=0)
+    reference_count: int = Field(default=0, ge=0)
+    included: bool = True
+    exclusion_reason: str | None = Field(default=None, max_length=300)
+
+
+class PendingPlan(BaseModel):
+    """Versioned, checkpoint-owned plan awaiting a user decision."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    plan_id: str = Field(min_length=1, max_length=200)
+    plan_version: int = Field(default=1, ge=1)
+    thread_id: str = Field(min_length=1, max_length=200)
+    analysis_type: AnalysisTypeName
+    scope: ScopeSpec
+    contrast: ContrastSpec
+    params: AnalysisParams
+    provenance: dict[str, ProvenanceSource] = Field(default_factory=dict, max_length=64)
+    sample_scope: list[StratumSummary] = Field(default_factory=list, max_length=50)
+    input_fingerprint: str = Field(pattern=r"^sha256:[0-9a-fA-F]{64}$")
+    expires_at: datetime
+
+    @model_validator(mode="after")
+    def _params_match_plan(self) -> "PendingPlan":
+        if self.params.analysis_type != self.analysis_type:
+            raise ValueError("pending plan analysis_type must match params")
+        if not hasattr(self.params, "contrast"):
+            raise ValueError("pending plan params must contain a contrast")
+        if self.params.contrast != self.contrast:
+            raise ValueError("pending plan contrast must match params")
+        if self.scope != self.contrast.scope:
+            raise ValueError("pending plan scope must match contrast scope")
+        return self
+
+
 class ConfirmationPayload(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -159,11 +214,15 @@ class ConfirmationPayload(BaseModel):
     preview: ContrastPreview | None = None
     warnings: list[Issue] = Field(default_factory=list, max_length=20)
     input_fingerprint: str = Field(pattern=r"^sha256:[0-9a-fA-F]{64}$")
+    plan_id: str | None = Field(default=None, min_length=1, max_length=200)
+    plan_version: int | None = Field(default=None, ge=1)
 
     @model_validator(mode="after")
     def _analysis_type_matches_params(self) -> "ConfirmationPayload":
         if self.resolved_params.analysis_type != self.analysis_type:
             raise ValueError("analysis_type must match resolved_params")
+        if (self.plan_id is None) != (self.plan_version is None):
+            raise ValueError("plan_id and plan_version must be supplied together")
         return self
 
 
@@ -388,6 +447,7 @@ class GraphState(BaseModel):
     validation_report: ValidationReport | None = None
     job_summary: JobSummary | None = None
     grounded_answer: GroundedAnswer | None = None
+    pending_plan: PendingPlan | None = None
     tool_observations: list[ToolObservation] = Field(default_factory=list, max_length=12)
     pending_interrupt: PendingInterrupt | None = None
     step_budget: StepBudget = Field(default_factory=StepBudget)
@@ -401,6 +461,8 @@ class GraphState(BaseModel):
             references.append(self.job_summary)
         if any(reference.owner_id != self.user_id for reference in references):
             raise ValueError("graph references must belong to user_id")
+        if self.pending_plan is not None and self.pending_plan.thread_id != self.thread_id:
+            raise ValueError("pending plan must belong to thread_id")
         return self
 
 

@@ -25,6 +25,7 @@ from .validation import (
 )
 from .model import VllmGraphModel
 from .context import ContextAssembler, DecisionLedger, FactIndex, MainModelContext, WorkingSet
+from .graph import PendingPlan, ProvenanceSource, StratumSummary
 from .product_store import InMemoryAgentProductStore, PostgresAgentProductStore
 from .tools import (
     AgentInputFile,
@@ -80,6 +81,9 @@ __all__ = [
     "DecisionLedger",
     "WorkingSet",
     "MainModelContext",
+    "PendingPlan",
+    "ProvenanceSource",
+    "StratumSummary",
     "InMemoryAgentProductStore",
     "PostgresAgentProductStore",
     "AgentInputFile",

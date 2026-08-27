@@ -12,10 +12,12 @@ from backend.app.agent.graph import (
     GraphState,
     JobRef,
     JobSummary,
+    PendingPlan,
     ResultQuerySpec,
     StepBudget,
+    StratumSummary,
 )
-from backend.app.agent.param_resolver import DEGParams
+from backend.app.agent.param_resolver import ContrastSpec, DEGParams, ScopeSpec
 from backend.app.agent.schemas import Citation, GroundedAnswer, GroundedClaim
 
 
@@ -180,4 +182,61 @@ def test_confirmation_analysis_type_must_match_resolved_params() -> None:
                 },
             },
             input_fingerprint="sha256:" + "b" * 64,
+        )
+
+
+def test_pending_plan_is_versioned_and_keeps_scope_and_params_consistent() -> None:
+    scope = ScopeSpec(mode="fixed", fixed_filters={"line": "WT"})
+    contrast = ContrastSpec(
+        compare_field="treatment",
+        tested_level="salt",
+        reference_level="control",
+        scope=scope,
+    )
+    plan = PendingPlan(
+        plan_id="plan-1",
+        plan_version=2,
+        thread_id="thread-1",
+        analysis_type="DEG",
+        scope=scope,
+        contrast=contrast,
+        params=DEGParams(contrast=contrast),
+        provenance={
+            "contrast.compare_field": "user_explicit",
+            "padj_cutoff": "system_default",
+        },
+        sample_scope=[StratumSummary(
+            stratum={"line": "WT"},
+            tested_count=3,
+            reference_count=3,
+        )],
+        input_fingerprint="sha256:" + "c" * 64,
+        expires_at="2030-01-01T00:00:00Z",
+    )
+
+    assert plan.plan_version == 2
+    assert plan.params.contrast.scope == plan.scope
+    assert plan.sample_scope[0].tested_count == 3
+
+
+def test_pending_plan_rejects_mismatched_contrast() -> None:
+    scope = ScopeSpec(mode="all")
+    contrast = ContrastSpec(
+        compare_field="treatment",
+        tested_level="salt",
+        reference_level="control",
+        scope=scope,
+    )
+    other = contrast.model_copy(update={"tested_level": "drought"})
+
+    with pytest.raises(ValidationError, match="contrast must match"):
+        PendingPlan(
+            plan_id="plan-1",
+            thread_id="thread-1",
+            analysis_type="DEG",
+            scope=scope,
+            contrast=contrast,
+            params=DEGParams(contrast=other),
+            input_fingerprint="sha256:" + "c" * 64,
+            expires_at="2030-01-01T00:00:00Z",
         )
