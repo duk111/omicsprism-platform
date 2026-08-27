@@ -13,6 +13,8 @@ from backend.app.agent.api import create_agent_router, project_stream_events
 from backend.app.agent.bootstrap import AgentApiContext
 from backend.app.agent.graph import GraphState
 from backend.app.agent.product_store import InMemoryAgentProductStore
+from backend.app.agent.queue import InMemoryAgentTurnQueue
+from backend.app.agent.runtime import AgentRuntime
 from backend.app.agent.schemas import (
     AgentInputBundleRecord,
     AgentMessageRecord,
@@ -41,9 +43,10 @@ class _Graph:
     def __init__(self) -> None:
         self.states: dict[str, GraphState] = {}
 
-    def invoke(self, state: GraphState, config: dict) -> None:
+    def invoke(self, state: GraphState | None, config: dict) -> None:
         thread_id = config["configurable"]["thread_id"]
-        self.states[thread_id] = state.model_copy(update={"response_text": "done"})
+        current = state or self.states[thread_id]
+        self.states[thread_id] = current.model_copy(update={"response_text": "done"})
 
     def update_state(self, config: dict, values: dict) -> dict:
         thread_id = config["configurable"]["thread_id"]
@@ -52,7 +55,12 @@ class _Graph:
 
     def get_state(self, config: dict):
         thread_id = config["configurable"]["thread_id"]
-        return SimpleNamespace(values=self.states[thread_id], tasks=())
+        state = self.states[thread_id]
+        return SimpleNamespace(
+            values=state,
+            next=("main",) if state.response_text is None else (),
+            tasks=(),
+        )
 
 
 def _session(request: Request, response: Response) -> str:
@@ -64,12 +72,14 @@ def _session(request: Request, response: Response) -> str:
 
 
 def _context() -> AgentApiContext:
+    queue = InMemoryAgentTurnQueue()
     return AgentApiContext(
         product_store=InMemoryAgentProductStore(),
         job_store=_Jobs(),
         graph=_Graph(),
         files=None,
         stream_poll_seconds=0.01,
+        turn_queue=queue,
     )
 
 
@@ -93,6 +103,15 @@ def _create_thread(client: TestClient, user_id: str = "user-a") -> dict:
     return response.json()
 
 
+def _drain(context: AgentApiContext) -> None:
+    assert context.turn_queue is not None
+    while True:
+        raw = context.turn_queue.reserve()
+        if raw is None:
+            return
+        AgentRuntime(context, context.turn_queue).run_once(raw)
+
+
 def test_request_body_rejects_user_id_and_cross_user_resources_are_404() -> None:
     context = _context()
     client = _client(context)
@@ -113,6 +132,7 @@ def test_request_body_rejects_user_id_and_cross_user_resources_are_404() -> None
         headers={"Idempotency-Key": "turn-key-a"},
         json={"message": "analyze these files"},
     )
+    _drain(context)
     assert turn.status_code == 202
 
     _as_user(client, "user-b")
@@ -142,11 +162,12 @@ def test_turn_runs_graph_atomically_and_idempotently_without_model_in_api() -> N
     _as_user(client, "user-a")
 
     first = client.post(path, headers=headers, json=payload)
+    _drain(context)
     replay = client.post(path, headers=headers, json=payload)
 
     assert first.status_code == replay.status_code == 202
     assert first.json()["turn"]["turn_id"] == replay.json()["turn"]["turn_id"]
-    assert first.json()["turn"]["status"] == "completed"
+    assert first.json()["turn"]["status"] == "queued"
     messages = client.get(
         f"/api/agent/threads/{thread_id}/messages",
     ).json()["messages"]
@@ -202,6 +223,7 @@ def test_turn_focus_jobs_are_owned_and_persisted_before_graph_invoke() -> None:
         headers={"Idempotency-Key": "focus-owned"},
         json={"message": "interpret this result", "focus_job_ids": ["job-a"]},
     )
+    _drain(context)
     assert accepted.status_code == 202
     state = context.graph.get_state(
         {"configurable": {"thread_id": thread["thread_id"]}}
@@ -306,7 +328,10 @@ def test_message_cursor_and_sse_snapshot_support_disconnect_recovery() -> None:
         headers={"Idempotency-Key": "recover-key"},
         json={"message": "analyze"},
     ).json()
-    assistant_message_id = turn_result["message"]["message_id"]
+    _drain(context)
+    assistant_message_id = context.product_store.list_messages(
+        thread_id=thread["thread_id"], user_id="user-a"
+    )[-1].message_id
     context.product_store.append_message(AgentMessageRecord(
         message_id="assistant-recovery",
         thread_id=thread["thread_id"],

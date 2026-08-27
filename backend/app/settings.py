@@ -38,6 +38,7 @@ class AppSettings:
     runtime_database_url: str | None = None
     redis_url: str = "redis://localhost:6379/0"
     redis_queue_name: str = "omicsprism:jobs"
+    agent_queue_name: str = "omicsprism:agent-turns"
     agent_model_url: str | None = None
     agent_model_name: str | None = None
     agent_model_api_key: str | None = None
@@ -82,6 +83,7 @@ def load_settings() -> AppSettings:
         runtime_database_url=os.getenv("OMICS_PRISM_RUNTIME_DATABASE_URL") or None,
         redis_url=os.getenv("OMICS_PRISM_REDIS_URL", "redis://localhost:6379/0"),
         redis_queue_name=os.getenv("OMICS_PRISM_REDIS_QUEUE", "omicsprism:jobs"),
+        agent_queue_name=os.getenv("OMICS_PRISM_AGENT_QUEUE", "omicsprism:agent-turns"),
         agent_model_url=os.getenv("OMICS_PRISM_AGENT_MODEL_URL") or None,
         agent_model_name=os.getenv("OMICS_PRISM_AGENT_MODEL_NAME") or None,
         agent_model_api_key=os.getenv("OMICS_PRISM_AGENT_MODEL_API_KEY") or None,

@@ -7,7 +7,7 @@ from pydantic import ValidationError
 
 from backend.app.agent.product_store import (
     AgentResourceNotFound,
-    InlineTurnConflict,
+    TurnConflict,
     IdempotencyConflict,
     InMemoryAgentProductStore,
 )
@@ -134,7 +134,7 @@ def test_cancel_turn_marks_active_turn_cancelled() -> None:
     )
     assert cancelled.status.value == "cancelled"
     assert cancelled.error_code == "cancelled_by_user"
-    with pytest.raises(InlineTurnConflict):
+    with pytest.raises(TurnConflict):
         store.cancel_turn(
             turn_id="turn-1",
             user_id="user-1",

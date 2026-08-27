@@ -3,7 +3,6 @@ from __future__ import annotations
 import json
 import logging
 
-from backend.app.agent.api import _log_graph_action
 from backend.app.observability import JsonLogFormatter
 
 
@@ -44,23 +43,3 @@ def test_agent_log_fields_are_serialized_without_audit_lifecycle() -> None:
         "artifact": "results.csv",
         "error_code": "graph_execution_failed",
     }
-
-
-def test_graph_action_emits_bounded_structured_fields(caplog) -> None:
-    with caplog.at_level(logging.INFO, logger="omicsprism.platform"):
-        _log_graph_action(
-            thread_id="thread-1",
-            user_id="user-1",
-            action="invoke",
-            node="confirmation",
-            started_at=0.0,
-        )
-
-    record = caplog.records[-1]
-    assert record.event == "agent.graph"
-    assert record.thread_id == "thread-1"
-    assert record.user_id == "user-1"
-    assert record.action == "invoke"
-    assert record.node == "confirmation"
-    assert record.error_code is None
-    assert record.duration_ms >= 0

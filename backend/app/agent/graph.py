@@ -305,7 +305,7 @@ GraphResumeRequest = Annotated[
 
 
 class GraphTurnResult(BaseModel):
-    """Public result of an inline graph invoke or resume operation."""
+    """Public result of a queued graph invoke or resume operation."""
 
     model_config = ConfigDict(extra="forbid")
 

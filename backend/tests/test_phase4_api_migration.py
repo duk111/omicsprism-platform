@@ -18,6 +18,8 @@ from backend.app.agent.graph import (
 )
 from backend.app.agent.param_resolver import AnalysisProposal, ScopeSpec
 from backend.app.agent.product_store import InMemoryAgentProductStore
+from backend.app.agent.queue import InMemoryAgentTurnQueue
+from backend.app.agent.runtime import AgentRuntime
 from backend.app.agent.schemas import AgentInputBundleRecord, AgentInputFileRecord
 from backend.app.agent.validation import DatasetRef
 
@@ -76,7 +78,8 @@ def _setup(proposal: AnalysisProposal):
     graph = build_agent_graph(_Model(proposal), load, submitter, unavailable, unavailable)
     context = AgentApiContext(
         product_store=InMemoryAgentProductStore(),
-        job_store=_Jobs(), files=None, graph=graph, dataset_loader=load)
+        job_store=_Jobs(), files=None, graph=graph, dataset_loader=load,
+        turn_queue=InMemoryAgentTurnQueue())
     app = FastAPI()
     app.include_router(create_agent_router(context=context, session_dependency=_session))
     client = TestClient(app)
@@ -100,6 +103,25 @@ def _setup(proposal: AnalysisProposal):
     return client, context, thread, submitter
 
 
+def _drain(context: AgentApiContext) -> None:
+    assert context.turn_queue is not None
+    raw = context.turn_queue.reserve()
+    if raw is not None:
+        AgentRuntime(context, context.turn_queue).run_once(raw)
+
+
+def _interrupt_body(context: AgentApiContext, thread: dict) -> dict:
+    snapshot = context.graph.get_state(
+        {"configurable": {"thread_id": thread["thread_id"]}}
+    )
+    task_interrupts = [
+        item for task in snapshot.tasks for item in task.interrupts
+    ]
+    assert len(task_interrupts) == 1
+    item = task_interrupts[0]
+    return {"interrupt_id": item.id, "payload": item.value}
+
+
 def _start(client: TestClient, thread: dict, key: str = "turn-1"):
     return client.post(
         f"/api/agent/threads/{thread['thread_id']}/turns",
@@ -121,16 +143,18 @@ def test_confirmation_resume_uses_header_and_persists_completed_turn() -> None:
     paused = _start(client, thread)
     assert paused.status_code == 202
     body = paused.json()
-    assert body["turn"]["status"] == "running"
-    assert body["interrupt"]["payload"]["kind"] == "confirmation"
+    assert body["turn"]["status"] == "queued"
+    _drain(context)
+    interrupt = _interrupt_body(context, thread)
+    assert interrupt["payload"]["kind"] == "confirmation"
     snapshot = context.graph.get_state(
         {"configurable": {"thread_id": thread["thread_id"]}})
-    assert snapshot.values["recent_jobs"][0].job_id == "job-existing"
+    assert snapshot.values["recent_jobs"][0]["job_id"] == "job-existing"
     resume_url = _resume_url(thread, body)
     request = {
-        "kind": "confirmation", "interrupt_id": body["interrupt"]["interrupt_id"],
-        "plan_id": body["interrupt"]["payload"]["plan_id"],
-        "plan_version": body["interrupt"]["payload"]["plan_version"],
+        "kind": "confirmation", "interrupt_id": interrupt["interrupt_id"],
+        "plan_id": interrupt["payload"]["plan_id"],
+        "plan_version": interrupt["payload"]["plan_version"],
         "approve": True,
     }
     assert client.post(resume_url, json=request).status_code == 422
@@ -147,9 +171,13 @@ def test_confirmation_resume_uses_header_and_persists_completed_turn() -> None:
 
     completed = client.post(
         resume_url, json=request, headers={"Idempotency-Key": "job-key"})
+    _drain(context)
     assert completed.status_code == 200
-    assert completed.json()["turn"]["status"] == "completed"
-    assert completed.json()["message"]["blocks"][0]["text"] == "Analysis job job-1 was submitted."
+    assert completed.json()["turn"]["status"] == "queued"
+    done = client.get(
+        f"/api/agent/threads/{thread['thread_id']}/turns/{body['turn']['turn_id']}"
+    )
+    assert done.json()["status"] == "completed"
     assert [item.idempotency_key for item in submitter.requests] == ["job-key"]
     messages = context.product_store.list_messages(
         thread_id=thread["thread_id"], user_id="user-a")
@@ -167,10 +195,12 @@ def test_clarification_resume_checks_ownership_and_preserves_missing_semantics()
         analysis_type="DEG", compare_field="condition", scope=ScopeSpec(mode="all")
     ))
     body = _start(client, thread, "clarify-1").json()
-    assert body["interrupt"]["payload"]["kind"] == "clarification"
+    _drain(_context)
+    interrupt = _interrupt_body(_context, thread)
+    assert interrupt["payload"]["kind"] == "clarification"
     url = _resume_url(thread, body)
     request = {
-        "kind": "clarification", "interrupt_id": body["interrupt"]["interrupt_id"],
+        "kind": "clarification", "interrupt_id": interrupt["interrupt_id"],
         "answer": "compare salt and control",
     }
     client.cookies.clear()
@@ -179,8 +209,9 @@ def test_clarification_resume_checks_ownership_and_preserves_missing_semantics()
     client.cookies.clear()
     client.cookies.set(COOKIE, "user-a")
     resumed = client.post(url, json=request)
+    _drain(_context)
     assert resumed.status_code == 200
-    assert resumed.json()["interrupt"]["payload"]["kind"] == "clarification"
+    assert resumed.json()["turn"]["status"] == "queued"
     assert not submitter.requests
 
 
@@ -194,7 +225,7 @@ def test_openapi_exposes_typed_graph_resume_contract() -> None:
     assert set(request_schema["discriminator"]["mapping"]) == {"clarification", "confirmation"}
 
 
-def test_new_turn_releases_inline_turn_with_lost_checkpoint() -> None:
+def test_new_turn_rejects_when_previous_turn_is_queued() -> None:
     proposal = AnalysisProposal(
         analysis_type="DEG", compare_field="condition",
         tested_level="salt", reference_level="control",
@@ -202,6 +233,7 @@ def test_new_turn_releases_inline_turn_with_lost_checkpoint() -> None:
     )
     client, context, thread, submitter = _setup(proposal)
     previous = _start(client, thread, "before-restart").json()["turn"]
+    assert previous["status"] == "queued"
     unavailable = lambda request: (_ for _ in ()).throw(LookupError(request.job_id))
     fresh_graph = build_agent_graph(
         _Model(proposal), context.dataset_loader, submitter, unavailable, unavailable)
@@ -209,8 +241,6 @@ def test_new_turn_releases_inline_turn_with_lost_checkpoint() -> None:
 
     restarted = _start(client, thread, "after-restart")
 
-    assert restarted.status_code == 202
-    assert restarted.json()["interrupt"]["payload"]["kind"] == "confirmation"
+    assert restarted.status_code == 409
     failed = context.product_store.get_turn(turn_id=previous["turn_id"], user_id="user-a")
-    assert failed.status.value == "failed"
-    assert failed.error_code == "graph_checkpoint_unavailable"
+    assert failed.status.value == "queued"

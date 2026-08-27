@@ -4,14 +4,11 @@ import asyncio
 from datetime import datetime, timedelta, timezone
 from hashlib import sha256
 import json
-from time import perf_counter
 from typing import Annotated, Callable
 from uuid import uuid4
 
 from fastapi import APIRouter, Depends, File, Form, Header, HTTPException, Query, Request, UploadFile
 from fastapi.responses import StreamingResponse
-from langgraph.types import Command
-
 from ..observability import LOG
 from ..storage_service import AGENT_BUNDLE_MAX_BYTES
 from .bootstrap import AgentApiContext
@@ -27,9 +24,9 @@ from .graph import (
     GraphTurnResult,
     JobRef,
     ConfirmationPayload,
-    PlanVersionConflict,
 )
-from .product_store import ActiveTurnConflict, AgentResourceNotFound, IdempotencyConflict
+from .product_store import ActiveTurnConflict, AgentResourceNotFound, IdempotencyConflict, TurnConflict
+from .queue import AgentTurnWorkItem
 from .schemas import (
     AgentInputBundleRecord,
     AgentInputBundleResponse,
@@ -323,7 +320,6 @@ def create_agent_router(
                 for job_id in focus_job_ids
             ],
         )
-        _recover_inline_turn(ctx, thread_id, user_id)
         now = datetime.now(timezone.utc)
         turn_id = f"turn-{uuid4()}"
         turn = AgentTurnRecord(
@@ -333,12 +329,12 @@ def create_agent_router(
             user_id=user_id,
             idempotency_key=idempotency_key,
             request_hash=_request_hash(thread_id, payload.model_dump(mode="json")),
-            status=AgentTurnStatus.RUNNING,
-            attempt=1,
+            status=AgentTurnStatus.QUEUED,
+            attempt=0,
             error_code=None,
             created_at=now,
             updated_at=now,
-            started_at=now,
+            started_at=None,
             completed_at=None,
         )
         message = AgentMessageRecord(
@@ -358,30 +354,21 @@ def create_agent_router(
         except (IdempotencyConflict, ActiveTurnConflict) as exc:
             raise _conflict(str(exc) or "Agent turn conflicts with current state") from exc
         if not created:
-            return _graph_turn_result(ctx, queued)
-        started_at = perf_counter()
-        try:
-            ctx.graph.invoke(graph_state, _graph_config(thread_id))
-            result = _graph_turn_result(ctx, queued)
-            _log_graph_action(
-                thread_id=thread_id,
-                user_id=user_id,
-                action="invoke",
-                node=_result_node(result),
-                started_at=started_at,
-            )
-            return result
-        except Exception as exc:
-            _fail_inline_turn(ctx, queued, "graph_execution_failed")
-            _log_graph_action(
-                thread_id=thread_id,
-                user_id=user_id,
-                action="invoke",
-                node="graph",
-                started_at=started_at,
-                error_code="graph_execution_failed",
-            )
-            raise HTTPException(status_code=500, detail="Agent graph execution failed") from exc
+            if queued.status is AgentTurnStatus.QUEUED:
+                _enqueue_work(ctx, AgentTurnWorkItem(
+                    turn_id=queued.turn_id,
+                    thread_id=queued.thread_id,
+                    user_id=queued.user_id,
+                    state=graph_state,
+                ))
+            return _queued_graph_turn_result(queued)
+        _enqueue_work(ctx, AgentTurnWorkItem(
+            turn_id=turn_id,
+            thread_id=thread_id,
+            user_id=user_id,
+            state=graph_state,
+        ))
+        return _queued_graph_turn_result(queued)
 
     @router.post(
         "/threads/{thread_id}/turns/{checkpoint_turn_id}/resume",
@@ -405,14 +392,10 @@ def create_agent_router(
             raise _not_found() from exc
         if turn.thread_id != thread_id:
             raise _not_found()
-        if turn.status is not AgentTurnStatus.RUNNING:
-            raise _conflict("Agent graph turn is no longer awaiting input")
-
         config = _graph_config(thread.thread_id)
         try:
             snapshot, _ = _owned_graph_snapshot(ctx, config, thread_id, user_id)
         except HTTPException:
-            _fail_inline_turn(ctx, turn, "graph_checkpoint_unavailable")
             raise
         interrupts = _snapshot_interrupts(snapshot)
         if len(interrupts) != 1 or interrupts[0].interrupt_id != payload.interrupt_id:
@@ -431,47 +414,36 @@ def create_agent_router(
                 raise _conflict(
                     "Pending analysis plan is stale; review the current plan before resuming"
                 )
-        if isinstance(payload, GraphClarificationResumeRequest):
-            resume_value = {"answer": payload.answer}
-        else:
-            resume_value = {
-                "plan_id": payload.plan_id,
-                "plan_version": payload.plan_version,
-                "approve": payload.approve,
-                "message": payload.message,
-            }
-            if payload.approve is True:
-                if idempotency_key is None:
-                    raise HTTPException(
-                        status_code=422,
-                        detail="Idempotency-Key is required to run an analysis",
-                    )
-                resume_value["idempotency_key"] = idempotency_key
-        started_at = perf_counter()
+        if isinstance(payload, GraphConfirmationResumeRequest) and payload.approve is True:
+            if idempotency_key is None:
+                raise HTTPException(
+                    status_code=422,
+                    detail="Idempotency-Key is required to run an analysis",
+                )
+        if turn.status not in {AgentTurnStatus.RUNNING, AgentTurnStatus.QUEUED}:
+            raise _conflict("Agent graph turn is no longer awaiting input")
         try:
-            ctx.graph.invoke(Command(resume=resume_value), config)
-            result = _graph_turn_result(ctx, turn)
-            _log_graph_action(
+            queued = (
+                ctx.product_store.queue_turn(
+                    turn_id=turn.turn_id,
+                    user_id=user_id,
+                    now=datetime.now(timezone.utc),
+                )
+                if turn.status is AgentTurnStatus.RUNNING
+                else turn
+            )
+            _enqueue_work(ctx, AgentTurnWorkItem(
+                turn_id=turn.turn_id,
                 thread_id=thread_id,
                 user_id=user_id,
-                action="resume",
-                node=_result_node(result),
-                started_at=started_at,
-            )
-            return result
-        except PlanVersionConflict as exc:
-            raise _conflict(str(exc)) from exc
+                resume=payload,
+                idempotency_key=idempotency_key,
+            ))
+        except TurnConflict as exc:
+            raise _conflict("Agent graph turn is no longer awaiting input") from exc
         except Exception as exc:
-            _fail_inline_turn(ctx, turn, "graph_execution_failed")
-            _log_graph_action(
-                thread_id=thread_id,
-                user_id=user_id,
-                action="resume",
-                node=payload.kind,
-                started_at=started_at,
-                error_code="graph_execution_failed",
-            )
-            raise HTTPException(status_code=500, detail="Agent graph execution failed") from exc
+            raise HTTPException(status_code=503, detail="Agent turn could not be queued") from exc
+        return _queued_graph_turn_result(queued)
 
     @router.get("/threads/{thread_id}/turns/{turn_id}", response_model=AgentTurnResponse)
     def get_turn(
@@ -735,22 +707,6 @@ def _owned_graph_focus(
     return focus, version
 
 
-def _recover_inline_turn(
-    ctx: AgentApiContext,
-    thread_id: str,
-    user_id: str,
-) -> None:
-    turns = ctx.product_store.list_turns(thread_id=thread_id, user_id=user_id, limit=100)
-    for turn in reversed(turns):
-        if turn.status is not AgentTurnStatus.RUNNING:
-            continue
-        try:
-            _graph_turn_result(ctx, turn)
-        except HTTPException:
-            pass
-        return
-
-
 def _owned_graph_snapshot(
     ctx: AgentApiContext,
     config: dict[str, dict[str, str]],
@@ -775,92 +731,20 @@ def _snapshot_interrupts(snapshot: object) -> list[GraphInterrupt]:
     ]
 
 
-def _graph_turn_result(
-    ctx: AgentApiContext,
-    turn: AgentTurnRecord,
-) -> GraphTurnResult:
-    current = ctx.product_store.get_turn(turn_id=turn.turn_id, user_id=turn.user_id)
-    messages = ctx.product_store.list_messages(
-        thread_id=turn.thread_id, user_id=turn.user_id, limit=100
-    )
-    existing = next(
-        (item for item in messages if item.message_id == f"assistant-{turn.turn_id}"),
-        None,
-    )
-    if current.status is AgentTurnStatus.COMPLETED:
-        return GraphTurnResult(
-            checkpoint_turn_id=turn.turn_id,
-            turn=_turn_response(current),
-            message=_message_response(existing) if existing is not None else None,
-        )
-    if current.status is AgentTurnStatus.FAILED:
-        return GraphTurnResult(
-            checkpoint_turn_id=turn.turn_id,
-            turn=_turn_response(current),
-        )
-    if current.status is AgentTurnStatus.CANCELLED:
-        return GraphTurnResult(
-            checkpoint_turn_id=turn.turn_id,
-            turn=_turn_response(current),
-        )
-
-    try:
-        snapshot, state = _owned_graph_snapshot(
-            ctx, _graph_config(turn.thread_id), turn.thread_id, turn.user_id
-        )
-    except HTTPException:
-        _fail_inline_turn(ctx, current, "graph_checkpoint_unavailable")
-        raise
-    interrupts = _snapshot_interrupts(snapshot)
-    if interrupts:
-        if len(interrupts) != 1:
-            raise _conflict("Agent graph checkpoint has an invalid interrupt state")
-        return GraphTurnResult(
-            checkpoint_turn_id=turn.turn_id,
-            turn=_turn_response(current),
-            interrupt=interrupts[0],
-        )
-    if state.response_text is None:
-        raise RuntimeError("completed graph state is missing response_text")
-    now = datetime.now(timezone.utc)
-    message = AgentMessageRecord(
-        message_id=f"assistant-{turn.turn_id}",
-        thread_id=turn.thread_id,
-        run_id=turn.run_id,
-        user_id=turn.user_id,
-        role=AgentMessageRole.ASSISTANT,
-        blocks=[AgentTextBlock(text=state.response_text)],
-        created_at=now,
-    )
-    completed = ctx.product_store.finish_inline_turn(
-        turn_id=turn.turn_id,
-        user_id=turn.user_id,
-        status=AgentTurnStatus.COMPLETED,
-        now=now,
-        message=message,
-    )
+def _queued_graph_turn_result(turn: AgentTurnRecord) -> GraphTurnResult:
     return GraphTurnResult(
         checkpoint_turn_id=turn.turn_id,
-        turn=_turn_response(completed),
-        message=_message_response(message),
+        turn=_turn_response(turn),
     )
 
 
-def _fail_inline_turn(
-    ctx: AgentApiContext,
-    turn: AgentTurnRecord,
-    error_code: str,
-) -> None:
-    current = ctx.product_store.get_turn(turn_id=turn.turn_id, user_id=turn.user_id)
-    if current.status is not AgentTurnStatus.RUNNING:
-        return
-    ctx.product_store.finish_inline_turn(
-        turn_id=turn.turn_id,
-        user_id=turn.user_id,
-        status=AgentTurnStatus.FAILED,
-        now=datetime.now(timezone.utc),
-        error_code=error_code,
-    )
+def _enqueue_work(ctx: AgentApiContext, item: AgentTurnWorkItem) -> None:
+    if ctx.turn_queue is None:
+        raise HTTPException(status_code=503, detail="Agent runtime queue is not configured")
+    try:
+        ctx.turn_queue.enqueue(item)
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail="Agent turn could not be queued") from exc
 
 
 def _delete_graph_checkpoint(ctx: AgentApiContext, thread_id: str) -> None:
@@ -868,35 +752,6 @@ def _delete_graph_checkpoint(ctx: AgentApiContext, thread_id: str) -> None:
     delete_thread = getattr(checkpointer, "delete_thread", None)
     if callable(delete_thread):
         delete_thread(thread_id)
-
-
-def _result_node(result: GraphTurnResult) -> str:
-    if result.interrupt is not None:
-        return result.interrupt.payload.kind
-    return "complete"
-
-
-def _log_graph_action(
-    *,
-    thread_id: str,
-    user_id: str,
-    action: str,
-    node: str,
-    started_at: float,
-    error_code: str | None = None,
-) -> None:
-    LOG.info(
-        "agent graph action",
-        extra={
-            "event": "agent.graph",
-            "thread_id": thread_id,
-            "user_id": user_id,
-            "action": action,
-            "node": node,
-            "error_code": error_code,
-            "duration_ms": round((perf_counter() - started_at) * 1000, 3),
-        },
-    )
 
 
 def _thread_response(record: AgentThreadRecord) -> AgentThreadResponse:

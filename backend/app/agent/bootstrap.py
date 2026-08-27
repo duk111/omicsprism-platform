@@ -35,6 +35,7 @@ from .graph import (
 )
 from .model import VllmGraphModel
 from .nodes.result_qa import job_reader_from_runtime, result_querier_from_runtime
+from .queue import AgentTurnQueue, RedisAgentTurnQueue
 from .schemas import ToolResult
 from .tools import AgentToolRuntime
 from .validation import DatasetRef
@@ -50,6 +51,7 @@ class AgentApiContext:
     files: FileStorageService | None
     dataset_loader: DatasetLoader | None = None
     stream_poll_seconds: float = 1.0
+    turn_queue: AgentTurnQueue | None = None
 
     def close(self) -> None:
         """Release application-owned graph checkpoint resources."""
@@ -58,6 +60,9 @@ class AgentApiContext:
         close = getattr(pool, "close", None)
         if callable(close):
             close()
+        queue_close = getattr(self.turn_queue, "close", None)
+        if callable(queue_close):
+            queue_close()
 
 
 def _create_postgres_checkpointer(database_url: str) -> PostgresSaver:
@@ -230,6 +235,10 @@ def create_agent_api_context(
         return result_querier_from_runtime(runtime)(request)
 
     checkpointer = _create_postgres_checkpointer(database_url)
+    turn_queue = RedisAgentTurnQueue(
+        settings.redis_url,
+        settings.agent_queue_name,
+    )
     try:
         graph = build_agent_graph(
             model,
@@ -241,6 +250,7 @@ def create_agent_api_context(
         )
     except Exception:
         checkpointer.conn.close()
+        turn_queue.close()
         raise
     return AgentApiContext(
         product_store=product_store,
@@ -249,4 +259,5 @@ def create_agent_api_context(
         files=files,
         dataset_loader=load_datasets,
         stream_poll_seconds=max(0.1, settings.agent_poll_seconds),
+        turn_queue=turn_queue,
     )

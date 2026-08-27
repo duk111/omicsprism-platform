@@ -27,7 +27,7 @@ class ActiveTurnConflict(RuntimeError):
     pass
 
 
-class InlineTurnConflict(RuntimeError):
+class TurnConflict(RuntimeError):
     pass
 
 
@@ -64,10 +64,16 @@ class AgentProductStore(Protocol):
     def get_turn(self, *, turn_id: str, user_id: str) -> AgentTurnRecord:
         ...
 
+    def claim_turn(self, *, turn_id: str, user_id: str, now: datetime) -> AgentTurnRecord:
+        ...
+
+    def queue_turn(self, *, turn_id: str, user_id: str, now: datetime) -> AgentTurnRecord:
+        ...
+
     def list_turns(self, *, thread_id: str, user_id: str, limit: int = 100) -> list[AgentTurnRecord]:
         ...
 
-    def finish_inline_turn(
+    def finish_turn(
         self, *, turn_id: str, user_id: str, status: AgentTurnStatus, now: datetime,
         message: AgentMessageRecord | None = None, error_code: str | None = None,
     ) -> AgentTurnRecord:
@@ -231,6 +237,29 @@ class InMemoryAgentProductStore:
             raise AgentResourceNotFound(turn_id)
         return AgentTurnRecord.model_validate(deepcopy(payload))
 
+    def claim_turn(self, *, turn_id: str, user_id: str, now: datetime) -> AgentTurnRecord:
+        turn = self.get_turn(turn_id=turn_id, user_id=user_id)
+        if turn.status in {AgentTurnStatus.QUEUED, AgentTurnStatus.RUNNING}:
+            turn.status = AgentTurnStatus.RUNNING
+            turn.attempt += 1
+            turn.started_at = now
+            turn.updated_at = now
+            turn.error_code = None
+            self._turns[turn.turn_id] = turn.model_dump(mode="json")
+        return turn.model_copy(deep=True)
+
+    def queue_turn(self, *, turn_id: str, user_id: str, now: datetime) -> AgentTurnRecord:
+        turn = self.get_turn(turn_id=turn_id, user_id=user_id)
+        if turn.status is not AgentTurnStatus.RUNNING:
+            raise TurnConflict(turn_id)
+        turn.status = AgentTurnStatus.QUEUED
+        turn.updated_at = now
+        turn.started_at = None
+        turn.completed_at = None
+        turn.error_code = None
+        self._turns[turn.turn_id] = turn.model_dump(mode="json")
+        return turn.model_copy(deep=True)
+
     def list_turns(self, *, thread_id: str, user_id: str, limit: int = 100) -> list[AgentTurnRecord]:
         self.get_thread(thread_id=thread_id, user_id=user_id)
         bounded = max(1, min(limit, 100))
@@ -242,20 +271,20 @@ class InMemoryAgentProductStore:
         records.sort(key=lambda item: (item.created_at, item.turn_id))
         return records[-bounded:]
 
-    def finish_inline_turn(
+    def finish_turn(
         self, *, turn_id: str, user_id: str, status: AgentTurnStatus, now: datetime,
         message: AgentMessageRecord | None = None, error_code: str | None = None,
     ) -> AgentTurnRecord:
         if status not in {AgentTurnStatus.COMPLETED, AgentTurnStatus.FAILED}:
-            raise ValueError("inline turn may only finish as completed or failed")
+            raise ValueError("turn may only finish as completed or failed")
         turn = self.get_turn(turn_id=turn_id, user_id=user_id)
         if turn.status is not AgentTurnStatus.RUNNING:
-            raise InlineTurnConflict(turn_id)
+            raise TurnConflict(turn_id)
         if message is not None:
             if (message.thread_id, message.run_id, message.user_id) != (
                 turn.thread_id, turn.run_id, turn.user_id,
             ):
-                raise ValueError("inline turn message does not match ownership")
+                raise ValueError("turn message does not match ownership")
             self.append_message(message)
         turn.status = status
         turn.error_code = error_code
@@ -267,7 +296,7 @@ class InMemoryAgentProductStore:
     def cancel_turn(self, *, turn_id: str, user_id: str, now: datetime, error_code: str) -> AgentTurnRecord:
         turn = self.get_turn(turn_id=turn_id, user_id=user_id)
         if turn.status not in {AgentTurnStatus.QUEUED, AgentTurnStatus.RUNNING}:
-            raise InlineTurnConflict(turn_id)
+            raise TurnConflict(turn_id)
         turn.status = AgentTurnStatus.CANCELLED
         turn.error_code = error_code
         turn.completed_at = now
@@ -579,6 +608,40 @@ class PostgresAgentProductStore:
             raise AgentResourceNotFound(turn_id)
         return _turn_from_row(row)
 
+    def claim_turn(self, *, turn_id: str, user_id: str, now: datetime) -> AgentTurnRecord:
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                update agent_turns set status = 'running', attempt = attempt + 1,
+                    started_at = %s, updated_at = %s, error_code = null
+                where turn_id = %s and user_id = %s and status in ('queued', 'running')
+                returning turn_id, thread_id, run_id, user_id, idempotency_key,
+                          request_hash, status, attempt, error_code,
+                          created_at, updated_at, started_at, completed_at
+                """,
+                (now, now, turn_id, user_id),
+            ).fetchone()
+        return _turn_from_row(row) if row is not None else self.get_turn(
+            turn_id=turn_id, user_id=user_id
+        )
+
+    def queue_turn(self, *, turn_id: str, user_id: str, now: datetime) -> AgentTurnRecord:
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                update agent_turns set status = 'queued', error_code = null,
+                    started_at = null, completed_at = null, updated_at = %s
+                where turn_id = %s and user_id = %s and status = 'running'
+                returning turn_id, thread_id, run_id, user_id, idempotency_key,
+                          request_hash, status, attempt, error_code,
+                          created_at, updated_at, started_at, completed_at
+                """,
+                (now, turn_id, user_id),
+            ).fetchone()
+        if row is None:
+            raise TurnConflict(turn_id)
+        return _turn_from_row(row)
+
     def list_turns(self, *, thread_id: str, user_id: str, limit: int = 100) -> list[AgentTurnRecord]:
         self.get_thread(thread_id=thread_id, user_id=user_id)
         bounded = max(1, min(limit, 100))
@@ -596,12 +659,12 @@ class PostgresAgentProductStore:
             ).fetchall()
         return [_turn_from_row(row) for row in reversed(rows)]
 
-    def finish_inline_turn(
+    def finish_turn(
         self, *, turn_id: str, user_id: str, status: AgentTurnStatus, now: datetime,
         message: AgentMessageRecord | None = None, error_code: str | None = None,
     ) -> AgentTurnRecord:
         if status not in {AgentTurnStatus.COMPLETED, AgentTurnStatus.FAILED}:
-            raise ValueError("inline turn may only finish as completed or failed")
+            raise ValueError("turn may only finish as completed or failed")
         Jsonb = _jsonb_type()
         with self._connect() as conn:
             row = conn.execute(
@@ -617,13 +680,13 @@ class PostgresAgentProductStore:
                 (status.value, error_code, now, now, turn_id, user_id),
             ).fetchone()
             if row is None:
-                raise InlineTurnConflict(turn_id)
+                raise TurnConflict(turn_id)
             turn = _turn_from_row(row)
             if message is not None:
                 if (message.thread_id, message.run_id, message.user_id) != (
                     turn.thread_id, turn.run_id, turn.user_id,
                 ):
-                    raise ValueError("inline turn message does not match ownership")
+                    raise ValueError("turn message does not match ownership")
                 conn.execute(
                     """
                     insert into agent_messages (
@@ -652,7 +715,7 @@ class PostgresAgentProductStore:
                 (error_code, now, now, turn_id, user_id),
             ).fetchone()
         if row is None:
-            raise InlineTurnConflict(turn_id)
+            raise TurnConflict(turn_id)
         return _turn_from_row(row)
 
     def save_input_bundle(self, bundle: AgentInputBundleRecord) -> None:
