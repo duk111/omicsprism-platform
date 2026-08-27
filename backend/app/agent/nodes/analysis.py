@@ -75,6 +75,11 @@ def analysis_node(
             request_text,
             [item.profile for item in state.dataset_profiles],
             llm_proposal=_analysis_proposal(state),
+            prior_params=(
+                state.pending_plan.params
+                if state.pending_plan is not None
+                else None
+            ),
         )
         report = validate_analysis_request(resolved, dataset_refs)
         if report.ok:
@@ -131,23 +136,28 @@ def _handle_confirmation(
     resumed = ConfirmationResume.model_validate(
         interrupt(payload.model_dump(mode="json"))
     )
-    if resumed.action == "cancel":
+    _validate_plan_reference(state, payload, resumed)
+    if resumed.approve is False:
         return Command(
             update={
                 "pending_interrupt": None,
                 "pending_plan": None,
-                "response_text": "Analysis cancelled.",
+                "response_text": "Analysis plan rejected.",
             },
             goto=END,
         )
-    if resumed.action == "modify":
+    if resumed.approve is not True:
+        if resumed.message is None:
+            raise ExecutionRejected("confirmation message is required")
         return Command(
             update={
-                "clarification_answer": resumed.modification,
                 "pending_interrupt": None,
+                "decision": None,
+                "user_message": resumed.message,
+                "clarification_answer": None,
                 "response_text": None,
             },
-            goto="analysis",
+            goto="main",
         )
 
     if state.step_budget.used_model_steps >= state.step_budget.max_model_steps:
@@ -249,6 +259,20 @@ def run_analysis(
     if job_ref.owner_id != state.user_id:
         raise ExecutionRejected("job submitter returned a cross-user job")
     return job_ref
+
+
+def _validate_plan_reference(
+    state: GraphState,
+    payload: ConfirmationPayload,
+    resumed: ConfirmationResume,
+) -> None:
+    if resumed.plan_id != payload.plan_id or resumed.plan_version != payload.plan_version:
+        raise ExecutionRejected("confirmation does not reference the current pending plan")
+    if state.pending_plan is not None and (
+        state.pending_plan.plan_id != resumed.plan_id
+        or state.pending_plan.plan_version != resumed.plan_version
+    ):
+        raise ExecutionRejected("confirmation does not reference the current pending plan")
 
 
 def _analysis_proposal(state: GraphState) -> AnalysisProposal:

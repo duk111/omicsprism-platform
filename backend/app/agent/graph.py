@@ -214,31 +214,39 @@ class ConfirmationPayload(BaseModel):
     preview: ContrastPreview | None = None
     warnings: list[Issue] = Field(default_factory=list, max_length=20)
     input_fingerprint: str = Field(pattern=r"^sha256:[0-9a-fA-F]{64}$")
-    plan_id: str | None = Field(default=None, min_length=1, max_length=200)
-    plan_version: int | None = Field(default=None, ge=1)
+    plan_id: str = Field(min_length=1, max_length=200)
+    plan_version: int = Field(ge=1)
 
     @model_validator(mode="after")
     def _analysis_type_matches_params(self) -> "ConfirmationPayload":
         if self.resolved_params.analysis_type != self.analysis_type:
             raise ValueError("analysis_type must match resolved_params")
-        if (self.plan_id is None) != (self.plan_version is None):
-            raise ValueError("plan_id and plan_version must be supplied together")
         return self
 
 
 class ConfirmationResume(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    action: Literal["run", "modify", "cancel"]
-    modification: str | None = Field(default=None, min_length=1, max_length=1000)
+    plan_id: str = Field(min_length=1, max_length=200)
+    plan_version: int = Field(ge=1)
+    message: str | None = Field(default=None, min_length=1, max_length=4000)
+    approve: bool | None = None
     idempotency_key: str | None = Field(default=None, min_length=1, max_length=200)
 
     @model_validator(mode="after")
-    def _required_action_fields(self) -> "ConfirmationResume":
-        if self.action == "run" and self.idempotency_key is None:
-            raise ValueError("run action requires idempotency_key")
-        if self.action == "modify" and self.modification is None:
-            raise ValueError("modify action requires modification")
+    def _resume_semantics(self) -> "ConfirmationResume":
+        if self.approve is True:
+            if self.message is not None:
+                raise ValueError("approved confirmation cannot include a message")
+            if self.idempotency_key is None:
+                raise ValueError("approved confirmation requires idempotency_key")
+        elif self.approve is False:
+            if self.message is not None or self.idempotency_key is not None:
+                raise ValueError("rejected confirmation cannot include message or idempotency_key")
+        elif self.message is None:
+            raise ValueError("confirmation message is required unless approve is set")
+        elif self.idempotency_key is not None:
+            raise ValueError("confirmation message cannot include idempotency_key")
         return self
 
 
@@ -270,15 +278,19 @@ class GraphConfirmationResumeRequest(BaseModel):
 
     kind: Literal["confirmation"] = "confirmation"
     interrupt_id: str = Field(min_length=1, max_length=200)
-    action: Literal["run", "modify", "cancel"]
-    modification: str | None = Field(default=None, min_length=1, max_length=1000)
+    plan_id: str = Field(min_length=1, max_length=200)
+    plan_version: int = Field(ge=1)
+    message: str | None = Field(default=None, min_length=1, max_length=4000)
+    approve: bool | None = None
 
     @model_validator(mode="after")
-    def _modify_requires_text(self) -> "GraphConfirmationResumeRequest":
-        if self.action == "modify" and self.modification is None:
-            raise ValueError("modify action requires modification")
-        if self.action != "modify" and self.modification is not None:
-            raise ValueError("modification is only valid for modify action")
+    def _resume_semantics(self) -> "GraphConfirmationResumeRequest":
+        if self.approve is True and self.message is not None:
+            raise ValueError("approved confirmation cannot include a message")
+        if self.approve is False and self.message is not None:
+            raise ValueError("rejected confirmation cannot include a message")
+        if self.approve is None and self.message is None:
+            raise ValueError("confirmation message is required unless approve is set")
         return self
 
 

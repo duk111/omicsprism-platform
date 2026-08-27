@@ -532,7 +532,9 @@ def test_fixed_scope_preview_matches_execution_inputs() -> None:
     assert payload["preview"]["reference_count"] == 2
 
     completed = graph.invoke(Command(resume={
-        "action": "run",
+        "plan_id": payload["plan_id"],
+        "plan_version": payload["plan_version"],
+        "approve": True,
         "idempotency_key": "fixed-run",
     }), config)
     assert completed["current_job"].job_id == "job-1"
@@ -655,7 +657,7 @@ def test_default_checkpointer_resumes_confirmation_flow_once() -> None:
         _querier(),
     )
     config = _config("confirmation-run")
-    graph.invoke(
+    paused = graph.invoke(
         _state(
             thread_id="confirmation-run",
             user_message="Run DEG",
@@ -663,9 +665,12 @@ def test_default_checkpointer_resumes_confirmation_flow_once() -> None:
         ),
         config,
     )
+    payload = paused["__interrupt__"][0].value
 
     completed = GraphState.model_validate(graph.invoke(Command(resume={
-        "action": "run",
+        "plan_id": payload["plan_id"],
+        "plan_version": payload["plan_version"],
+        "approve": True,
         "idempotency_key": "run-1",
     }), config))
 
@@ -682,7 +687,9 @@ def test_default_checkpointer_resumes_confirmation_flow_once() -> None:
     assert len(loader.requests) == 2
 
     repeated = GraphState.model_validate(graph.invoke(Command(resume={
-        "action": "run",
+        "plan_id": payload["plan_id"],
+        "plan_version": payload["plan_version"],
+        "approve": True,
         "idempotency_key": "run-1",
     }), config))
     assert repeated.current_job == completed.current_job
@@ -693,14 +700,30 @@ def test_explicit_checkpointer_resumes_confirmation_modify() -> None:
     refs = _dataset_refs()
     loader = RecordingDatasetLoader(refs)
     submitter = _submitter()
-    graph = build_agent_graph(
-        _analysis_model(AnalysisProposal(
-            analysis_type="DEG",
-            compare_field="condition",
-            tested_level="salt",
-            reference_level="control",
-            scope=ScopeSpec(mode="all"),
+    initial = AnalysisProposal(
+        analysis_type="DEG",
+        compare_field="condition",
+        tested_level="salt",
+        reference_level="control",
+        scope=ScopeSpec(mode="all"),
+    )
+    revised = AnalysisProposal(
+        analysis_type="DEG",
+        compare_field="condition",
+        tested_level="drought",
+        reference_level="control",
+        scope=ScopeSpec(mode="all"),
+    )
+    model = ScriptedMainModel([
+        MainModelOutput(decision=AgentDecision(
+            action="run_analysis", analysis_type="DEG", proposal=initial,
         )),
+        MainModelOutput(decision=AgentDecision(
+            action="run_analysis", analysis_type="DEG", proposal=revised,
+        )),
+    ])
+    graph = build_agent_graph(
+        model,
         loader,
         submitter,
         _reader(),
@@ -708,7 +731,7 @@ def test_explicit_checkpointer_resumes_confirmation_modify() -> None:
         checkpointer=InMemorySaver(),
     )
     config = _config("confirmation-modify")
-    graph.invoke(
+    paused = graph.invoke(
         _state(
             thread_id="confirmation-modify",
             user_message="Run DEG",
@@ -716,17 +739,117 @@ def test_explicit_checkpointer_resumes_confirmation_modify() -> None:
         ),
         config,
     )
+    original = paused["__interrupt__"][0].value
 
     modified = graph.invoke(Command(resume={
-        "action": "modify",
-        "modification": "compare drought and control",
+        "plan_id": original["plan_id"],
+        "plan_version": original["plan_version"],
+        "message": "compare drought and control",
     }), config)
 
     payload = modified["__interrupt__"][0].value
     assert payload["kind"] == "confirmation"
-    assert payload["resolved_params"]["contrast"]["tested_level"] == "salt"
+    assert payload["plan_id"] == original["plan_id"]
+    assert payload["plan_version"] == original["plan_version"] + 1
+    assert payload["resolved_params"]["contrast"]["tested_level"] == "drought"
     assert modified["validation_report"].ok
     assert len(loader.requests) == 2
+    assert not submitter.requests
+
+
+def test_confirmation_message_can_be_answered_without_dropping_pending_plan() -> None:
+    refs = _dataset_refs()
+    loader = RecordingDatasetLoader(refs)
+    submitter = _submitter()
+    proposal = AnalysisProposal(
+        analysis_type="DEG",
+        compare_field="condition",
+        tested_level="salt",
+        reference_level="control",
+        scope=ScopeSpec(mode="all"),
+    )
+    model = ScriptedMainModel([
+        MainModelOutput(decision=AgentDecision(
+            action="run_analysis", analysis_type="DEG", proposal=proposal,
+        )),
+        MainModelOutput(
+            decision=AgentDecision(action="answer"),
+            answer="Control is the reference group for the requested contrast.",
+        ),
+    ])
+    graph = build_agent_graph(
+        model, loader, submitter, _reader(), _querier(), checkpointer=InMemorySaver()
+    )
+    config = _config("confirmation-answer")
+    paused = graph.invoke(_state(
+        thread_id="confirmation-answer",
+        user_message="Run DEG",
+        dataset_profiles=_profile_refs(refs),
+    ), config)
+    original = paused["__interrupt__"][0].value
+
+    answered = GraphState.model_validate(graph.invoke(Command(resume={
+        "plan_id": original["plan_id"],
+        "plan_version": original["plan_version"],
+        "message": "Why did you choose control as the reference group?",
+    }), config))
+
+    assert answered.response_text == "Control is the reference group for the requested contrast."
+    assert answered.pending_interrupt is None
+    assert answered.pending_plan is not None
+    assert answered.pending_plan.plan_id == original["plan_id"]
+    assert answered.pending_plan.plan_version == original["plan_version"]
+    assert not submitter.requests
+
+
+def test_confirmation_message_merges_local_parameter_revision_and_tracks_provenance() -> None:
+    refs = _dataset_refs()
+    loader = RecordingDatasetLoader(refs)
+    submitter = _submitter()
+    initial = AnalysisProposal(
+        analysis_type="DEG",
+        compare_field="condition",
+        tested_level="salt",
+        reference_level="control",
+        scope=ScopeSpec(mode="all"),
+    )
+    revised = AnalysisProposal(
+        analysis_type="DEG",
+        requested_params={"padj_cutoff": 0.01},
+    )
+    model = ScriptedMainModel([
+        MainModelOutput(decision=AgentDecision(
+            action="run_analysis", analysis_type="DEG", proposal=initial,
+        )),
+        MainModelOutput(decision=AgentDecision(
+            action="run_analysis", analysis_type="DEG", proposal=revised,
+        )),
+    ])
+    graph = build_agent_graph(
+        model, loader, submitter, _reader(), _querier(), checkpointer=InMemorySaver()
+    )
+    config = _config("confirmation-threshold")
+    paused = graph.invoke(_state(
+        thread_id="confirmation-threshold",
+        user_message="Run DEG",
+        dataset_profiles=_profile_refs(refs),
+    ), config)
+    original = paused["__interrupt__"][0].value
+
+    revised_state = graph.invoke(Command(resume={
+        "plan_id": original["plan_id"],
+        "plan_version": original["plan_version"],
+        "message": "change the threshold to 0.01",
+    }), config)
+
+    payload = revised_state["__interrupt__"][0].value
+    plan = revised_state["pending_plan"]
+    assert payload["plan_id"] == original["plan_id"]
+    assert payload["plan_version"] == original["plan_version"] + 1
+    assert payload["resolved_params"]["padj_cutoff"] == 0.01
+    assert plan.provenance["padj_cutoff"] == "user_explicit"
+    assert plan.contrast.compare_field == initial.compare_field
+    assert plan.contrast.tested_level == initial.tested_level
     assert not submitter.requests
 
 
@@ -749,7 +872,7 @@ def test_confirmation_cancel_does_not_create_a_job() -> None:
         checkpointer=InMemorySaver(),
     )
     config = _config("confirmation-cancel")
-    graph.invoke(
+    paused = graph.invoke(
         _state(
             thread_id="confirmation-cancel",
             user_message="Run DEG",
@@ -757,14 +880,20 @@ def test_confirmation_cancel_does_not_create_a_job() -> None:
         ),
         config,
     )
+    payload = paused["__interrupt__"][0].value
 
     cancelled = GraphState.model_validate(
-        graph.invoke(Command(resume={"action": "cancel"}), config)
+        graph.invoke(Command(resume={
+            "plan_id": payload["plan_id"],
+            "plan_version": payload["plan_version"],
+            "approve": False,
+        }), config)
     )
 
     assert cancelled.current_job is None
     assert cancelled.pending_interrupt is None
-    assert cancelled.response_text == "Analysis cancelled."
+    assert cancelled.pending_plan is None
+    assert cancelled.response_text == "Analysis plan rejected."
     assert len(loader.requests) == 1
     assert not submitter.requests
 
@@ -788,7 +917,7 @@ def test_changed_input_rejects_execution_and_asks_for_clarification() -> None:
         checkpointer=InMemorySaver(),
     )
     config = _config("changed-input")
-    graph.invoke(
+    paused = graph.invoke(
         _state(
             thread_id="changed-input",
             user_message="Run DEG",
@@ -796,6 +925,7 @@ def test_changed_input_rejects_execution_and_asks_for_clarification() -> None:
         ),
         config,
     )
+    payload = paused["__interrupt__"][0].value
     changed_counts = COUNTS.replace(b"g1,10", b"g1,11")
     loader.refs[0] = loader.refs[0].model_copy(update={
         "content": changed_counts,
@@ -803,7 +933,9 @@ def test_changed_input_rejects_execution_and_asks_for_clarification() -> None:
     })
 
     rejected = graph.invoke(Command(resume={
-        "action": "run",
+        "plan_id": payload["plan_id"],
+        "plan_version": payload["plan_version"],
+        "approve": True,
         "idempotency_key": "changed-run",
     }), config)
 

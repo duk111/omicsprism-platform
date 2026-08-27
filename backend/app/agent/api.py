@@ -422,10 +422,12 @@ def create_agent_router(
             resume_value = {"answer": payload.answer}
         else:
             resume_value = {
-                "action": payload.action,
-                "modification": payload.modification,
+                "plan_id": payload.plan_id,
+                "plan_version": payload.plan_version,
+                "approve": payload.approve,
+                "message": payload.message,
             }
-            if payload.action == "run":
+            if payload.approve is True:
                 if idempotency_key is None:
                     raise HTTPException(
                         status_code=422,

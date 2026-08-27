@@ -164,6 +164,8 @@ def test_confirmation_payload_uses_resolved_params_not_a_dict() -> None:
             },
         },
         input_fingerprint="sha256:" + "b" * 64,
+        plan_id="plan-1",
+        plan_version=1,
     )
 
     assert isinstance(payload.resolved_params, DEGParams)
@@ -182,6 +184,8 @@ def test_confirmation_analysis_type_must_match_resolved_params() -> None:
                 },
             },
             input_fingerprint="sha256:" + "b" * 64,
+            plan_id="plan-1",
+            plan_version=1,
         )
 
 

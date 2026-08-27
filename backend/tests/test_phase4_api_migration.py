@@ -129,7 +129,9 @@ def test_confirmation_resume_uses_header_and_persists_completed_turn() -> None:
     resume_url = _resume_url(thread, body)
     request = {
         "kind": "confirmation", "interrupt_id": body["interrupt"]["interrupt_id"],
-        "action": "run",
+        "plan_id": body["interrupt"]["payload"]["plan_id"],
+        "plan_version": body["interrupt"]["payload"]["plan_version"],
+        "approve": True,
     }
     assert client.post(resume_url, json=request).status_code == 422
     assert client.post(resume_url, json={**request, "interrupt_id": "stale"},
