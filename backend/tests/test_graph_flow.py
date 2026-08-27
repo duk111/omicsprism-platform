@@ -183,7 +183,7 @@ def test_general_knowledge_routes_to_direct_answer() -> None:
     assert result.decision is not None
     assert result.decision.action == "answer"
     assert result.response_text.startswith("Differential expression")
-    assert result.step_budget.used_steps == 1
+    assert result.step_budget.used_model_steps == 1
 
 
 def test_insufficient_intent_routes_to_ask_user() -> None:
@@ -440,12 +440,12 @@ def test_main_model_context_excludes_owner_and_dataset_payloads() -> None:
 def test_exhausted_step_budget_does_not_call_model() -> None:
     model = ScriptedMainModel([])
 
-    result = _run(model, _state(step_budget=StepBudget(max_steps=1, used_steps=1)))
+    result = _run(model, _state(step_budget=StepBudget(max_model_steps=1, used_model_steps=1)))
 
     assert model.contexts == []
     assert result.decision is not None
     assert result.decision.action == "ask_user"
-    assert result.step_budget.used_steps == 1
+    assert result.step_budget.used_model_steps == 1
 
 
 def _analysis_model(proposal: AnalysisProposal) -> ScriptedMainModel:

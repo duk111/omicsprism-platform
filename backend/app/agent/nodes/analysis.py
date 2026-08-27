@@ -54,7 +54,7 @@ def analysis_node(
         if isinstance(state.pending_interrupt, ConfirmationPayload):
             return _handle_confirmation(state, dataset_loader, job_submitter)
 
-        if state.step_budget.used_steps >= state.step_budget.max_steps:
+        if state.step_budget.used_model_steps >= state.step_budget.max_model_steps:
             return Command(
                 update={
                     "response_text": "当前请求已达到执行步数上限，请重新发起分析请求。",
@@ -63,7 +63,7 @@ def analysis_node(
             )
 
         next_budget = state.step_budget.model_copy(
-            update={"used_steps": state.step_budget.used_steps + 1}
+            update={"used_model_steps": state.step_budget.used_model_steps + 1}
         )
         dataset_refs = _load_validation_refs(state, dataset_loader)
         request_text = _analysis_request_text(state)
@@ -141,7 +141,7 @@ def _handle_confirmation(
             goto="analysis",
         )
 
-    if state.step_budget.used_steps >= state.step_budget.max_steps:
+    if state.step_budget.used_model_steps >= state.step_budget.max_model_steps:
         return Command(
             update={
                 "pending_interrupt": None,
@@ -150,7 +150,7 @@ def _handle_confirmation(
             goto=END,
         )
     next_budget = state.step_budget.model_copy(
-        update={"used_steps": state.step_budget.used_steps + 1}
+        update={"used_model_steps": state.step_budget.used_model_steps + 1}
     )
     try:
         job_ref = run_analysis(

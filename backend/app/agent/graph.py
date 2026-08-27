@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from typing import Annotated, Literal
+from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -12,6 +12,7 @@ from .schemas import (
     AgentTurnResponse,
     GroundedAnswer,
     RunFocus,
+    ToolName,
     ToolResult,
 )
 from .validation import ContrastPreview, DatasetRef, Issue, ValidationReport
@@ -32,17 +33,25 @@ class NodeCapabilityError(ValueError):
 
 
 class StepBudget(BaseModel):
-    """Bounded graph execution budget; it is not a workflow state enum."""
+    """Independent model, tool, and token budgets for one graph turn."""
 
     model_config = ConfigDict(extra="forbid")
 
-    max_steps: int = Field(default=8, ge=1, le=32)
-    used_steps: int = Field(default=0, ge=0)
+    max_model_steps: int = Field(default=8, ge=1, le=32)
+    max_tool_calls: int = Field(default=12, ge=1, le=64)
+    max_tokens: int = Field(default=4096, ge=1, le=32768)
+    used_model_steps: int = Field(default=0, ge=0)
+    used_tool_calls: int = Field(default=0, ge=0)
+    used_tokens: int = Field(default=0, ge=0)
 
     @model_validator(mode="after")
-    def _used_steps_within_budget(self) -> "StepBudget":
-        if self.used_steps > self.max_steps:
-            raise ValueError("used_steps cannot exceed max_steps")
+    def _used_counters_within_budget(self) -> "StepBudget":
+        if self.used_model_steps > self.max_model_steps:
+            raise ValueError("used_model_steps cannot exceed max_model_steps")
+        if self.used_tool_calls > self.max_tool_calls:
+            raise ValueError("used_tool_calls cannot exceed max_tool_calls")
+        if self.used_tokens > self.max_tokens:
+            raise ValueError("used_tokens cannot exceed max_tokens")
         return self
 
 
@@ -243,6 +252,9 @@ class AgentDecision(BaseModel):
         "query_result",
         "get_job",
         "ask_user",
+        "tool_call",
+        "grounded_answer",
+        "propose_plan",
     ]
     analysis_type: AnalysisTypeName | None = None
     proposal: AnalysisProposal | None = None
@@ -250,6 +262,8 @@ class AgentDecision(BaseModel):
     result_query: ResultQuerySpec | None = None
     question: str | None = Field(default=None, max_length=1000)
     decision_note: str | None = Field(default=None, max_length=240)
+    tool: ToolName | None = None
+    arguments: dict[str, Any] = Field(default_factory=dict, max_length=16)
 
     @model_validator(mode="after")
     def _result_query_matches_action(self) -> "AgentDecision":
@@ -257,7 +271,37 @@ class AgentDecision(BaseModel):
             raise ValueError("query_result action requires result_query")
         if self.action != "query_result" and self.result_query is not None:
             raise ValueError("result_query is only valid for query_result")
+        allowed_tools = {
+            ToolName.DESCRIBE_METADATA,
+            ToolName.ENUMERATE_CONTRASTS,
+            ToolName.LIST_JOBS,
+            ToolName.DESCRIBE_ARTIFACTS,
+            ToolName.QUERY_ARTIFACT,
+        }
+        if self.action == "tool_call":
+            if self.tool not in allowed_tools:
+                raise ValueError("tool_call action requires a read-only tool")
+        elif self.tool is not None or self.arguments:
+            raise ValueError("tool and arguments are only valid for tool_call")
         return self
+
+
+class ToolCallRequest(BaseModel):
+    """Typed request passed from the model boundary to a read-only executor."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    tool: ToolName
+    arguments: dict[str, Any] = Field(default_factory=dict, max_length=16)
+
+
+class ToolObservation(BaseModel):
+    """Bounded serialized tool output retained for the next model step."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    tool: ToolName
+    summary: str = Field(min_length=1, max_length=4000)
 
 
 class MainModelOutput(BaseModel):
@@ -280,6 +324,7 @@ class MainModelOutput(BaseModel):
 
 
 MainDecisionModel = Callable[[MainModelContext], object]
+ToolExecutor = Callable[[ToolCallRequest, "GraphState"], object]
 
 
 class DatasetLoadRequest(BaseModel):
@@ -338,6 +383,7 @@ class GraphState(BaseModel):
     validation_report: ValidationReport | None = None
     job_summary: JobSummary | None = None
     grounded_answer: GroundedAnswer | None = None
+    tool_observations: list[ToolObservation] = Field(default_factory=list, max_length=12)
     pending_interrupt: PendingInterrupt | None = None
     step_budget: StepBudget = Field(default_factory=StepBudget)
 
@@ -361,6 +407,7 @@ def build_agent_graph(
     result_querier: ResultQuerier,
     *,
     checkpointer: object | None = None,
+    tool_executor: ToolExecutor | None = None,
 ):
     """Compile the v3 graph around injected model and deterministic data boundaries."""
 
@@ -372,7 +419,7 @@ def build_agent_graph(
     from .nodes.result_qa import result_qa_node
 
     builder = StateGraph(GraphState)
-    builder.add_node("main", main_node(model))
+    builder.add_node("main", main_node(model, tool_executor))
     builder.add_node(
         "analysis",
         analysis_node(dataset_loader, job_submitter),

@@ -40,7 +40,7 @@ def result_qa_node(
                 f"Result QA node does not allow action: {action}"
             )
 
-        if state.step_budget.used_steps >= state.step_budget.max_steps:
+        if state.step_budget.used_model_steps >= state.step_budget.max_model_steps:
             return {
                 "response_text": (
                     "The result question was not processed because the step budget "
@@ -49,7 +49,7 @@ def result_qa_node(
             }
 
         budget = state.step_budget.model_copy(
-            update={"used_steps": state.step_budget.used_steps + 1}
+            update={"used_model_steps": state.step_budget.used_model_steps + 1}
         )
         job_ref = _resolve_job_ref(state)
         if job_ref is None:

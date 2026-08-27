@@ -49,7 +49,7 @@ class DecisionLedger(BaseModel):
 class WorkingSetItem(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    kind: Literal["job", "evidence", "message"]
+    kind: Literal["job", "evidence", "message", "tool"]
     text: str = Field(min_length=1, max_length=1000)
     truncated: bool = False
 
@@ -215,7 +215,14 @@ class ContextAssembler:
 
     def _working_set(self, state: object) -> WorkingSet:
         items: list[WorkingSetItem] = []
+        for observation in (getattr(state, "tool_observations", []) or [])[-self._MAX_WORKING_ITEMS :]:
+            tool = str(getattr(observation, "tool", "tool"))
+            summary = str(getattr(observation, "summary", ""))
+            if summary:
+                items.append(WorkingSetItem(kind="tool", text=f"{tool}: {summary}"[: self._MAX_WORKING_ITEM_CHARS]))
         for job in (getattr(state, "recent_jobs", []) or [])[-self._MAX_WORKING_ITEMS :]:
+            if len(items) >= self._MAX_WORKING_ITEMS:
+                break
             job_id = str(getattr(job, "job_id", ""))
             if job_id:
                 items.append(WorkingSetItem(kind="job", text=f"Job {job_id}"))
@@ -240,7 +247,10 @@ class ContextAssembler:
         return WorkingSet(
             context_version=_version("working", payload),
             items=items,
-            truncated=bool(getattr(state, "recent_jobs", [])) and len(getattr(state, "recent_jobs", [])) > self._MAX_WORKING_ITEMS,
+            truncated=(
+                len(getattr(state, "recent_jobs", []) or []) > self._MAX_WORKING_ITEMS
+                or len(getattr(state, "tool_observations", []) or []) > self._MAX_WORKING_ITEMS
+            ),
         )
 
 

@@ -1,0 +1,161 @@
+from __future__ import annotations
+
+from backend.app.agent.graph import (
+    AgentDecision,
+    GraphState,
+    MainModelOutput,
+    StepBudget,
+    ToolCallRequest,
+    build_agent_graph,
+)
+from backend.app.agent.readonly_tools import MetadataDescription
+from backend.app.agent.schemas import ToolName
+
+
+class _Model:
+    def __init__(self, outputs: list[object]) -> None:
+        self.outputs = list(outputs)
+        self.contexts = []
+
+    def __call__(self, context: object) -> object:
+        self.contexts.append(context)
+        output = self.outputs.pop(0)
+        if isinstance(output, Exception):
+            raise output
+        return output
+
+
+def _state(**overrides: object) -> GraphState:
+    values: dict[str, object] = {
+        "thread_id": "loop-thread",
+        "user_id": "user-1",
+        "user_message": "Inspect the metadata",
+    }
+    values.update(overrides)
+    return GraphState.model_validate(values)
+
+
+def _config() -> dict[str, dict[str, str]]:
+    return {"configurable": {"thread_id": "loop-thread"}}
+
+
+def test_main_loop_executes_read_only_tool_and_reassembles_context() -> None:
+    model = _Model([
+        MainModelOutput(decision=AgentDecision(
+            action="tool_call",
+            tool=ToolName.DESCRIBE_METADATA,
+            arguments={"fields": ["treatment"]},
+        )),
+        MainModelOutput(
+            decision=AgentDecision(action="answer"),
+            answer="The metadata contains the requested treatment field.",
+        ),
+    ])
+    requests: list[ToolCallRequest] = []
+
+    def execute(request: ToolCallRequest, _state: GraphState) -> MetadataDescription:
+        requests.append(request)
+        return MetadataDescription(
+            fields=[], alignment={"counts": "exact"}, sample_count=4
+        )
+
+    result = build_agent_graph(
+        model,
+        lambda _request: [],
+        lambda _request: None,
+        lambda _request: None,
+        lambda _request: None,
+        tool_executor=execute,
+    ).invoke(_state(), _config())
+    state = GraphState.model_validate(result)
+
+    assert state.response_text.startswith("The metadata")
+    assert len(model.contexts) == 2
+    assert requests[0].tool is ToolName.DESCRIBE_METADATA
+    assert requests[0].arguments == {"fields": ["treatment"]}
+    assert model.contexts[1].working_set.items[0].kind == "tool"
+    assert state.step_budget.used_model_steps == 2
+    assert state.step_budget.used_tool_calls == 1
+
+
+def test_tool_budget_is_an_exit_without_an_extra_model_call() -> None:
+    model = _Model([
+        MainModelOutput(decision=AgentDecision(
+            action="tool_call", tool=ToolName.DESCRIBE_METADATA
+        )),
+        MainModelOutput(decision=AgentDecision(action="answer"), answer="unexpected"),
+    ])
+    result = build_agent_graph(
+        model,
+        lambda _request: [],
+        lambda _request: None,
+        lambda _request: None,
+        lambda _request: None,
+        tool_executor=lambda _request, _state: {"fields": []},
+    ).invoke(
+        _state(step_budget=StepBudget(max_tool_calls=1)),
+        _config(),
+    )
+    state = GraphState.model_validate(result)
+
+    assert len(model.contexts) == 1
+    assert state.decision is not None and state.decision.action == "ask_user"
+    assert state.step_budget.used_tool_calls == 1
+    assert "budget" in (state.response_text or "").lower()
+
+
+def test_model_failure_retry_consumes_model_steps_and_then_continues() -> None:
+    model = _Model([
+        {"decision": {"action": "invalid"}},
+        MainModelOutput(decision=AgentDecision(action="answer"), answer="recovered"),
+    ])
+    result = build_agent_graph(
+        model,
+        lambda _request: [],
+        lambda _request: None,
+        lambda _request: None,
+        lambda _request: None,
+    ).invoke(_state(), _config())
+    state = GraphState.model_validate(result)
+
+    assert len(model.contexts) == 2
+    assert state.response_text == "recovered"
+    assert state.step_budget.used_model_steps == 2
+
+
+def test_step_budget_uses_separate_dimensions() -> None:
+    budget = StepBudget(
+        max_model_steps=3,
+        max_tool_calls=4,
+        max_tokens=50,
+        used_model_steps=2,
+        used_tool_calls=1,
+        used_tokens=20,
+    )
+
+    assert budget.max_model_steps == 3
+    assert budget.max_tool_calls == 4
+    assert budget.max_tokens == 50
+    assert budget.used_model_steps == 2
+    assert budget.used_tool_calls == 1
+    assert budget.used_tokens == 20
+
+
+def test_model_token_counter_stays_within_budget() -> None:
+    model = _Model([
+        MainModelOutput(decision=AgentDecision(action="answer"), answer="bounded"),
+    ])
+    result = build_agent_graph(
+        model,
+        lambda _request: [],
+        lambda _request: None,
+        lambda _request: None,
+        lambda _request: None,
+    ).invoke(
+        _state(step_budget=StepBudget(max_tokens=1)),
+        _config(),
+    )
+    state = GraphState.model_validate(result)
+
+    assert state.response_text == "bounded"
+    assert state.step_budget.used_tokens == state.step_budget.max_tokens == 1

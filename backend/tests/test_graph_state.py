@@ -72,7 +72,7 @@ def test_graph_state_keeps_only_bounded_refs_and_context() -> None:
         recent_jobs=[JobRef(job_id="job-0", owner_id="user-1")],
     )
 
-    assert state.step_budget.max_steps == 8
+    assert state.step_budget.max_model_steps == 8
     assert state.dataset_profiles[0].profile.shape == (2, 2)
     assert state.current_job is not None
     assert state.current_job.job_id == "job-1"
@@ -131,7 +131,7 @@ def test_graph_state_rejects_raw_dataset_content() -> None:
 
 def test_step_budget_is_bounded() -> None:
     with pytest.raises(ValidationError):
-        StepBudget(max_steps=2, used_steps=3)
+        StepBudget(max_model_steps=2, used_model_steps=3)
 
 
 def test_pending_interrupt_is_discriminated_and_typed() -> None:
