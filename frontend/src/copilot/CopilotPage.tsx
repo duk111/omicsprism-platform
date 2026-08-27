@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AlertCircle, Bot, ChevronDown, FilePlus2, Menu, MessageSquarePlus, Paperclip, Send, Square, Trash2, Wifi, WifiOff, X } from "lucide-react";
 import { useSearchParams } from "react-router-dom";
-import type { AgentMessageResponse, AgentRunResponse, AgentStreamEvent, AgentThreadResponse, AgentTurnResponse, GraphInterrupt, GraphTurnResult } from "../api-types";
+import type { AgentMessageResponse, AgentRunResponse, AgentStreamEvent, AgentThreadResponse, AgentTurnResponse, GraphInterrupt, GraphPendingInterrupt, GraphTurnResult } from "../api-types";
 import { ApiRequestError } from "../api";
 import { createClientId } from "../clientId";
 import { agentApi, isGraphTurnResult } from "./agentApi";
@@ -12,7 +12,7 @@ import "./copilot.css";
 
 const INPUT_FIELDS = ["counts", "metadata", "metabs", "transcriptome", "metabolome", "group"];
 type Attachment = { id: string; file: File; field: string };
-type PendingGraph = { checkpointTurnId: string; interrupt: GraphInterrupt };
+type PendingGraph = GraphPendingInterrupt;
 
 export default function CopilotPage() {
   const [searchParams, setSearchParams] = useSearchParams();
@@ -37,8 +37,14 @@ export default function CopilotPage() {
   const messageEnd = useRef<HTMLDivElement>(null);
 
   const recover = useCallback(async (threadId: string) => {
-    const [detail, messageList, turnList] = await Promise.all([agentApi.getThread(threadId), agentApi.listMessages(threadId), agentApi.listTurns(threadId)]);
+    const [detail, messageList, turnList, interrupt] = await Promise.all([
+      agentApi.getThread(threadId),
+      agentApi.listMessages(threadId),
+      agentApi.listTurns(threadId),
+      agentApi.getPendingInterrupt(threadId),
+    ]);
     setRun(detail.run); setMessages(messageList.messages); setTurns(turnList.turns);
+    setPendingGraph(interrupt);
   }, []);
 
   const createThread = useCallback(async (focusIds: string[] = []) => {
@@ -79,10 +85,19 @@ export default function CopilotPage() {
       const payload = JSON.parse(event.data) as AgentStreamEvent;
       setConnection("live");
       if (payload.event_type === "message.created") setMessages(current => upsert(current, payload.data as AgentMessageResponse, "message_id"));
-      else setTurns(current => upsert(current, payload.data as AgentTurnResponse, "turn_id"));
+      else if (payload.event_type === "turn.updated") {
+        const turn = payload.data as AgentTurnResponse;
+        setTurns(current => upsert(current, turn, "turn_id"));
+        if (turn.status === "queued" || turn.status === "completed" || turn.status === "failed" || turn.status === "cancelled") {
+          setPendingGraph(current => current?.checkpoint_turn_id === turn.turn_id ? null : current);
+        }
+      } else {
+        setPendingGraph(payload.data as GraphPendingInterrupt | null);
+      }
     };
     source.addEventListener("message.created", accept);
     source.addEventListener("turn.updated", accept);
+    source.addEventListener("interrupt.updated", accept);
     source.onopen = () => setConnection("live");
     source.onerror = () => {
       setConnection(navigator.onLine ? "recovering" : "offline");
@@ -118,7 +133,7 @@ export default function CopilotPage() {
     if (!activeId || !pendingGraph || graphBusy) return;
     setGraphBusy(true); setNotice(null);
     try {
-      const result = await agentApi.resumeTurn(activeId, pendingGraph.checkpointTurnId, request);
+      const result = await agentApi.resumeTurn(activeId, pendingGraph.checkpoint_turn_id, request);
       applyGraphResult(result);
       await recover(activeId);
     } catch (error) { setNotice(errorMessage(error)); }
@@ -152,7 +167,7 @@ export default function CopilotPage() {
   function applyGraphResult(result: GraphTurnResult) {
     setTurns(current => upsert(current, result.turn, "turn_id"));
     if (result.message) setMessages(current => upsert(current, result.message!, "message_id"));
-    setPendingGraph(result.interrupt ? { checkpointTurnId: result.checkpoint_turn_id, interrupt: result.interrupt } : null);
+    setPendingGraph(result.interrupt ? { checkpoint_turn_id: result.checkpoint_turn_id, interrupt: result.interrupt } : null);
   }
 
   function addFiles(list: FileList | null) {

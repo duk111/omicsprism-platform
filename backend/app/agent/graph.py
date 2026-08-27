@@ -269,6 +269,25 @@ class GraphInterrupt(BaseModel):
     payload: PendingInterrupt
 
 
+class GraphPendingInterrupt(BaseModel):
+    """Pending graph input together with the turn that must be resumed."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    checkpoint_turn_id: str = Field(min_length=1, max_length=200)
+    interrupt: GraphInterrupt
+
+
+class AgentStreamEvent(BaseModel):
+    """Public SSE event carrying durable turn, message, or HITL state."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    event_id: str = Field(min_length=1, max_length=500)
+    event_type: Literal["turn.updated", "message.created", "interrupt.updated"]
+    data: AgentTurnResponse | AgentMessageResponse | GraphPendingInterrupt | None
+
+
 class GraphClarificationResumeRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 

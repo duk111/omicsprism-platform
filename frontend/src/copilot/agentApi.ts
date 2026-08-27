@@ -10,6 +10,7 @@ import type {
   AgentTurnResponse,
   GraphClarificationResumeRequest,
   GraphConfirmationResumeRequest,
+  GraphPendingInterrupt,
   GraphTurnResult,
 } from "../api-types";
 
@@ -27,6 +28,8 @@ export const agentApi = {
     apiFetchJson(root, json("POST", { focus_job_ids: focusJobIds })) as Promise<AgentThreadResponse>,
   getThread: (threadId: string) =>
     apiFetchJson(`${root}/${encodeURIComponent(threadId)}`) as Promise<AgentThreadDetailResponse>,
+  getPendingInterrupt: (threadId: string) =>
+    apiFetchJson(`${root}/${encodeURIComponent(threadId)}/pending-interrupt`) as Promise<GraphPendingInterrupt | null>,
   listMessages: (threadId: string, after?: string) =>
     apiFetchJson(`${root}/${encodeURIComponent(threadId)}/messages${after ? `?after=${encodeURIComponent(after)}` : ""}`) as Promise<AgentMessageListResponse>,
   listTurns: (threadId: string, after?: string) =>
@@ -37,7 +40,7 @@ export const agentApi = {
       headers: { "Content-Type": "application/json", "Idempotency-Key": createClientId() },
     }) as Promise<AgentTurnResponse | GraphTurnResult>,
   resumeTurn: (threadId: string, checkpointTurnId: string, request: GraphResumeRequest) => {
-    const run = request.kind === "confirmation" && request.action === "run";
+    const run = request.kind === "confirmation" && request.approve === true;
     return apiFetchJson(
       `${root}/${encodeURIComponent(threadId)}/turns/${encodeURIComponent(checkpointTurnId)}/resume`,
       {

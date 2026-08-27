@@ -11,7 +11,12 @@ from fastapi.testclient import TestClient
 
 from backend.app.agent.api import create_agent_router, project_stream_events
 from backend.app.agent.bootstrap import AgentApiContext
-from backend.app.agent.graph import GraphState
+from backend.app.agent.graph import (
+    ClarificationPayload,
+    GraphInterrupt,
+    GraphPendingInterrupt,
+    GraphState,
+)
 from backend.app.agent.product_store import InMemoryAgentProductStore
 from backend.app.agent.queue import InMemoryAgentTurnQueue
 from backend.app.agent.runtime import AgentRuntime
@@ -319,6 +324,19 @@ def test_stream_projection_contains_only_public_turn_and_message_dtos() -> None:
         assert secret not in payload
 
 
+def test_stream_projection_includes_public_pending_interrupt() -> None:
+    pending = GraphPendingInterrupt(
+        checkpoint_turn_id="turn-1",
+        interrupt=GraphInterrupt(
+            interrupt_id="interrupt-1",
+            payload=ClarificationPayload(question="Choose a treatment"),
+        ),
+    )
+    event = project_stream_events([], [], pending)[0]
+    assert event.event_type == "interrupt.updated"
+    assert event.data == pending
+
+
 def test_message_cursor_and_sse_snapshot_support_disconnect_recovery() -> None:
     context = _context()
     client = _client(context)
@@ -365,6 +383,7 @@ def test_openapi_exposes_agent_contract_without_api_model_dependency() -> None:
     expected_paths = {
         "/api/agent/threads",
         "/api/agent/threads/{thread_id}",
+        "/api/agent/threads/{thread_id}/pending-interrupt",
         "/api/agent/threads/{thread_id}/messages",
         "/api/agent/threads/{thread_id}/turns",
         "/api/agent/threads/{thread_id}/turns/{turn_id}",

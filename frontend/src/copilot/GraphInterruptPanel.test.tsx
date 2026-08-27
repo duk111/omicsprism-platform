@@ -41,16 +41,16 @@ describe("GraphInterruptPanel", () => {
     expect(screen.getByText("Low replicate count")).toBeVisible();
 
     await userEvent.click(screen.getByRole("button", { name: "Run" }));
-    expect(resume).toHaveBeenLastCalledWith({ kind: "confirmation", interrupt_id: "interrupt-2", action: "run" });
+    expect(resume).toHaveBeenLastCalledWith({ kind: "confirmation", interrupt_id: "interrupt-2", plan_id: "plan-1", plan_version: 1, approve: true });
 
     const modify = screen.getByRole("button", { name: "Modify" });
     expect(modify).toBeDisabled();
     await userEvent.type(screen.getByLabelText(/Modification/), "set cutoff to 0.01");
     await userEvent.click(modify);
-    expect(resume).toHaveBeenLastCalledWith({ kind: "confirmation", interrupt_id: "interrupt-2", action: "modify", modification: "set cutoff to 0.01" });
+    expect(resume).toHaveBeenLastCalledWith({ kind: "confirmation", interrupt_id: "interrupt-2", plan_id: "plan-1", plan_version: 1, message: "set cutoff to 0.01" });
 
     await userEvent.click(screen.getByRole("button", { name: "Cancel" }));
-    expect(resume).toHaveBeenLastCalledWith({ kind: "confirmation", interrupt_id: "interrupt-2", action: "cancel" });
+    expect(resume).toHaveBeenLastCalledWith({ kind: "confirmation", interrupt_id: "interrupt-2", plan_id: "plan-1", plan_version: 1, approve: false });
   });
 });
 
@@ -75,6 +75,8 @@ function confirmation(): GraphInterrupt {
       preview: { compare_field: "condition", tested_level: "salt", reference_level: "control", tested_count: 5, reference_count: 4 },
       warnings: [{ code: "LOW_REPLICATES", message: "Low replicate count" }],
       input_fingerprint: "sha256:input",
+      plan_id: "plan-1",
+      plan_version: 1,
     },
   };
 }

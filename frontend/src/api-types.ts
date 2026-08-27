@@ -92,8 +92,8 @@ export interface AgentRunResponse {
 
 export interface AgentStreamEvent {
   event_id: string;
-  event_type: "turn.updated" | "message.created";
-  data: AgentTurnResponse | AgentMessageResponse;
+  event_type: "turn.updated" | "message.created" | "interrupt.updated";
+  data: AgentTurnResponse | AgentMessageResponse | GraphPendingInterrupt | null;
 }
 
 export interface AgentTextBlock {
@@ -257,12 +257,15 @@ export interface ConfirmationPayload {
   preview?: ContrastPreview | null;
   warnings?: Issue[];
   input_fingerprint: string;
+  plan_id: string;
+  plan_version: number;
 }
 
 export interface ContrastPreview {
   compare_field: string;
   tested_level: string;
   reference_level: string;
+  scope?: ScopeSpec;
   same_fields?: string[];
   same_values?: { [key: string]: string };
   tested_count: number;
@@ -273,7 +276,7 @@ export interface ContrastSpec {
   compare_field: string;
   tested_level: string;
   reference_level: string;
-  same_fields?: { [key: string]: string };
+  scope?: ScopeSpec;
 }
 
 export interface DEGParams {
@@ -341,13 +344,20 @@ export interface GraphClarificationResumeRequest {
 export interface GraphConfirmationResumeRequest {
   kind?: "confirmation";
   interrupt_id: string;
-  action: "run" | "modify" | "cancel";
-  modification?: string | null;
+  plan_id: string;
+  plan_version: number;
+  message?: string | null;
+  approve?: boolean | null;
 }
 
 export interface GraphInterrupt {
   interrupt_id: string;
   payload: ClarificationPayload | ConfirmationPayload;
+}
+
+export interface GraphPendingInterrupt {
+  checkpoint_turn_id: string;
+  interrupt: GraphInterrupt;
 }
 
 export interface GraphTurnResult {
@@ -524,6 +534,12 @@ export interface RunFocus {
   preferences?: { [key: string]: string | number | boolean | null };
   draft_analysis_type?: string | null;
   params_source_ref?: string | null;
+}
+
+export interface ScopeSpec {
+  mode: "fixed" | "stratified" | "all" | "unknown";
+  fixed_filters?: { [key: string]: string };
+  blocking_fields?: string[];
 }
 
 export interface UploadedFileInfo {

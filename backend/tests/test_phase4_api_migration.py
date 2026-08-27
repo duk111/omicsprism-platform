@@ -11,7 +11,10 @@ from backend.app.agent.bootstrap import AgentApiContext
 from backend.app.agent.graph import (
     AgentDecision,
     AnalysisExecutionRequest,
+    ClarificationPayload,
     DatasetLoadRequest,
+    GraphInterrupt,
+    GraphPendingInterrupt,
     JobRef,
     MainModelOutput,
     build_agent_graph,
@@ -147,6 +150,12 @@ def test_confirmation_resume_uses_header_and_persists_completed_turn() -> None:
     _drain(context)
     interrupt = _interrupt_body(context, thread)
     assert interrupt["payload"]["kind"] == "confirmation"
+    pending = client.get(
+        f"/api/agent/threads/{thread['thread_id']}/pending-interrupt"
+    )
+    assert pending.status_code == 200
+    assert pending.json()["checkpoint_turn_id"] == body["turn"]["turn_id"]
+    assert pending.json()["interrupt"]["interrupt_id"] == interrupt["interrupt_id"]
     snapshot = context.graph.get_state(
         {"configurable": {"thread_id": thread["thread_id"]}})
     assert snapshot.values["recent_jobs"][0]["job_id"] == "job-existing"

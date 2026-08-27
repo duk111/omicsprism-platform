@@ -311,11 +311,6 @@ class AgentInputBundleResponse(ContractModel):
     created_at: datetime
     files: list[AgentInputFileResponse] = Field(default_factory=list, max_length=6)
 
-class AgentStreamEvent(ContractModel):
-    event_id: str = Field(min_length=1)
-    event_type: Literal["turn.updated", "message.created"]
-    data: AgentTurnResponse | AgentMessageResponse
-
 class VerifierCheck(ContractModel):
     claim_index: int = Field(ge=0)
     number_matches_evidence: bool

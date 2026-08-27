@@ -19,8 +19,10 @@ from .graph import (
     GraphClarificationResumeRequest,
     GraphConfirmationResumeRequest,
     GraphInterrupt,
+    GraphPendingInterrupt,
     GraphResumeRequest,
     GraphState,
+    AgentStreamEvent,
     GraphTurnResult,
     JobRef,
     ConfirmationPayload,
@@ -38,7 +40,6 @@ from .schemas import (
     AgentMessageResponse,
     AgentMessageRole,
     AgentRunResponse,
-    AgentStreamEvent,
     AgentTextBlock,
     AgentThreadCreateRequest,
     AgentThreadDetailResponse,
@@ -127,6 +128,18 @@ def create_agent_router(
             thread=_thread_response(thread),
             run=_run_response(thread.current_run_id, thread_id, focus, version),
         )
+
+    @router.get(
+        "/threads/{thread_id}/pending-interrupt",
+        response_model=GraphPendingInterrupt | None,
+    )
+    def get_pending_interrupt(
+        thread_id: str,
+        user_id: str = Depends(session_dependency),
+        ctx: AgentApiContext = Depends(current_context),
+    ) -> GraphPendingInterrupt | None:
+        _owned_thread(ctx, thread_id, user_id)
+        return _pending_graph_interrupt(ctx, thread_id, user_id)
 
     @router.delete("/threads/{thread_id}", status_code=204)
     def delete_thread(
@@ -510,7 +523,11 @@ def create_agent_router(
             while True:
                 turns = ctx.product_store.list_turns(thread_id=thread_id, user_id=user_id, limit=100)
                 messages = ctx.product_store.list_messages(thread_id=thread_id, user_id=user_id, limit=100)
-                events = project_stream_events(turns, messages)
+                try:
+                    pending_interrupt = _pending_graph_interrupt(ctx, thread_id, user_id, turns=turns)
+                except HTTPException:
+                    pending_interrupt = None
+                events = project_stream_events(turns, messages, pending_interrupt)
                 if not cursor_found and not any(event.event_id == last_event_id for event in events):
                     # 游标已超出窗口时重放当前快照；客户端随后用 REST 快照去重。
                     cursor_found = True
@@ -545,6 +562,7 @@ def create_agent_router(
 def project_stream_events(
     turns: list[AgentTurnRecord],
     messages: list[AgentMessageRecord],
+    pending_interrupt: GraphPendingInterrupt | None = None,
 ) -> list[AgentStreamEvent]:
     projected: list[tuple[datetime, AgentStreamEvent]] = []
     for turn in turns:
@@ -561,6 +579,17 @@ def project_stream_events(
             data=_message_response(message),
         )
         projected.append((message.created_at, event))
+    if pending_interrupt is not None:
+        fingerprint = sha256(pending_interrupt.model_dump_json().encode("utf-8")).hexdigest()
+        event_id = f"interrupt:{pending_interrupt.checkpoint_turn_id}:{fingerprint}"
+        projected.append((
+            datetime.now(timezone.utc),
+            AgentStreamEvent(
+                event_id=event_id,
+                event_type="interrupt.updated",
+                data=pending_interrupt,
+            ),
+        ))
     projected.sort(key=lambda item: (item[0], item[1].event_id))
     return [item[1] for item in projected]
 
@@ -729,6 +758,36 @@ def _snapshot_interrupts(snapshot: object) -> list[GraphInterrupt]:
         for task in getattr(snapshot, "tasks", ())
         for item in task.interrupts
     ]
+
+
+def _pending_graph_interrupt(
+    ctx: AgentApiContext,
+    thread_id: str,
+    user_id: str,
+    *,
+    turns: list[AgentTurnRecord] | None = None,
+) -> GraphPendingInterrupt | None:
+    snapshot, _ = _owned_graph_snapshot(ctx, _graph_config(thread_id), thread_id, user_id)
+    interrupts = _snapshot_interrupts(snapshot)
+    if not interrupts:
+        return None
+    if len(interrupts) != 1:
+        raise _conflict("Agent graph has multiple pending interrupts")
+    records = turns if turns is not None else ctx.product_store.list_turns(
+        thread_id=thread_id,
+        user_id=user_id,
+        limit=100,
+    )
+    # A queued resume still has the previous checkpoint interrupt until the
+    # runtime consumes it; hide that stale input to prevent duplicate submits.
+    active = [turn for turn in records if turn.status is AgentTurnStatus.RUNNING]
+    if not active:
+        return None
+    turn = max(active, key=lambda item: (item.updated_at, item.turn_id))
+    return GraphPendingInterrupt(
+        checkpoint_turn_id=turn.turn_id,
+        interrupt=interrupts[0],
+    )
 
 
 def _queued_graph_turn_result(turn: AgentTurnRecord) -> GraphTurnResult:
