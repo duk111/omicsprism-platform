@@ -106,7 +106,11 @@ def result_qa_node(
                 "response_text": "The requested artifact did not provide verifiable evidence.",
             }
 
-        answer = pipeline.answer(evidence)
+        answer = pipeline.answer(
+            evidence,
+            draft=state.grounded_answer,
+            repair=None,
+        )
         return {
             **base_update,
             "grounded_answer": answer,

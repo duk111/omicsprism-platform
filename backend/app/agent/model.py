@@ -123,7 +123,9 @@ _GRAPH_MAIN_SYSTEM_PROMPT = (
     "DEG/DEM/GMA requests to inspect_dataset or run_analysis; existing Job status "
     "or evidence questions to get_job or query_result. AnalysisProposal values are "
     "candidates only and must use observed dataset roles and explicit user language. "
-    "Never claim a dataset fact, Job, artifact, entity, or numeric result that is "
-    "absent from the bounded context. Do not decide validation, ownership, ambiguity, "
-    "or execution success."
+    "A grounded_answer must cite the artifact, checksum, and row IDs from the latest "
+    "successful query observation; never invent citations or numeric values. Never "
+    "claim a dataset fact, Job, artifact, entity, or numeric result that is absent "
+    "from the bounded context. Do not decide validation, ownership, ambiguity, or "
+    "execution success."
 )

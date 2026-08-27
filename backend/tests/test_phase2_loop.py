@@ -8,8 +8,15 @@ from backend.app.agent.graph import (
     ToolCallRequest,
     build_agent_graph,
 )
+from backend.app.agent.grounding import FALLBACK_TEXT
 from backend.app.agent.readonly_tools import MetadataDescription
-from backend.app.agent.schemas import ToolName
+from backend.app.agent.schemas import (
+    Citation,
+    GroundedAnswer,
+    GroundedClaim,
+    ToolName,
+    ToolResult,
+)
 
 
 class _Model:
@@ -159,3 +166,54 @@ def test_model_token_counter_stays_within_budget() -> None:
 
     assert state.response_text == "bounded"
     assert state.step_budget.used_tokens == state.step_budget.max_tokens == 1
+
+
+def test_grounded_loop_verifies_model_draft_and_falls_back_to_evidence() -> None:
+    evidence = ToolResult(
+        tool=ToolName.QUERY_ARTIFACT,
+        ok=True,
+        rows=[{"_row_id": 7, "Gene": "GeneA", "padj": "0.01"}],
+        truncated=False,
+        row_count=1,
+        artifact="deg_results.csv",
+        checksum="sha256:evidence",
+        filters={},
+        sort=None,
+        error_code=None,
+    )
+    draft = GroundedAnswer(claims=[GroundedClaim(
+        text="GeneA has padj 0.99",
+        citation=Citation(
+            artifact="deg_results.csv",
+            checksum="sha256:evidence",
+            row_ids=[99],
+        ),
+    )])
+    model = _Model([
+        MainModelOutput(decision=AgentDecision(
+            action="tool_call",
+            tool=ToolName.QUERY_ARTIFACT,
+            arguments={"job_id": "job-1", "artifact": "deg_results.csv"},
+        )),
+        MainModelOutput(decision=AgentDecision(
+            action="grounded_answer",
+            grounded_answer=draft,
+        )),
+    ])
+
+    def execute(_request: ToolCallRequest, _state: GraphState) -> ToolResult:
+        return evidence
+
+    result = build_agent_graph(
+        model,
+        lambda _request: [],
+        lambda _request: None,
+        lambda _request: None,
+        lambda _request: None,
+        tool_executor=execute,
+    ).invoke(_state(), _config())
+    state = GraphState.model_validate(result)
+
+    assert state.grounded_answer is not None
+    assert state.grounded_answer.claims[0].text == FALLBACK_TEXT
+    assert state.grounded_answer.claims[1].citation.row_ids == [7]

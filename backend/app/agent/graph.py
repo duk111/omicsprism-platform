@@ -262,6 +262,7 @@ class AgentDecision(BaseModel):
     result_query: ResultQuerySpec | None = None
     question: str | None = Field(default=None, max_length=1000)
     decision_note: str | None = Field(default=None, max_length=240)
+    grounded_answer: GroundedAnswer | None = None
     tool: ToolName | None = None
     arguments: dict[str, Any] = Field(default_factory=dict, max_length=16)
 
@@ -271,6 +272,10 @@ class AgentDecision(BaseModel):
             raise ValueError("query_result action requires result_query")
         if self.action != "query_result" and self.result_query is not None:
             raise ValueError("result_query is only valid for query_result")
+        if self.action == "grounded_answer" and self.grounded_answer is None:
+            raise ValueError("grounded_answer action requires a grounded draft")
+        if self.action not in {"query_result", "grounded_answer"} and self.grounded_answer is not None:
+            raise ValueError("grounded_answer is only valid for result responses")
         allowed_tools = {
             ToolName.DESCRIBE_METADATA,
             ToolName.ENUMERATE_CONTRASTS,

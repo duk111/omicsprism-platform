@@ -6,6 +6,7 @@ from typing import Literal
 
 from pydantic import ValidationError
 
+from ..grounding import GroundedAnswerPipeline
 from ..graph import (
     AgentDecision,
     GraphState,
@@ -17,6 +18,7 @@ from ..graph import (
     ToolObservation,
 )
 from ..context import ContextAssembler, MainModelContext
+from ..schemas import GroundedAnswer, ToolName, ToolResult
 
 
 _MODEL_FALLBACK_QUESTION = (
@@ -34,6 +36,8 @@ def main_node(
         budget = state.step_budget
         observations = list(state.tool_observations)
         working_state = state
+        pipeline = GroundedAnswerPipeline()
+        latest_evidence: ToolResult | None = None
         while True:
             if (
                 budget.used_model_steps >= budget.max_model_steps
@@ -64,10 +68,30 @@ def main_node(
                 return _ask_user_update(_MODEL_FALLBACK_QUESTION, budget, observations)
 
             decision = output.decision
+            if decision.action == "grounded_answer":
+                if latest_evidence is None:
+                    return _ask_user_update(
+                        "I need a verified result artifact before I can answer this question.",
+                        budget,
+                        observations,
+                    )
+                answer = pipeline.answer(
+                    latest_evidence,
+                    draft=decision.grounded_answer,
+                    repair=None,
+                )
+                return {
+                    "decision": decision,
+                    "grounded_answer": answer,
+                    "response_text": _grounded_answer_text(answer),
+                    "step_budget": budget,
+                    "tool_observations": observations,
+                }
             if decision.action != "tool_call":
                 return {
                     "decision": decision,
                     "response_text": _response_text(output),
+                    "grounded_answer": decision.grounded_answer,
                     "step_budget": budget,
                     "tool_observations": observations,
                 }
@@ -90,6 +114,9 @@ def main_node(
             try:
                 result = tool_executor(request, working_state)
                 summary = _serialize_tool_result(result)
+                evidence = _as_grounding_evidence(result)
+                if evidence is not None:
+                    latest_evidence = evidence
             except Exception:
                 summary = "tool execution failed"
             observations.append(ToolObservation(tool=request.tool, summary=summary))
@@ -134,6 +161,7 @@ def _ask_user_update(
             question=question,
             decision_note="deterministic model fallback",
         ),
+        "grounded_answer": None,
         "response_text": question,
         "step_budget": budget,
         "tool_observations": observations or [],
@@ -145,6 +173,30 @@ def _response_text(output: MainModelOutput) -> str | None:
         return output.answer
     if output.decision.action == "ask_user":
         return output.decision.question
+    return None
+
+
+def _grounded_answer_text(answer: GroundedAnswer) -> str:
+    lines: list[str] = []
+    length = 0
+    for claim in answer.claims:
+        extra = len(claim.text) + (1 if lines else 0)
+        if length + extra > 1200:
+            break
+        lines.append(claim.text)
+        length += extra
+    return "\n".join(lines) or "The artifact did not contain evidence rows."
+
+
+def _as_grounding_evidence(result: object) -> ToolResult | None:
+    if not isinstance(result, ToolResult):
+        return None
+    if not result.ok or not result.artifact or not result.checksum:
+        return None
+    if result.tool is ToolName.QUERY_RESULT_EVIDENCE:
+        return result
+    if result.tool is ToolName.QUERY_ARTIFACT:
+        return result.model_copy(update={"tool": ToolName.QUERY_RESULT_EVIDENCE})
     return None
 
 
