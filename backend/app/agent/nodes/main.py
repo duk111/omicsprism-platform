@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from collections.abc import Callable
 from typing import Literal
 
@@ -26,6 +27,9 @@ _MODEL_FALLBACK_QUESTION = (
     "还是查询已有任务或结果。"
 )
 _STEP_BUDGET_QUESTION = "当前请求已达到执行步数上限，请重新描述你要完成的操作。"
+
+
+LOG = logging.getLogger("omicsprism.platform.agent_main")
 
 
 def main_node(
@@ -58,7 +62,15 @@ def main_node(
                     break
                 try:
                     candidate = MainModelOutput.model_validate(model(context))
-                except (Exception, ValidationError):
+                except (Exception, ValidationError) as exc:
+                    LOG.warning(
+                        "model decision rejected",
+                        extra={
+                            "event": "agent.model.rejected",
+                            "error_code": type(exc).__name__,
+                        },
+                        exc_info=True,
+                    )
                     budget = _advance_model_budget(budget, 0)
                     continue
                 budget = _advance_model_budget(budget, _estimate_tokens(candidate))
@@ -139,7 +151,7 @@ def main_node(
 def route_after_main(state: GraphState) -> Literal["analysis", "result_qa", "end"]:
     if state.decision is None:
         return "end"
-    if state.decision.action in {"inspect_dataset", "run_analysis"}:
+    if state.decision.action in {"inspect_dataset", "run_analysis", "propose_plan"}:
         return "analysis"
     if state.decision.action in {"get_job", "query_result"}:
         return "result_qa"

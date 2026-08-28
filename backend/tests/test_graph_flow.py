@@ -214,6 +214,42 @@ def test_schema_failure_retries_once_then_asks_user() -> None:
     assert "无法可靠判断" in (result.response_text or "")
 
 
+def test_propose_plan_routes_through_analysis_validation() -> None:
+    refs = _dataset_refs()
+    loader = RecordingDatasetLoader(refs)
+    model = ScriptedMainModel([MainModelOutput(
+        decision=AgentDecision(
+            action="propose_plan",
+            analysis_type="DEG",
+            proposal=AnalysisProposal(
+                analysis_type="DEG",
+                compare_field="condition",
+                tested_level="salt",
+                reference_level="control",
+                scope=ScopeSpec(mode="all"),
+            ),
+        ),
+    )])
+
+    result = build_agent_graph(
+        model,
+        loader,
+        _submitter(),
+        _reader(),
+        _querier(),
+    ).invoke(
+        _state(
+            user_message="Compare salt and control",
+            dataset_profiles=_profile_refs(refs),
+        ),
+        _config(),
+    )
+
+    assert result["__interrupt__"]
+    assert result["__interrupt__"][0].value["kind"] == "confirmation"
+    assert loader.requests
+
+
 def test_model_error_can_recover_on_the_single_retry() -> None:
     model = ScriptedMainModel([
         RuntimeError("model unavailable"),

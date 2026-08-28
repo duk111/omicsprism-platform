@@ -50,7 +50,11 @@ def analysis_node(
 ) -> Callable[[GraphState], Command]:
     def run(state: GraphState) -> Command:
         decision = state.decision
-        if decision is None or decision.action not in {"inspect_dataset", "run_analysis"}:
+        if decision is None or decision.action not in {
+            "inspect_dataset",
+            "run_analysis",
+            "propose_plan",
+        }:
             action = decision.action if decision is not None else "missing"
             raise NodeCapabilityError(
                 f"Analysis node does not allow action: {action}"
