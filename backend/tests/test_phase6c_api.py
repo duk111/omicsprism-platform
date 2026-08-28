@@ -50,7 +50,11 @@ class _Graph:
 
     def invoke(self, state: GraphState | None, config: dict) -> None:
         thread_id = config["configurable"]["thread_id"]
-        current = state or self.states[thread_id]
+        current = (
+            GraphState.model_validate(state)
+            if state is not None
+            else self.states[thread_id]
+        )
         self.states[thread_id] = current.model_copy(update={"response_text": "done"})
 
     def update_state(self, config: dict, values: dict) -> dict:

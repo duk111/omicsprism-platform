@@ -100,14 +100,15 @@ class AgentRuntime:
         if item.state is None:
             raise ValueError("start work item is missing graph state")
         if attempt == 1:
+            state_values = item.state.model_dump(mode="json")
             self.context.graph.update_state(
                 config,
-                item.state.model_dump(mode="json"),
+                state_values,
             )
-            # A completed checkpoint has an empty `next` tuple.  Explicitly
-            # invoke after replacing it so a later turn on the same thread is
-            # scheduled instead of being finalized as an empty response.
-            self.context.graph.invoke(None, config)
+            # Passing the new state is required when a thread already has a
+            # completed checkpoint; invoke(None, ...) would observe its empty
+            # `next` tuple and skip the graph entirely.
+            self.context.graph.invoke(state_values, config)
             return
         snapshot = self.context.graph.get_state(config)
         if _snapshot_interrupts(snapshot):

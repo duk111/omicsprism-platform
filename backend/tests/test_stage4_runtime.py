@@ -6,11 +6,18 @@ from types import SimpleNamespace
 import pytest
 
 from backend.app.agent.bootstrap import AgentApiContext
-from backend.app.agent.graph import GraphState
+from backend.app.agent.graph import (
+    AgentDecision,
+    GraphState,
+    JobRef,
+    MainModelOutput,
+    build_agent_graph,
+)
 from backend.app.agent.product_store import InMemoryAgentProductStore
 from backend.app.agent.queue import AgentTurnWorkItem, InMemoryAgentTurnQueue
 from backend.app.agent.runtime import AgentRuntime
-from backend.app.agent.schemas import AgentThreadRecord, AgentTurnRecord
+from backend.app.agent.schemas import AgentThreadRecord, AgentTurnRecord, AgentTurnStatus
+from langgraph.checkpoint.memory import InMemorySaver
 
 
 class _Graph:
@@ -127,6 +134,110 @@ def test_runtime_explicitly_invokes_a_new_turn_after_a_completed_checkpoint() ->
         thread_id=turn.thread_id,
         user_id=turn.user_id,
     )
+
+
+def test_runtime_runs_consecutive_turns_with_a_real_langgraph_checkpoint() -> None:
+    class _AnswerModel:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def __call__(self, _context):
+            self.calls += 1
+            return MainModelOutput(
+                decision=AgentDecision(action="answer"),
+                answer=f"answer {self.calls}",
+            )
+
+    model = _AnswerModel()
+    graph = build_agent_graph(
+        model,
+        lambda _request: [],
+        lambda request: JobRef(job_id="job-1", owner_id=request.user_id),
+        lambda _request: (_ for _ in ()).throw(LookupError()),
+        lambda _request: (_ for _ in ()).throw(LookupError()),
+        checkpointer=InMemorySaver(),
+    )
+    context, queue, first_turn = _context(graph)
+    runtime = AgentRuntime(context, queue)
+
+    runtime.run_once(AgentTurnWorkItem(
+        turn_id=first_turn.turn_id,
+        thread_id=first_turn.thread_id,
+        user_id=first_turn.user_id,
+        state=_state(),
+    ).model_dump_json())
+
+    now = datetime.now(timezone.utc)
+    second_turn = first_turn.model_copy(update={
+        "turn_id": "turn-2",
+        "idempotency_key": "turn-key-2",
+        "request_hash": "sha256:request-2",
+        "status": AgentTurnStatus.QUEUED,
+        "attempt": 0,
+        "created_at": now,
+        "updated_at": now,
+    })
+    context.product_store.create_turn(second_turn)
+    runtime.run_once(AgentTurnWorkItem(
+        turn_id=second_turn.turn_id,
+        thread_id=second_turn.thread_id,
+        user_id=second_turn.user_id,
+        state=_state().model_copy(update={"user_message": "second turn"}),
+    ).model_dump_json())
+
+    assert model.calls == 2
+    assert context.product_store.get_turn(
+        turn_id=second_turn.turn_id,
+        user_id=second_turn.user_id,
+    ).status.value == "completed"
+    messages = context.product_store.list_messages(
+        thread_id=first_turn.thread_id,
+        user_id=first_turn.user_id,
+    )
+    assert [block.text for message in messages for block in message.blocks] == [
+        "answer 1",
+        "answer 2",
+    ]
+
+
+def test_runtime_persists_model_boundary_fallback_as_assistant_message() -> None:
+    class _RejectedModel:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def __call__(self, _context):
+            self.calls += 1
+            raise ValueError("invalid structured output")
+
+    model = _RejectedModel()
+    graph = build_agent_graph(
+        model,
+        lambda _request: [],
+        lambda request: JobRef(job_id="job-1", owner_id=request.user_id),
+        lambda _request: (_ for _ in ()).throw(LookupError()),
+        lambda _request: (_ for _ in ()).throw(LookupError()),
+        checkpointer=InMemorySaver(),
+    )
+    context, queue, turn = _context(graph)
+    AgentRuntime(context, queue).run_once(AgentTurnWorkItem(
+        turn_id=turn.turn_id,
+        thread_id=turn.thread_id,
+        user_id=turn.user_id,
+        state=_state(),
+    ).model_dump_json())
+
+    completed = context.product_store.get_turn(
+        turn_id=turn.turn_id,
+        user_id=turn.user_id,
+    )
+    messages = context.product_store.list_messages(
+        thread_id=turn.thread_id,
+        user_id=turn.user_id,
+    )
+    assert completed.status.value == "completed"
+    assert model.calls == 2
+    assert len(messages) == 1
+    assert messages[0].blocks[0].text
 
 
 def test_runtime_retries_after_process_crash_from_same_checkpoint() -> None:
