@@ -94,4 +94,9 @@ def test_state_and_lease_cleanup_migration_drops_zombie_columns() -> None:
 def test_checkpointer_migration_drops_custom_run_state_table() -> None:
     sql = (ROOT / "migrations" / "009_drop_agent_run_state_table.sql").read_text(encoding="utf-8").lower()
 
-    assert "drop table if exists agent_runs cascade" in sql
+    assert "drop table if exists agent_runs;" in sql
+    assert "drop table if exists agent_events;" in sql
+    assert "where con.contype = 'f'" in sql
+    assert "con.confrelid = 'public.agent_runs'::regclass" in sql
+    assert "agent_threads" not in sql.split("drop table if exists agent_runs;")[1]
+    assert "drop table if exists agent_runs cascade" not in sql
