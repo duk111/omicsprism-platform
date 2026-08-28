@@ -81,22 +81,42 @@ class VllmGraphModel:
         try:
             content = response.json()["choices"][0]["message"]["content"]
             payload = json.loads(content)
-            _drop_irrelevant_tool_fields(payload)
+            _drop_irrelevant_action_fields(payload)
             return MainModelOutput.model_validate(payload)
         except (KeyError, IndexError, TypeError, ValueError, ValidationError) as exc:
             raise ModelBoundaryError("vLLM graph response is invalid") from exc
 
 
-def _drop_irrelevant_tool_fields(payload: object) -> None:
-    """Repair optional fields that some structured-output models overproduce."""
+def _drop_irrelevant_action_fields(payload: object) -> None:
+    """Drop semantically incompatible optional fields before typed validation.
+
+    The flat output schema is intentionally shared with vLLM, but the business
+    contract still has action-specific fields. Some models fill optional fields
+    from another branch even when strict JSON generation is enabled.
+    """
 
     if not isinstance(payload, dict):
         return
     decision = payload.get("decision")
-    if not isinstance(decision, dict) or decision.get("action") == "tool_call":
+    if not isinstance(decision, dict):
         return
-    decision["tool"] = None
-    decision["arguments"] = {}
+    action = decision.get("action")
+    if action != "tool_call":
+        decision["tool"] = None
+        decision["arguments"] = {}
+    if action != "query_result":
+        decision["result_query"] = None
+    if action != "grounded_answer":
+        decision["grounded_answer"] = None
+    if action not in {"get_job", "query_result"}:
+        decision["job_id"] = None
+    if action != "ask_user":
+        decision["question"] = None
+    if action not in {"inspect_dataset", "run_analysis", "propose_plan"}:
+        decision["analysis_type"] = None
+        decision["proposal"] = None
+    if action != "answer":
+        payload["answer"] = None
 
 
 def _chat_completions_url(base_url: str) -> str:

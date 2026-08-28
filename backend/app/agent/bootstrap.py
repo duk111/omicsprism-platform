@@ -75,6 +75,7 @@ def _create_postgres_checkpointer(database_url: str) -> PostgresSaver:
             "prepare_threshold": 0,
             "row_factory": dict_row,
         },
+        check=ConnectionPool.check_connection,
         open=False,
     )
     try:

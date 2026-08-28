@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 from time import perf_counter
 
 from langgraph.types import Command
+from psycopg import OperationalError
 
 from .bootstrap import AgentApiContext
 from .graph import GraphInterrupt, GraphState
@@ -13,6 +14,7 @@ from .queue import AgentTurnQueue, AgentTurnWorkItem
 from .schemas import (
     AgentMessageRecord,
     AgentMessageRole,
+    AgentErrorBlock,
     AgentTextBlock,
     AgentTurnStatus,
     AgentTurnRecord,
@@ -20,6 +22,8 @@ from .schemas import (
 
 
 LOG = logging.getLogger("omicsprism.platform.agent_runtime")
+_MAX_TRANSIENT_RETRIES = 1
+_RUNTIME_ERROR_MESSAGE = "The request could not be completed. Please try again."
 
 
 class AgentRuntime:
@@ -76,6 +80,27 @@ class AgentRuntime:
             )
         except AgentResourceNotFound:
             self.queue.ack(raw_item)
+        except OperationalError:
+            if self._retry_transient(item, raw_item):
+                LOG.warning(
+                    "requeued Agent turn after transient database failure",
+                    extra={
+                        "event": "agent.turn.retry",
+                        "thread_id": item.thread_id,
+                        "turn_id": item.turn_id,
+                    },
+                )
+                return
+            self._fail(item, "agent_runtime_failed")
+            self.queue.ack(raw_item)
+            LOG.exception(
+                "agent turn failed after transient retry",
+                extra={
+                    "event": "agent.turn.failed",
+                    "thread_id": item.thread_id,
+                    "turn_id": item.turn_id,
+                },
+            )
         except Exception as exc:
             self._fail(item, "agent_runtime_failed")
             self.queue.ack(raw_item)
@@ -115,6 +140,11 @@ class AgentRuntime:
             return
         if getattr(snapshot, "next", ()):
             self.context.graph.invoke(None, config)
+            return
+        if not _checkpoint_matches(snapshot, item.state):
+            state_values = item.state.model_dump(mode="json")
+            self.context.graph.update_state(config, state_values)
+            self.context.graph.invoke(state_values, config)
 
     def _run_resume(self, item: AgentTurnWorkItem, config: dict) -> None:
         if item.resume is None:
@@ -176,15 +206,65 @@ class AgentRuntime:
                 user_id=item.user_id,
             )
             if current.status is AgentTurnStatus.RUNNING:
+                message = AgentMessageRecord(
+                    message_id=f"assistant-{item.turn_id}",
+                    thread_id=item.thread_id,
+                    run_id=current.run_id,
+                    user_id=item.user_id,
+                    role=AgentMessageRole.ASSISTANT,
+                    blocks=[AgentErrorBlock(
+                        code=error_code,
+                        user_message=_RUNTIME_ERROR_MESSAGE,
+                        retryable=True,
+                    )],
+                    created_at=datetime.now(timezone.utc),
+                )
                 self.context.product_store.finish_turn(
                     turn_id=item.turn_id,
                     user_id=item.user_id,
                     status=AgentTurnStatus.FAILED,
                     now=datetime.now(timezone.utc),
+                    message=message,
                     error_code=error_code,
                 )
         except Exception:
             LOG.exception("unable to mark Agent turn failed", extra={"event": "agent.turn.fail_persist"})
+
+    def _retry_transient(self, item: AgentTurnWorkItem, raw_item: str) -> bool:
+        """Requeue one turn after a recoverable database connection reset."""
+
+        try:
+            turn = self.context.product_store.get_turn(
+                turn_id=item.turn_id,
+                user_id=item.user_id,
+            )
+            if turn.attempt > _MAX_TRANSIENT_RETRIES:
+                return False
+            if turn.status is AgentTurnStatus.RUNNING:
+                self.context.product_store.queue_turn(
+                    turn_id=item.turn_id,
+                    user_id=item.user_id,
+                    now=datetime.now(timezone.utc),
+                )
+            elif turn.status is not AgentTurnStatus.QUEUED:
+                return False
+            self.queue.retry(raw_item)
+            return True
+        except OperationalError:
+            # Leave the reserved item in processing so a process restart can
+            # recover it instead of acknowledging work whose turn state is
+            # unknown.
+            LOG.warning(
+                "could not inspect Agent turn after database failure",
+                extra={"event": "agent.turn.retry_deferred", "turn_id": item.turn_id},
+            )
+            return True
+        except Exception:
+            LOG.exception(
+                "unable to requeue Agent turn after transient failure",
+                extra={"event": "agent.turn.retry_failed", "turn_id": item.turn_id},
+            )
+            return False
 
 
 def _snapshot_interrupts(snapshot: object) -> list[GraphInterrupt]:
@@ -193,3 +273,14 @@ def _snapshot_interrupts(snapshot: object) -> list[GraphInterrupt]:
         for task in getattr(snapshot, "tasks", ())
         for item in task.interrupts
     ]
+
+
+def _checkpoint_matches(snapshot: object, state: GraphState) -> bool:
+    values = getattr(snapshot, "values", None)
+    if not values:
+        return False
+    try:
+        current = GraphState.model_validate(values)
+    except (TypeError, ValueError):
+        return False
+    return current.model_dump(mode="json") == state.model_dump(mode="json")

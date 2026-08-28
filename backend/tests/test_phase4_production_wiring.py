@@ -295,3 +295,48 @@ def test_vllm_graph_model_ignores_spurious_tool_fields_on_answer() -> None:
 
     assert result.decision.action == "answer"
     assert result.answer == "A direct answer."
+
+
+def test_vllm_graph_model_ignores_spurious_action_fields() -> None:
+    def handle(_request: httpx.Request) -> httpx.Response:
+        output = {
+            "decision": {
+                "action": "answer",
+                "result_query": {
+                    "artifact": "wrong-branch.csv",
+                    "filters": {},
+                    "limit": 1,
+                },
+                "grounded_answer": {
+                    "claims": [],
+                },
+                "job_id": "wrong-job",
+                "question": "wrong question",
+                "proposal": {"analysis_type": "DEG"},
+            },
+            "answer": "A direct answer.",
+        }
+        return httpx.Response(200, json={
+            "choices": [{"message": {"content": json.dumps(output)}}]
+        })
+
+    model = VllmGraphModel(
+        base_url="http://model-host:8000/v1",
+        model="Qwen3",
+        client=httpx.Client(transport=httpx.MockTransport(handle)),
+    )
+    context = MainModelContext(
+        user_message="hello",
+        fact_index=FactIndex(context_version="facts.v1:test"),
+        decision_ledger=DecisionLedger(context_version="ledger.v1:test"),
+        working_set=WorkingSet(context_version="working.v1:test"),
+    )
+
+    result = model(context)
+
+    assert result.decision.action == "answer"
+    assert result.decision.result_query is None
+    assert result.decision.grounded_answer is None
+    assert result.decision.job_id is None
+    assert result.decision.question is None
+    assert result.decision.proposal is None

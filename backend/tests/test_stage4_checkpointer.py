@@ -14,7 +14,12 @@ ROOT = Path(__file__).resolve().parents[2]
 class _Pool:
     instances: list["_Pool"] = []
 
+    @staticmethod
+    def check_connection(_conn) -> None:
+        pass
+
     def __init__(self, *_args, **_kwargs) -> None:
+        self.kwargs = _kwargs
         self.opened = False
         self.closed = False
         self.__class__.instances.append(self)
@@ -50,6 +55,7 @@ def test_application_checkpointer_opens_a_pool_without_running_setup(
 
     assert isinstance(saver, _Saver)
     assert _Pool.instances[0].opened
+    assert _Pool.instances[0].kwargs["check"] is bootstrap.ConnectionPool.check_connection
     assert not _Pool.instances[0].closed
     saver.conn.close()
     assert _Pool.instances[0].closed

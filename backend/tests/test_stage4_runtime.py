@@ -4,6 +4,7 @@ from datetime import datetime, timezone
 from types import SimpleNamespace
 
 import pytest
+from psycopg import OperationalError
 
 from backend.app.agent.bootstrap import AgentApiContext
 from backend.app.agent.graph import (
@@ -16,7 +17,7 @@ from backend.app.agent.graph import (
 from backend.app.agent.product_store import InMemoryAgentProductStore
 from backend.app.agent.queue import AgentTurnWorkItem, InMemoryAgentTurnQueue
 from backend.app.agent.runtime import AgentRuntime
-from backend.app.agent.schemas import AgentThreadRecord, AgentTurnRecord, AgentTurnStatus
+from backend.app.agent.schemas import AgentErrorBlock, AgentThreadRecord, AgentTurnRecord, AgentTurnStatus
 from langgraph.checkpoint.memory import InMemorySaver
 
 
@@ -46,6 +47,23 @@ class _Graph:
 class _GraphWithoutNextHint(_Graph):
     def get_state(self, _config: dict) -> SimpleNamespace:
         return SimpleNamespace(values=self.state, next=(), tasks=())
+
+
+class _TransientGraph(_Graph):
+    def __init__(self) -> None:
+        super().__init__()
+        self.fail_once = True
+
+    def invoke(self, input_value: object, config: dict) -> None:
+        if self.fail_once:
+            self.fail_once = False
+            raise OperationalError("connection reset")
+        super().invoke(input_value, config)
+
+
+class _BrokenGraph(_Graph):
+    def update_state(self, _config: dict, values: dict) -> None:
+        raise ValueError("invalid graph state")
 
 
 def _context(graph: _Graph) -> tuple[AgentApiContext, InMemoryAgentTurnQueue, AgentTurnRecord]:
@@ -263,6 +281,58 @@ def test_runtime_retries_after_process_crash_from_same_checkpoint() -> None:
     assert completed.status.value == "completed"
     assert completed.attempt == 2
     assert len(context.product_store.list_messages(thread_id=turn.thread_id, user_id=turn.user_id)) == 1
+
+
+def test_runtime_requeues_once_after_transient_database_failure() -> None:
+    context, queue, turn = _context(_TransientGraph())
+    item = AgentTurnWorkItem(
+        turn_id=turn.turn_id,
+        thread_id=turn.thread_id,
+        user_id=turn.user_id,
+        state=_state(),
+    )
+    queue.enqueue(item)
+    raw = queue.reserve()
+    assert raw is not None
+
+    AgentRuntime(context, queue).run_once(raw)
+
+    queued = context.product_store.get_turn(turn_id=turn.turn_id, user_id=turn.user_id)
+    assert queued.status is AgentTurnStatus.QUEUED
+    assert queued.attempt == 1
+    assert queue.processing == []
+    retry_raw = queue.reserve()
+    assert retry_raw == raw
+
+    AgentRuntime(context, queue).run_once(retry_raw)
+
+    completed = context.product_store.get_turn(turn_id=turn.turn_id, user_id=turn.user_id)
+    assert completed.status is AgentTurnStatus.COMPLETED
+    assert completed.attempt == 2
+    assert len(context.product_store.list_messages(thread_id=turn.thread_id, user_id=turn.user_id)) == 1
+
+
+def test_runtime_persists_visible_error_message_for_failed_turn() -> None:
+    context, queue, turn = _context(_BrokenGraph())
+
+    AgentRuntime(context, queue).run_once(AgentTurnWorkItem(
+        turn_id=turn.turn_id,
+        thread_id=turn.thread_id,
+        user_id=turn.user_id,
+        state=_state(),
+    ).model_dump_json())
+
+    failed = context.product_store.get_turn(turn_id=turn.turn_id, user_id=turn.user_id)
+    messages = context.product_store.list_messages(
+        thread_id=turn.thread_id,
+        user_id=turn.user_id,
+    )
+    assert failed.status is AgentTurnStatus.FAILED
+    assert len(messages) == 1
+    block = messages[0].blocks[0]
+    assert isinstance(block, AgentErrorBlock)
+    assert block.code == "agent_runtime_failed"
+    assert block.retryable is True
 
 
 def test_work_item_requires_exactly_one_operation() -> None:
