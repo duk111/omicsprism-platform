@@ -36,6 +36,11 @@ class _Graph:
         self.state = self.state.model_copy(update={"response_text": "runtime complete"})
 
 
+class _GraphWithoutNextHint(_Graph):
+    def get_state(self, _config: dict) -> SimpleNamespace:
+        return SimpleNamespace(values=self.state, next=(), tasks=())
+
+
 def _context(graph: _Graph) -> tuple[AgentApiContext, InMemoryAgentTurnQueue, AgentTurnRecord]:
     now = datetime.now(timezone.utc)
     store = InMemoryAgentProductStore()
@@ -103,6 +108,25 @@ def test_runtime_completes_queued_turn_and_persists_assistant_message() -> None:
     messages = context.product_store.list_messages(thread_id=turn.thread_id, user_id=turn.user_id)
     assert [block.text for block in messages[0].blocks] == ["runtime complete"]
     assert not queue.processing
+
+
+def test_runtime_explicitly_invokes_a_new_turn_after_a_completed_checkpoint() -> None:
+    context, queue, turn = _context(_GraphWithoutNextHint())
+    item = AgentTurnWorkItem(
+        turn_id=turn.turn_id,
+        thread_id=turn.thread_id,
+        user_id=turn.user_id,
+        state=_state(),
+    )
+
+    AgentRuntime(context, queue).run_once(item.model_dump_json())
+
+    completed = context.product_store.get_turn(turn_id=turn.turn_id, user_id=turn.user_id)
+    assert completed.status.value == "completed"
+    assert context.product_store.list_messages(
+        thread_id=turn.thread_id,
+        user_id=turn.user_id,
+    )
 
 
 def test_runtime_retries_after_process_crash_from_same_checkpoint() -> None:

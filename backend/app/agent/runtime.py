@@ -104,6 +104,11 @@ class AgentRuntime:
                 config,
                 item.state.model_dump(mode="json"),
             )
+            # A completed checkpoint has an empty `next` tuple.  Explicitly
+            # invoke after replacing it so a later turn on the same thread is
+            # scheduled instead of being finalized as an empty response.
+            self.context.graph.invoke(None, config)
+            return
         snapshot = self.context.graph.get_state(config)
         if _snapshot_interrupts(snapshot):
             return

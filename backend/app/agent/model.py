@@ -80,9 +80,23 @@ class VllmGraphModel:
             ) from exc
         try:
             content = response.json()["choices"][0]["message"]["content"]
-            return MainModelOutput.model_validate_json(content)
+            payload = json.loads(content)
+            _drop_irrelevant_tool_fields(payload)
+            return MainModelOutput.model_validate(payload)
         except (KeyError, IndexError, TypeError, ValueError, ValidationError) as exc:
             raise ModelBoundaryError("vLLM graph response is invalid") from exc
+
+
+def _drop_irrelevant_tool_fields(payload: object) -> None:
+    """Repair optional fields that some structured-output models overproduce."""
+
+    if not isinstance(payload, dict):
+        return
+    decision = payload.get("decision")
+    if not isinstance(decision, dict) or decision.get("action") == "tool_call":
+        return
+    decision["tool"] = None
+    decision["arguments"] = {}
 
 
 def _chat_completions_url(base_url: str) -> str:
