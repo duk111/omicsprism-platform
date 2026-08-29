@@ -21,7 +21,7 @@ const FULL_ANALYSIS_LABELS: Record<AnalysisType, string> = {
 
 const DEFAULT_GMA_TRANS_LOG2 = true;
 const DEFAULT_GMA_METAB_LOG2 = true;
-const OMICSPRISM_PACKAGE_URL = "https://github.com/duk111/DeepOmics";
+const OMICSPRISM_PACKAGE_URL = "https://github.com/duk111/omicsprism";
 const OMICSPRISM_ISSUES_URL = `${OMICSPRISM_PACKAGE_URL}/issues`;
 
 const DOWNLOAD_GROUPS = [
