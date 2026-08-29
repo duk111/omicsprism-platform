@@ -262,6 +262,8 @@ def test_model_error_can_recover_on_the_single_retry() -> None:
     result = _run(model)
 
     assert len(model.contexts) == 2
+    assert model.contexts[1].conversation_summary is not None
+    assert "上一次结构化响应未通过校验" in model.contexts[1].conversation_summary
     assert result.response_text == "Recovered answer."
 
 

@@ -27,6 +27,11 @@ _MODEL_FALLBACK_QUESTION = (
     "还是查询已有任务或结果。"
 )
 _STEP_BUDGET_QUESTION = "当前请求已达到执行步数上限，请重新描述你要完成的操作。"
+_MODEL_RETRY_INSTRUCTION = (
+    "上一次结构化响应未通过校验。请重新输出完整对象：如果 action=answer，"
+    "必须填写非空 answer；如果 action=ask_user，必须填写非空 question；"
+    "其他 action 的 answer 必须为 null。"
+)
 
 
 LOG = logging.getLogger("omicsprism.platform.agent_main")
@@ -61,7 +66,16 @@ def main_node(
                 ):
                     break
                 try:
-                    candidate = MainModelOutput.model_validate(model(context))
+                    attempt_context = context
+                    if _attempt:
+                        summary = context.conversation_summary or ""
+                        attempt_context = context.model_copy(update={
+                            "conversation_summary": (
+                                f"{summary}\n{_MODEL_RETRY_INSTRUCTION}"
+                                if summary else _MODEL_RETRY_INSTRUCTION
+                            )[:1200],
+                        })
+                    candidate = MainModelOutput.model_validate(model(attempt_context))
                 except (Exception, ValidationError) as exc:
                     LOG.warning(
                         "model decision rejected",

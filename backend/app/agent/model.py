@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from typing import TYPE_CHECKING
 
 import httpx
@@ -13,6 +14,9 @@ if TYPE_CHECKING:
 
 class ModelBoundaryError(ValueError):
     """The graph model input or output violated its typed boundary."""
+
+
+LOG = logging.getLogger("omicsprism.platform.agent_model")
 
 
 class VllmGraphModel:
@@ -78,12 +82,29 @@ class VllmGraphModel:
             raise httpx.HTTPStatusError(
                 message, request=exc.request, response=exc.response
             ) from exc
+        content: object = None
         try:
             content = response.json()["choices"][0]["message"]["content"]
             payload = json.loads(content)
+            decision = payload.get("decision") if isinstance(payload, dict) else None
+            action = decision.get("action") if isinstance(decision, dict) else None
+            answer_present = isinstance(payload, dict) and "answer" in payload
+            answer = payload.get("answer") if answer_present else None
+            LOG.info(
+                "vLLM model output: action=%r answer_present=%s answer_is_null=%s answer_length=%s",
+                action,
+                answer_present,
+                answer is None,
+                len(answer) if isinstance(answer, str) else 0,
+            )
             _drop_irrelevant_action_fields(payload)
             return MainModelOutput.model_validate(payload)
         except (KeyError, IndexError, TypeError, ValueError, ValidationError) as exc:
+            LOG.warning(
+                "vLLM graph response rejected: raw_content=%s",
+                content[:4000] if isinstance(content, str) else repr(content),
+                exc_info=True,
+            )
             raise ModelBoundaryError("vLLM graph response is invalid") from exc
 
 
@@ -159,6 +180,8 @@ _GRAPH_MAIN_SYSTEM_PROMPT = (
     "candidates only and must use observed dataset roles and explicit user language. "
     "A grounded_answer must cite the artifact, checksum, and row IDs from the latest "
     "successful query observation; never invent citations or numeric values. Never "
+    "When action is answer, answer is required and must be a concise non-empty response. "
+    "When action is ask_user, question is required. For every other action, answer must be null. "
     "claim a dataset fact, Job, artifact, entity, or numeric result that is absent "
     "from the bounded context. Do not decide validation, ownership, ambiguity, or "
     "execution success."

@@ -266,6 +266,18 @@ def test_vllm_graph_model_uses_main_output_schema_and_returns_typed_output() -> 
     )
 
 
+def test_main_output_schema_requires_answer_for_answer_action() -> None:
+    schema = MainModelOutput.model_json_schema()
+
+    assert len(schema["oneOf"]) == 2
+    answer_branch, non_answer_branch = schema["oneOf"]
+    assert answer_branch["required"] == ["decision", "answer"]
+    assert non_answer_branch["required"] == ["decision", "answer"]
+    assert answer_branch["properties"]["answer"]["type"] == "string"
+    assert non_answer_branch["properties"]["answer"]["type"] == "null"
+    assert answer_branch["properties"]["decision"]["allOf"][1]["properties"]["action"]["const"] == "answer"
+
+
 def test_vllm_graph_model_ignores_spurious_tool_fields_on_answer() -> None:
     def handle(_request: httpx.Request) -> httpx.Response:
         output = {

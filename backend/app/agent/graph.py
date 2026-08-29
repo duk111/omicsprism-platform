@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from copy import deepcopy
 from collections.abc import Callable
 from datetime import datetime
 from typing import Annotated, Any, Literal
@@ -30,6 +31,56 @@ from .context import (
     MainModelContext,
     WorkingSet,
 )
+
+
+def _main_output_schema(schema: dict[str, Any]) -> None:
+    """Encode the cross-field answer requirement for structured model output."""
+
+    actions = [
+        "inspect_dataset",
+        "run_analysis",
+        "query_result",
+        "get_job",
+        "ask_user",
+        "tool_call",
+        "grounded_answer",
+        "propose_plan",
+    ]
+    decision_definition = deepcopy(schema["$defs"]["AgentDecision"])
+    answer_decision = {
+        "allOf": [
+            decision_definition,
+            {
+                "properties": {"action": {"const": "answer"}},
+                "required": ["action"],
+            },
+        ]
+    }
+    non_answer_decision = {
+        "allOf": [
+            decision_definition,
+            {
+                "properties": {"action": {"enum": actions}},
+                "required": ["action"],
+            },
+        ]
+    }
+    schema["oneOf"] = [
+        {
+            "properties": {
+                "decision": answer_decision,
+                "answer": {"type": "string", "minLength": 1, "maxLength": 1200},
+            },
+            "required": ["decision", "answer"],
+        },
+        {
+            "properties": {
+                "decision": non_answer_decision,
+                "answer": {"type": "null"},
+            },
+            "required": ["decision", "answer"],
+        },
+    ]
 
 
 AnalysisTypeName = Literal["DEG", "DEM", "GMA"]
@@ -410,6 +461,12 @@ class MainModelOutput(BaseModel):
 
     decision: AgentDecision
     answer: str | None = Field(default=None, min_length=1, max_length=1200)
+
+    @classmethod
+    def model_json_schema(cls, *args: Any, **kwargs: Any) -> dict[str, Any]:
+        schema = super().model_json_schema(*args, **kwargs)
+        _main_output_schema(schema)
+        return schema
 
     @model_validator(mode="after")
     def _answer_matches_action(self) -> "MainModelOutput":
