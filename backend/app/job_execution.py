@@ -197,11 +197,6 @@ class OmicsPrismJobRunner:
                 progress_step=step,
                 estimated_remaining_seconds=self.remaining_seconds(current, progress),
             )
-            synced = self.files.sync_workspace_artifacts(current)
-            if synced:
-                current = self.store.get_internal(job_id)
-                current = self.files.update_job_artifacts(current, synced)
-                self.store.save(current)
 
         with log_context(job_id=job.id, user_id=job.owner_id or None, project_id=job.project_id or job.id):
             LOG.info("start job", extra={"event": "job.start"})
@@ -228,6 +223,14 @@ class OmicsPrismJobRunner:
                     _run_correlation_job(job, self.store, input_dir, output_dir, paths_by_field, report)
 
                 self._raise_if_cancelled(job_id)
+                current = self.store.get_internal(job_id)
+                self.store.update(
+                    current,
+                    status=JobStatus.RUNNING,
+                    progress=95,
+                    progress_step="Indexing result artifacts",
+                    estimated_remaining_seconds=self.remaining_seconds(current, 95),
+                )
                 self.ensure_figure_specs(job_id)
                 artifacts = self.files.sync_workspace_artifacts(job)
                 completed = self.store.get_internal(job_id)
@@ -313,7 +316,7 @@ def _run_differential_job(
     report(85, "Generating differential results")
     _generate_deg_figure_data(output_dir, job.params)
     _zip_directory(output_dir, output_dir / "OmicsPrism_results.zip")
-    report(100, "Analysis complete")
+    report(90, "Analysis output ready")
 
 
 def _run_dem_job(
@@ -356,7 +359,7 @@ def _run_dem_job(
     report(85, "Generating DEM results")
     _generate_dem_figure_data(output_dir, job.params)
     _zip_directory(output_dir, output_dir / "OmicsPrism_results.zip")
-    report(100, "Analysis complete")
+    report(90, "Analysis output ready")
 
 
 def _run_correlation_job(
@@ -409,7 +412,7 @@ def _run_correlation_job(
         engine.run_all(generate_plots=cfg.generate_reports)
     report(85, "Generating visualization outputs")
     _zip_directory(output_dir, output_dir / "OmicsPrism_results.zip")
-    report(100, "Analysis complete")
+    report(90, "Analysis output ready")
 
 
 def _zip_directory(source_dir: Path, zip_path: Path) -> Path:

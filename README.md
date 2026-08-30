@@ -321,6 +321,13 @@ location ^~ /omicsprism/ {
     alias /www/nginx/nginx_html/html/omicsprism/;
     try_files $uri $uri/ /omicsprism/index.html;
 }
+
+# Do not cache the SPA entrypoint; it references hashed assets from each build.
+location = /omicsprism/index.html {
+    alias /www/nginx/nginx_html/html/omicsprism/index.html;
+    add_header Cache-Control "no-cache, no-store, must-revalidate" always;
+    expires -1;
+}
 ```
 
 The frontend uses browser routes rather than in-memory page state. Keep the
