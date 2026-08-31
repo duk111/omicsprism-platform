@@ -26,6 +26,8 @@ from .product_store import AgentProductStore, PostgresAgentProductStore
 from .graph import (
     AnalysisExecutionRequest,
     DatasetLoadRequest,
+    GraphState,
+    ToolCallRequest,
     DatasetLoader,
     JobLookupRequest,
     JobRef,
@@ -36,8 +38,15 @@ from .graph import (
 from .model import VllmGraphModel
 from .nodes.result_qa import job_reader_from_runtime, result_querier_from_runtime
 from .queue import AgentTurnQueue, RedisAgentTurnQueue
-from .schemas import ToolResult
-from .tools import AgentToolRuntime
+from .readonly_tools import (
+    DescribeArtifactsRequest,
+    DescribeMetadataRequest,
+    EnumerateContrastsRequest,
+    ListJobsRequest,
+    QueryArtifactRequest,
+)
+from .schemas import ToolName, ToolResult
+from .tools import AgentInputFile, AgentToolRuntime
 from .validation import DatasetRef
 
 
@@ -235,6 +244,70 @@ def create_agent_api_context(
         )
         return result_querier_from_runtime(runtime)(request)
 
+    def execute_tool(request: ToolCallRequest, state: GraphState) -> object:
+        """Execute only ownership-bound, read-only tools for the graph."""
+        refs = list(state.dataset_profiles)
+        if any(ref.owner_id != state.user_id for ref in refs):
+            raise HTTPException(status_code=404, detail="Dataset not found")
+        loaded = load_datasets(DatasetLoadRequest(
+            user_id=state.user_id,
+            dataset_ids=[ref.dataset_id for ref in refs],
+        ))
+        loaded_by_id = {ref.dataset_id: ref for ref in loaded}
+        if set(loaded_by_id) != {ref.dataset_id for ref in refs}:
+            raise HTTPException(status_code=409, detail="Dataset inputs changed")
+        inputs: dict[str, AgentInputFile] = {}
+        for ref in refs:
+            current = loaded_by_id[ref.dataset_id]
+            if (
+                current.owner_id != state.user_id
+                or current.role != ref.profile.role
+                or current.filename != ref.filename
+                or current.checksum.casefold() != ref.checksum.casefold()
+            ):
+                raise HTTPException(status_code=404, detail="Dataset not found")
+            inputs[current.role] = AgentInputFile(
+                filename=current.filename,
+                content=current.content,
+            )
+        runtime = AgentToolRuntime(
+            user_id=state.user_id,
+            inputs=inputs,
+            job_store=job_store,
+            files=files,
+        )
+        if request.tool is ToolName.DESCRIBE_METADATA:
+            args = DescribeMetadataRequest.model_validate(request.arguments)
+            return runtime.describe_metadata(args.fields)
+        if request.tool is ToolName.ENUMERATE_CONTRASTS:
+            args = EnumerateContrastsRequest.model_validate(request.arguments)
+            return runtime.enumerate_contrasts(
+                compare_field=args.compare_field,
+                scope=args.scope,
+                min_replicates=args.min_replicates,
+            )
+        if request.tool is ToolName.LIST_JOBS:
+            args = ListJobsRequest.model_validate(request.arguments)
+            return runtime.list_jobs(
+                analysis_type=args.analysis_type,
+                limit=args.limit,
+            )
+        if request.tool is ToolName.DESCRIBE_ARTIFACTS:
+            args = DescribeArtifactsRequest.model_validate(request.arguments)
+            return runtime.describe_artifacts(args.job_id)
+        if request.tool is ToolName.QUERY_ARTIFACT:
+            args = QueryArtifactRequest.model_validate(request.arguments)
+            return runtime.query_artifact(
+                args.job_id,
+                args.artifact,
+                filters=args.filters,
+                field_path=args.field_path,
+                sort=args.sort,
+                limit=args.limit,
+                resolve_entity=args.resolve_entity,
+            )
+        raise ValueError(f"unsupported Agent tool: {request.tool}")
+
     checkpointer = _create_postgres_checkpointer(database_url)
     turn_queue = RedisAgentTurnQueue(
         settings.redis_url,
@@ -248,6 +321,7 @@ def create_agent_api_context(
             read_job,
             query_result,
             checkpointer=checkpointer,
+            tool_executor=execute_tool,
         )
     except Exception:
         checkpointer.conn.close()

@@ -13,8 +13,12 @@ from backend.app.agent import bootstrap
 from backend.app.agent.graph import (
     AnalysisExecutionRequest,
     DatasetLoadRequest,
+    DatasetProfileRef,
+    GraphState,
+    ToolCallRequest,
     MainModelOutput,
 )
+from backend.app.agent.dataset_profile import build_dataset_profiles
 from backend.app.agent.model import VllmGraphModel
 from backend.app.agent.context import DecisionLedger, FactIndex, MainModelContext, WorkingSet
 from backend.app.agent.param_resolver import ContrastSpec, DEGParams
@@ -26,6 +30,7 @@ from backend.app.agent.schemas import (
     AgentInputBundleRecord,
     AgentInputFileRecord,
     AgentThreadRecord,
+    ToolName,
 )
 from backend.app.models import FileArtifactKind, UploadedFileInfo
 from backend.app.settings import AppSettings
@@ -221,6 +226,90 @@ def test_context_builds_one_graph_with_owned_deterministic_adapters(
     assert executor.enqueued == [first.job_id]
     assert files.copies == [(first.job_id, "file-1")]
     assert jobs.records[first.job_id].owner_id == "user-1"
+
+
+def test_production_tool_executor_loads_owned_inputs_and_dispatches_read_only_tool(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    metadata = b"sample_id,condition\ns1,salt\ns2,salt\ns3,control\ns4,control\n"
+    store = _product_store()
+    store.append_input_file(AgentInputFileRecord(
+        file_id="file-2",
+        bundle_id="bundle-1",
+        user_id="user-1",
+        field="metadata",
+        filename="metadata.csv",
+        storage_key="agent-inputs/bundle-1/metadata.csv",
+        checksum="sha256:" + sha256(metadata).hexdigest(),
+        content_type="text/csv",
+        size_bytes=len(metadata),
+        created_at=datetime.now(timezone.utc),
+    ))
+    files = _Files()
+    files.payloads["agent-inputs/bundle-1/metadata.csv"] = metadata
+    captured: list[dict[str, object]] = []
+    _patch_stores(monkeypatch, store)
+    monkeypatch.setattr(bootstrap, "VllmGraphModel", lambda **_kwargs: object())
+    monkeypatch.setattr(bootstrap, "_create_postgres_checkpointer", lambda _url: object())
+    monkeypatch.setattr(
+        bootstrap,
+        "build_agent_graph",
+        lambda *_args, **kwargs: captured.append(kwargs) or object(),
+    )
+
+    context = bootstrap.create_agent_api_context(
+        _settings(
+            agent_model_url="http://model-host:8000",
+            agent_model_name="model",
+        ),
+        files=files,
+        job_store=_Jobs(),
+        job_executor=_Executor(),
+    )
+
+    assert context is not None
+    executor = captured[0]["tool_executor"]
+    assert callable(executor)
+    profiles = {
+        item.role: item
+        for item in build_dataset_profiles({
+            "counts": ("counts.csv", COUNTS),
+            "metadata": ("metadata.csv", metadata),
+        })
+    }
+    refs = [
+        DatasetProfileRef(
+            dataset_id=file_id,
+            owner_id="user-1",
+            filename=filename,
+            checksum=checksum,
+            profile=profiles[role],
+        )
+        for file_id, role, filename, checksum in [
+            ("file-1", "counts", "counts.csv", "sha256:" + sha256(COUNTS).hexdigest()),
+            ("file-2", "metadata", "metadata.csv", "sha256:" + sha256(metadata).hexdigest()),
+        ]
+    ]
+    state = GraphState(
+        thread_id="thread-1",
+        user_id="user-1",
+        user_message="inspect metadata",
+        dataset_profiles=refs,
+    )
+    result = executor(
+        ToolCallRequest(tool=ToolName.DESCRIBE_METADATA, arguments={}),
+        state,
+    )
+    assert result.ok is True
+    assert [field.field for field in result.fields] == ["sample_id", "condition"]
+
+    foreign_state = state.model_copy(update={"user_id": "user-2"})
+    with pytest.raises(HTTPException) as exc_info:
+        executor(
+            ToolCallRequest(tool=ToolName.DESCRIBE_METADATA, arguments={}),
+            foreign_state,
+        )
+    assert exc_info.value.status_code == 404
 
 
 def test_vllm_graph_model_uses_main_output_schema_and_returns_typed_output() -> None:
