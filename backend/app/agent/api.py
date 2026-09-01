@@ -165,6 +165,55 @@ def create_agent_router(
             next_cursor=None,
         )
 
+    @router.post(
+        "/threads/{thread_id}/job-waits/{wait_id}/cancel",
+        response_model=AgentJobWaitResponse,
+    )
+    def cancel_job_wait(
+        thread_id: str,
+        wait_id: str,
+        user_id: str = Depends(session_dependency),
+        ctx: AgentApiContext = Depends(current_context),
+    ) -> AgentJobWaitResponse:
+        _owned_thread(ctx, thread_id, user_id)
+        waits = ctx.product_store.list_job_waits(
+            thread_id=thread_id,
+            user_id=user_id,
+            limit=100,
+        )
+        wait = next((item for item in waits if item.wait_id == wait_id), None)
+        if wait is None:
+            raise _not_found()
+        try:
+            cancelled = ctx.product_store.cancel_job_wait(
+                job_id=wait.job_id,
+                user_id=user_id,
+                now=datetime.now(timezone.utc),
+            )
+        except AgentResourceNotFound as exc:
+            raise _not_found() from exc
+        if cancelled.continuation_turn_id is not None:
+            try:
+                continuation = ctx.product_store.get_turn(
+                    turn_id=cancelled.continuation_turn_id,
+                    user_id=user_id,
+                )
+                if continuation.thread_id == thread_id and continuation.status in {
+                    AgentTurnStatus.QUEUED,
+                    AgentTurnStatus.RUNNING,
+                }:
+                    ctx.product_store.cancel_turn(
+                        turn_id=continuation.turn_id,
+                        user_id=user_id,
+                        now=datetime.now(timezone.utc),
+                        error_code="agent_wait_cancelled",
+                    )
+            except (AgentResourceNotFound, TurnConflict):
+                # The runtime may have claimed or completed the continuation
+                # concurrently; its wait-state check remains authoritative.
+                pass
+        return _job_wait_response(ctx, cancelled)
+
     @router.delete("/threads/{thread_id}", status_code=204)
     def delete_thread(
         thread_id: str,

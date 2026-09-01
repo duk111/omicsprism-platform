@@ -83,12 +83,20 @@ class AgentRuntime:
                 retry_count=max(0, turn.attempt - 1),
             )
             config = {"configurable": {"thread_id": item.thread_id}}
+            if item.continuation is not None and self._continuation_cancelled(item):
+                self._cancel_claimed_turn(item, turn)
+                self.queue.ack(raw_item)
+                return
             if item.continuation is not None:
                 self._run_continuation(item, config, turn.run_id)
             elif item.input is not None or item.state is not None:
                 self._run_start(item, config, turn.attempt, turn.run_id)
             else:
                 self._run_resume(item, config)
+            if item.continuation is not None and self._continuation_cancelled(item):
+                self._cancel_claimed_turn(item, turn)
+                self.queue.ack(raw_item)
+                return
             finalized = self._finalize(item, turn)
             if finalized and item.continuation is not None:
                 self._complete_job_wait(item)
@@ -410,6 +418,38 @@ class AgentRuntime:
             status=status_map[event.status.value],
             now=datetime.now(timezone.utc),
         )
+
+    def _continuation_cancelled(self, item: AgentTurnWorkItem) -> bool:
+        event = item.continuation
+        if event is None:
+            return False
+        try:
+            wait = self.context.product_store.get_job_wait(
+                job_id=event.job_id,
+                user_id=event.user_id,
+            )
+        except AgentResourceNotFound:
+            return False
+        return wait.status in {
+            AgentJobWaitStatus.CANCELLED,
+            AgentJobWaitStatus.EXPIRED,
+        }
+
+    def _cancel_claimed_turn(
+        self,
+        item: AgentTurnWorkItem,
+        turn: AgentTurnRecord,
+    ) -> None:
+        try:
+            self.context.product_store.cancel_turn(
+                turn_id=turn.turn_id,
+                user_id=turn.user_id,
+                now=datetime.now(timezone.utc),
+                error_code="agent_wait_cancelled",
+            )
+        except TurnConflict:
+            # A concurrent delivery or API cancellation already finalized it.
+            pass
 
     def _invoke_graph(self, item: AgentTurnWorkItem, *args):
         with log_context(

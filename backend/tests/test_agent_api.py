@@ -409,6 +409,38 @@ def test_job_wait_endpoint_is_ownership_bound() -> None:
     assert client.get(f"/api/agent/threads/{thread_id}/job-waits").status_code == 404
 
 
+def test_cancel_job_wait_marks_wait_cancelled_without_cancelling_job() -> None:
+    context = _context()
+    client = _client(context)
+    thread_id = _create_thread(client, "user-a")["thread_id"]
+    now = datetime.now(timezone.utc)
+    wait = AgentJobWaitRecord(
+        wait_id="wait-cancel",
+        thread_id=thread_id,
+        user_id="user-a",
+        turn_id="turn-1",
+        run_id="run-1",
+        trace_id="trace-1",
+        job_id="job-cancel",
+        created_at=now,
+        updated_at=now,
+    )
+    context.product_store.create_job_wait(wait)
+    context.job_store.owners["job-cancel"] = "user-a"
+    context.job_store.records["job-cancel"] = JobRecord(
+        id="job-cancel", project_name="test", analysis_type=AnalysisType.DEG,
+        status="running", created_at=now, updated_at=now, progress=50,
+    )
+
+    response = client.post(
+        f"/api/agent/threads/{thread_id}/job-waits/{wait.wait_id}/cancel",
+    )
+    assert response.status_code == 200
+    assert response.json()["wait_status"] == "cancelled"
+    assert response.json()["job_status"] == "running"
+    assert context.job_store.records["job-cancel"].status.value == "running"
+
+
 def test_message_cursor_and_sse_snapshot_support_disconnect_recovery() -> None:
     context = _context()
     client = _client(context)
@@ -457,6 +489,7 @@ def test_openapi_exposes_agent_contract_without_api_model_dependency() -> None:
         "/api/agent/threads/{thread_id}",
         "/api/agent/threads/{thread_id}/pending-interrupt",
         "/api/agent/threads/{thread_id}/job-waits",
+        "/api/agent/threads/{thread_id}/job-waits/{wait_id}/cancel",
         "/api/agent/threads/{thread_id}/messages",
         "/api/agent/threads/{thread_id}/turns",
         "/api/agent/threads/{thread_id}/turns/{turn_id}",

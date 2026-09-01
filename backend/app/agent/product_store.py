@@ -132,6 +132,11 @@ class AgentProductStore(Protocol):
     ) -> list[AgentJobWaitRecord]:
         ...
 
+    def cancel_job_wait(
+        self, *, job_id: str, user_id: str, now: datetime,
+    ) -> AgentJobWaitRecord:
+        ...
+
     def save_job_completion_event(self, event: AgentJobCompletionEvent) -> None:
         ...
 
@@ -484,6 +489,24 @@ class InMemoryAgentProductStore:
         ]
         records.sort(key=lambda item: (item.updated_at, item.wait_id))
         return records[-bounded:]
+
+    def cancel_job_wait(
+        self, *, job_id: str, user_id: str, now: datetime,
+    ) -> AgentJobWaitRecord:
+        wait = self.get_job_wait(job_id=job_id, user_id=user_id)
+        if wait.status in {
+            AgentJobWaitStatus.COMPLETED,
+            AgentJobWaitStatus.FAILED,
+            AgentJobWaitStatus.CANCELLED,
+            AgentJobWaitStatus.EXPIRED,
+        }:
+            return wait
+        updated = wait.model_copy(update={
+            "status": AgentJobWaitStatus.CANCELLED,
+            "updated_at": now,
+        })
+        self._job_waits[wait.wait_id] = updated.model_dump(mode="json")
+        return updated
 
     def save_job_completion_event(self, event: AgentJobCompletionEvent) -> None:
         self.get_thread(thread_id=event.thread_id, user_id=event.user_id)
@@ -1253,6 +1276,30 @@ class PostgresAgentProductStore:
                 (thread_id, user_id, bounded),
             ).fetchall()
         return [_job_wait_from_row(row) for row in reversed(rows)]
+
+    def cancel_job_wait(
+        self, *, job_id: str, user_id: str, now: datetime,
+    ) -> AgentJobWaitRecord:
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                update agent_job_waits
+                set status = case when status in
+                    ('completed', 'failed', 'cancelled', 'expired')
+                    then status else 'cancelled' end,
+                    updated_at = case when status in
+                    ('completed', 'failed', 'cancelled', 'expired')
+                    then updated_at else %s end
+                where job_id = %s and user_id = %s
+                returning wait_id, thread_id, user_id, turn_id, run_id, trace_id,
+                          job_id, status, continuation_turn_id, expires_at,
+                          created_at, updated_at
+                """,
+                (now, job_id, user_id),
+            ).fetchone()
+        if row is None:
+            raise AgentResourceNotFound(job_id)
+        return _job_wait_from_row(row)
 
     def save_job_completion_event(self, event: AgentJobCompletionEvent) -> None:
         Jsonb = _jsonb_type()

@@ -217,6 +217,61 @@ def test_runtime_executes_job_continuation_and_closes_wait() -> None:
     assert wait.status is AgentJobWaitStatus.COMPLETED
 
 
+def test_cancelled_job_wait_prevents_continuation_graph_execution() -> None:
+    context, queue, turn = _context(_Graph())
+    now = datetime.now(timezone.utc)
+    store = context.product_store
+    running = store.claim_turn(turn_id=turn.turn_id, user_id=turn.user_id, now=now)
+    store.finish_turn(
+        turn_id=running.turn_id,
+        user_id=running.user_id,
+        status=AgentTurnStatus.COMPLETED,
+        now=now,
+    )
+    store.create_job_wait(AgentJobWaitRecord(
+        wait_id="wait-job-cancelled",
+        thread_id="thread-1",
+        user_id="user-1",
+        turn_id=turn.turn_id,
+        run_id=turn.run_id,
+        trace_id=turn.trace_id,
+        job_id="job-cancelled",
+        created_at=now,
+        updated_at=now,
+    ))
+    event = AgentJobCompletionEvent(
+        event_id=completion_event_id("job-cancelled", JobStatus.SUCCEEDED),
+        job_id="job-cancelled",
+        thread_id="thread-1",
+        user_id="user-1",
+        turn_id=turn.turn_id,
+        run_id=turn.run_id,
+        trace_id=turn.trace_id,
+        status=JobStatus.SUCCEEDED,
+        occurred_at=now,
+    )
+    store.save_job_completion_event(event)
+    continuation = store.prepare_job_continuation(event, now=now)
+    assert continuation is not None
+    store.cancel_job_wait(job_id=event.job_id, user_id=event.user_id, now=now)
+
+    AgentRuntime(context, queue).run_once(AgentTurnWorkItem(
+        turn_id=continuation.turn_id,
+        thread_id="thread-1",
+        user_id="user-1",
+        trace_id="trace-1",
+        continuation=event,
+    ).model_dump_json())
+
+    assert store.get_turn(
+        turn_id=continuation.turn_id, user_id="user-1"
+    ).status is AgentTurnStatus.CANCELLED
+    assert store.get_job_wait(
+        job_id=event.job_id, user_id=event.user_id
+    ).status is AgentJobWaitStatus.CANCELLED
+    assert store.list_messages(thread_id="thread-1", user_id="user-1") == []
+
+
 def test_runtime_does_not_call_model_for_failed_job_continuation() -> None:
     context, queue, turn = _context(_Graph())
     now = datetime.now(timezone.utc)

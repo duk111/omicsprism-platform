@@ -28,6 +28,7 @@ export default function CopilotPage() {
   const [loading, setLoading] = useState(true);
   const [sending, setSending] = useState(false);
   const [canceling, setCanceling] = useState(false);
+  const [cancelingWaitId, setCancelingWaitId] = useState<string | null>(null);
   const [pendingGraph, setPendingGraph] = useState<PendingGraph | null>(null);
   const [graphBusy, setGraphBusy] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
@@ -156,6 +157,17 @@ export default function CopilotPage() {
     finally { setCanceling(false); }
   }
 
+  async function cancelJobWait(wait: AgentJobWaitResponse) {
+    if (!activeId || cancelingWaitId) return;
+    setCancelingWaitId(wait.wait_id); setNotice(null);
+    try {
+      const cancelled = await agentApi.cancelJobWait(activeId, wait.wait_id);
+      setJobWaits(current => upsert(current, cancelled, "wait_id"));
+      setNotice(`Stopped waiting for job ${wait.job_id.slice(0, 12)}.`);
+    } catch (error) { setNotice(errorMessage(error)); }
+    finally { setCancelingWaitId(null); }
+  }
+
   async function deleteConversation(threadId: string) {
     if (!window.confirm("Delete this conversation and its stored history?")) return;
     try {
@@ -198,7 +210,7 @@ export default function CopilotPage() {
       <div className="message-scroll" aria-live="polite">
         {loading ? <EmptyState loading /> : messages.length === 0 ? <EmptyState /> : messages.map(message => <article className={`copilot-message ${message.role}`} key={message.message_id}><div className="message-author">{message.role === "assistant" ? <Bot size={16} /> : null}{message.role === "assistant" ? "Copilot" : "You"}</div><div className="message-body"><MessageBlocks message={message} onRetry={() => setDraft(latestUserText(messages))} /></div></article>)}
         {pendingGraph && <GraphInterruptPanel interrupt={pendingGraph.interrupt} busy={graphBusy} onResume={request => void resumeGraph(request)} />}
-        {activeJobWaits.map(wait => <JobWaitingState key={wait.wait_id} wait={wait} />)}
+        {activeJobWaits.map(wait => <JobWaitingState key={wait.wait_id} wait={wait} canceling={cancelingWaitId === wait.wait_id} onCancel={() => void cancelJobWait(wait)} />)}
         {pendingTurn && !pendingGraph && <div className="working-state"><span /><span /><span /><em>Working on your request</em><button type="button" className="stop-request" disabled={canceling || !pendingTurnRecord} onClick={() => void cancelPendingTurn()} title="Stop request"><Square size={14} />Stop</button></div>}
         {notice && <div className="copilot-notice" role="alert"><AlertCircle size={17} /><span>{notice}</span><button type="button" aria-label="Dismiss" onClick={() => setNotice(null)}><X size={16} /></button></div>}
         <div ref={messageEnd} />
@@ -214,7 +226,7 @@ export default function CopilotPage() {
   </main>;
 }
 
-function JobWaitingState({ wait }: { wait: AgentJobWaitResponse }) {
+function JobWaitingState({ wait, canceling, onCancel }: { wait: AgentJobWaitResponse; canceling: boolean; onCancel: () => void }) {
   const queued = wait.job_status === "queued";
   const running = wait.job_status === "running";
   const failed = wait.job_status === "failed" || wait.job_status === "cancelled";
@@ -233,6 +245,7 @@ function JobWaitingState({ wait }: { wait: AgentJobWaitResponse }) {
     <div className="job-waiting-heading"><Icon size={17} className={wait.wait_status === "resume_queued" || running ? "spinning" : ""} /><div><strong>{title}</strong><small>Job {wait.job_id.slice(0, 12)}...</small></div>{progress != null && <b>{progress}%</b>}</div>
     {progress != null && <div className="job-progress" aria-label={`Analysis progress ${progress}%`}><span style={{ width: `${progress}%` }} /></div>}
     <p>{wait.progress_step || (failed ? wait.error || "The analysis job did not complete successfully." : "The Copilot will continue when the analysis is complete.")}</p>
+    {!failed && <button type="button" className="stop-request" disabled={canceling} onClick={onCancel} title="Stop waiting for this job"><Square size={14} />{canceling ? "Stopping..." : "Stop waiting"}</button>}
   </section>;
 }
 

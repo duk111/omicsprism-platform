@@ -2,6 +2,7 @@ import { apiFetch, apiFetchJson, apiUrl } from "../api";
 import { createClientId } from "../clientId";
 import type {
   AgentInputBundleResponse,
+  AgentJobWaitResponse,
   AgentJobWaitListResponse,
   AgentMessageListResponse,
   AgentThreadDetailResponse,
@@ -33,6 +34,8 @@ export const agentApi = {
     apiFetchJson(`${root}/${encodeURIComponent(threadId)}/pending-interrupt`) as Promise<GraphPendingInterrupt | null>,
   listJobWaits: (threadId: string) =>
     apiFetchJson(`${root}/${encodeURIComponent(threadId)}/job-waits`) as Promise<AgentJobWaitListResponse>,
+  cancelJobWait: (threadId: string, waitId: string) =>
+    apiFetchJson(`${root}/${encodeURIComponent(threadId)}/job-waits/${encodeURIComponent(waitId)}/cancel`, { method: "POST" }) as Promise<AgentJobWaitResponse>,
   listMessages: (threadId: string, after?: string) =>
     apiFetchJson(`${root}/${encodeURIComponent(threadId)}/messages${after ? `?after=${encodeURIComponent(after)}` : ""}`) as Promise<AgentMessageListResponse>,
   listTurns: (threadId: string, after?: string) =>
