@@ -16,6 +16,7 @@ from .param_resolver import (
     ScopeSpec,
 )
 from .schemas import (
+    AgentMessageBlock,
     AgentJobWaitResponse,
     AgentMessageResponse,
     AgentTurnResponse,
@@ -560,6 +561,9 @@ class GraphState(BaseModel):
     recent_jobs: list[JobRef] = Field(default_factory=list, max_length=20)
     decision: AgentDecision | None = None
     response_text: str | None = Field(default=None, max_length=1200)
+    # Nodes populate this only from typed, ownership-bound facts. Runtime
+    # persists the blocks as-is and must never infer semantics from text.
+    response_blocks: list[AgentMessageBlock] = Field(default_factory=list, max_length=20)
     clarification_answer: str | None = Field(default=None, max_length=1000)
     resolved_request: ResolvedRequest | None = None
     validation_report: ValidationReport | None = None

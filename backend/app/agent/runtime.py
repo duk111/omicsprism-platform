@@ -16,6 +16,7 @@ from .job_events import AgentJobWaitStatus
 from .reconciliation import AgentJobEventReconciler
 from .queue import AgentTurnQueue, AgentTurnWorkItem
 from .schemas import (
+    AgentMessageBlock,
     AgentMessageRecord,
     AgentMessageRole,
     AgentErrorBlock,
@@ -23,6 +24,8 @@ from .schemas import (
     AgentTurnStatus,
     AgentTurnRecord,
 )
+from .message_blocks import job_block, job_block_from_summary, text_block
+from ..models import JobStatus
 
 
 LOG = logging.getLogger("omicsprism.platform.agent_runtime")
@@ -278,6 +281,7 @@ class AgentRuntime:
             # Per-turn state must never leak into the next user message.
             "decision": None,
             "response_text": None,
+            "response_blocks": [],
             "clarification_answer": None,
             "resolved_request": None,
             "validation_report": None,
@@ -391,6 +395,7 @@ class AgentRuntime:
                 JobRef(job_id=event.job_id, owner_id=event.user_id),
             ][-20:],
             "response_text": None,
+            "response_blocks": [],
             "decision": None,
             "pending_interrupt": None,
             "job_summary": None,
@@ -405,6 +410,17 @@ class AgentRuntime:
                     f"Analysis job {event.job_id} {outcome}{detail}. "
                     "No result interpretation was generated."
                 ),
+                "response_blocks": [
+                    text_block(
+                        f"Analysis job {event.job_id} {outcome}{detail}. "
+                        "No result interpretation was generated."
+                    ),
+                    job_block(
+                        event.job_id,
+                        JobStatus(event.status.value),
+                        progress=100 if event.status.value == "succeeded" else 0,
+                    ),
+                ],
             })
             self.context.graph.update_state(config, updated.model_dump(mode="json"))
             return
@@ -422,6 +438,10 @@ class AgentRuntime:
                         "response_text": (
                             f"Analysis job {event.job_id} succeeded, but no result artifacts are available for interpretation."
                         ),
+                        "response_blocks": _completion_notice_blocks(
+                            summary,
+                            f"Analysis job {event.job_id} succeeded, but no result artifacts are available for interpretation.",
+                        ),
                     })
                     self.context.graph.update_state(config, updated.model_dump(mode="json"))
                     return
@@ -430,6 +450,9 @@ class AgentRuntime:
                     "response_text": (
                         f"Analysis job {event.job_id} succeeded, but its result metadata is unavailable."
                     ),
+                    "response_blocks": [text_block(
+                        f"Analysis job {event.job_id} succeeded, but its result metadata is unavailable."
+                    )],
                 })
                 self.context.graph.update_state(config, updated.model_dump(mode="json"))
                 return
@@ -504,6 +527,9 @@ class AgentRuntime:
             return False
         if not state.response_text:
             raise ValueError("completed graph state is missing response_text")
+        blocks: list[AgentMessageBlock] = list(state.response_blocks)
+        if not blocks:
+            blocks = [AgentTextBlock(text=state.response_text)]
         message = AgentMessageRecord(
             message_id=f"assistant-{item.turn_id}",
             thread_id=item.thread_id,
@@ -511,7 +537,7 @@ class AgentRuntime:
             trace_id=item.trace_id,
             user_id=item.user_id,
             role=AgentMessageRole.ASSISTANT,
-            blocks=[AgentTextBlock(text=state.response_text)],
+            blocks=blocks,
             created_at=datetime.now(timezone.utc),
         )
         try:
@@ -635,6 +661,14 @@ class AgentRuntime:
             retry_count=retry_count,
             error_code=error_code,
         )
+
+
+def _completion_notice_blocks(summary: JobSummary, text: str) -> list[AgentMessageBlock]:
+    blocks: list[AgentMessageBlock] = [text_block(text)]
+    job = job_block_from_summary(summary)
+    if job is not None:
+        blocks.append(job)
+    return blocks
 
 
 def _snapshot_interrupts(snapshot: object) -> list[GraphInterrupt]:

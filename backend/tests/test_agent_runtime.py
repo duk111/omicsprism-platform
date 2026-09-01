@@ -34,6 +34,8 @@ from backend.app.agent.schemas import (
     AgentInputBundleRecord,
     AgentInputBundleStatus,
     AgentErrorBlock,
+    AgentEvidenceBlock,
+    AgentJobBlock,
     AgentMessageRecord,
     AgentMessageRole,
     AgentTextBlock,
@@ -388,6 +390,13 @@ def test_successful_continuation_reads_the_completed_job_and_returns_grounded_ev
     )
     assert "GeneA" in continuation_message.blocks[0].text
     assert "2.5" in continuation_message.blocks[0].text
+    assert isinstance(continuation_message.blocks[1], AgentJobBlock)
+    assert continuation_message.blocks[1].job_id == summary.job_id
+    assert continuation_message.blocks[1].status is JobStatus.SUCCEEDED
+    assert isinstance(continuation_message.blocks[2], AgentEvidenceBlock)
+    assert continuation_message.blocks[2].claims[0].citation.artifact == artifact
+    assert continuation_message.blocks[2].claims[0].citation.checksum == evidence.checksum
+    assert continuation_message.blocks[2].claims[0].citation.row_ids == [7]
     assert reader_requests == [
         JobLookupRequest(user_id=turn.user_id, job_id=summary.job_id),
         JobLookupRequest(user_id=turn.user_id, job_id=summary.job_id),
@@ -458,6 +467,8 @@ def test_successful_continuation_without_artifacts_skips_model_and_explains_limi
         thread_id=turn.thread_id, user_id=turn.user_id
     )
     assert "no result artifacts are available" in messages[-1].blocks[0].text
+    assert isinstance(messages[-1].blocks[1], AgentJobBlock)
+    assert messages[-1].blocks[1].status is JobStatus.SUCCEEDED
 
 
 def test_cancelled_job_wait_prevents_continuation_graph_execution() -> None:

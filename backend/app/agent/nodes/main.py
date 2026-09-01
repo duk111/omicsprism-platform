@@ -20,7 +20,8 @@ from ..graph import (
     ToolObservation,
 )
 from ..context import ContextAssembler, MainModelContext
-from ..schemas import GroundedAnswer, ToolName, ToolResult
+from ..schemas import AgentEvidenceBlock, GroundedAnswer, ToolName, ToolResult
+from ..message_blocks import text_block
 from ..trace import TraceRecorder, stable_hash
 
 
@@ -114,13 +115,21 @@ def main_node(
                     "decision": decision,
                     "grounded_answer": answer,
                     "response_text": _grounded_answer_text(answer),
+                    "response_blocks": [
+                        text_block(_grounded_answer_text(answer)),
+                        AgentEvidenceBlock(claims=answer.claims),
+                    ],
                     "step_budget": budget,
                     "tool_observations": observations,
                 }
             if decision.action != "tool_call":
+                response_text = _response_text(output)
                 return {
                     "decision": decision,
-                    "response_text": _response_text(output),
+                    "response_text": response_text,
+                    "response_blocks": (
+                        [text_block(response_text)] if response_text is not None else []
+                    ),
                     "grounded_answer": decision.grounded_answer,
                     "step_budget": budget,
                     "tool_observations": observations,
@@ -207,6 +216,7 @@ def _ask_user_update(
         ),
         "grounded_answer": None,
         "response_text": question,
+        "response_blocks": [text_block(question)],
         "step_budget": budget,
         "tool_observations": observations or [],
     }

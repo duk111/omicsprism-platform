@@ -28,7 +28,8 @@ from backend.app.agent.graph import (
 from backend.app.agent.nodes.analysis import DatasetLoadError, analysis_node
 from backend.app.agent.nodes.result_qa import ResultAccessError, result_qa_node
 from backend.app.agent.param_resolver import AnalysisProposal, ScopeSpec
-from backend.app.agent.schemas import ToolName, ToolResult
+from backend.app.agent.schemas import AgentJobBlock, AgentTextBlock, ToolName, ToolResult
+from backend.app.models import JobStatus
 from backend.app.agent.validation import DatasetRef
 
 
@@ -721,6 +722,13 @@ def test_default_checkpointer_resumes_confirmation_flow_once() -> None:
     assert completed.pending_plan is None
     assert completed.confirmed_params is not None
     assert completed.confirmed_params.contrast.tested_level == "salt"
+    assert isinstance(completed.response_blocks[0], AgentTextBlock)
+    assert completed.response_blocks[0].text == "Analysis job job-1 was submitted."
+    assert isinstance(completed.response_blocks[1], AgentJobBlock)
+    assert completed.response_blocks[1].job_id == "job-1"
+    assert completed.response_blocks[1].status is JobStatus.QUEUED
+    assert completed.response_blocks[1].progress_url == "/jobs/job-1"
+    assert completed.response_blocks[1].results_url is None
     assert len(submitter.requests) == 1
     request = submitter.requests[0]
     assert request.user_id == "user-1"

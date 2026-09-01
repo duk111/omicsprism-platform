@@ -22,12 +22,14 @@ from backend.app.agent.product_store import InMemoryAgentProductStore
 from backend.app.agent.queue import InMemoryAgentTurnQueue
 from backend.app.agent.runtime import AgentRuntime
 from backend.app.agent.schemas import (
+    AgentEvidenceBlock,
+    AgentJobBlock,
     AgentInputBundleRecord,
     AgentMessageRecord,
     AgentThreadRecord,
     AgentTurnRecord,
 )
-from backend.app.models import AnalysisType, JobRecord
+from backend.app.models import AnalysisType, JobRecord, JobStatus
 from backend.app.settings import AppSettings
 from backend.app.storage_service import FileStorageService
 
@@ -305,7 +307,24 @@ def test_stream_projection_contains_only_public_turn_and_message_dtos() -> None:
         run_id="run-1",
         user_id="secret-user",
         role="assistant",
-        blocks=[{"type": "text", "text": "done"}],
+        blocks=[
+            {"type": "text", "text": "done"},
+            AgentJobBlock(
+                job_id="job-1",
+                status=JobStatus.SUCCEEDED,
+                progress=100,
+                progress_url="/jobs/job-1",
+                results_url="/jobs/job-1/results",
+            ),
+            AgentEvidenceBlock(claims=[{
+                "text": "GeneA changes by 2.5.",
+                "citation": {
+                    "artifact": "deg.csv",
+                    "checksum": "sha256:fixture",
+                    "row_ids": [7],
+                },
+            }]),
+        ],
         created_at=now,
     )
     turn = AgentTurnRecord(
@@ -327,6 +346,9 @@ def test_stream_projection_contains_only_public_turn_and_message_dtos() -> None:
     payload = "\n".join(event.model_dump_json() for event in project_stream_events([turn], [message]))
     assert '"event_type":"turn.updated"' in payload
     assert '"event_type":"message.created"' in payload
+    assert '"type":"job"' in payload
+    assert '"type":"evidence"' in payload
+    assert '"row_ids":[7]' in payload
     for secret in ("secret-user", "secret-key", "request_hash", "storage_key"):
         assert secret not in payload
 

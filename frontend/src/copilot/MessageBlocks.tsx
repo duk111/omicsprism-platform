@@ -59,9 +59,11 @@ function JobBlockView({ block }: { block: AgentJobBlock }) {
   const status = progress?.status ?? block.status;
   const percent = progress?.progress ?? block.progress;
   const succeeded = status === "succeeded";
-  const href = publicUrl(succeeded
-    ? `/jobs/${encodeURIComponent(block.job_id)}/results`
-    : `/jobs/${encodeURIComponent(block.job_id)}`);
+  const href = publicUrl(
+    succeeded
+      ? block.results_url ?? `/jobs/${encodeURIComponent(block.job_id)}/results`
+      : block.progress_url,
+  );
   return (
     <section className="job-block">
       <div>

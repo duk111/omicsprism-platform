@@ -14,7 +14,8 @@ from ..graph import (
     ResultQuerier,
 )
 from ..grounding import GroundedAnswerPipeline
-from ..schemas import GroundedAnswer, ToolName, ToolResult
+from ..message_blocks import job_block_from_summary, text_block
+from ..schemas import AgentEvidenceBlock, GroundedAnswer, ToolName, ToolResult
 
 if TYPE_CHECKING:
     from ..tools import AgentToolRuntime
@@ -41,11 +42,13 @@ def result_qa_node(
             )
 
         if state.step_budget.used_model_steps >= state.step_budget.max_model_steps:
+            response_text = (
+                "The result question was not processed because the step budget "
+                "was exhausted."
+            )
             return {
-                "response_text": (
-                    "The result question was not processed because the step budget "
-                    "was exhausted."
-                ),
+                "response_text": response_text,
+                "response_blocks": [text_block(response_text)],
             }
 
         budget = state.step_budget.model_copy(
@@ -53,8 +56,10 @@ def result_qa_node(
         )
         job_ref = _resolve_job_ref(state)
         if job_ref is None:
+            response_text = _job_selection_question(state)
             return {
-                "response_text": _job_selection_question(state),
+                "response_text": response_text,
+                "response_blocks": [text_block(response_text)],
                 "step_budget": budget,
             }
 
@@ -64,8 +69,10 @@ def result_qa_node(
                 job_id=job_ref.job_id,
             ))
         except LookupError:
+            response_text = "The selected Job was not found or is not accessible."
             return {
-                "response_text": "The selected Job was not found or is not accessible.",
+                "response_text": response_text,
+                "response_blocks": [text_block(response_text)],
                 "step_budget": budget,
             }
         _validate_job_summary(state, job_ref, summary)
@@ -77,17 +84,26 @@ def result_qa_node(
             "step_budget": budget,
         }
         if decision.action == "get_job":
-            return {**base_update, "response_text": _job_summary_text(summary)}
+            response_text = _job_summary_text(summary)
+            blocks = [text_block(response_text)]
+            job = job_block_from_summary(summary)
+            if job is not None:
+                blocks.append(job)
+            return {
+                **base_update,
+                "response_text": response_text,
+                "response_blocks": blocks,
+            }
         if decision.result_query is None:
             raise ResultAccessError("query_result action is missing its typed query")
 
         query = decision.result_query
         if query.artifact not in summary.artifacts:
+            response_text = f"Artifact {query.artifact} is not available for Job {summary.job_id}."
             return {
                 **base_update,
-                "response_text": (
-                    f"Artifact {query.artifact} is not available for Job {summary.job_id}."
-                ),
+                "response_text": response_text,
+                "response_blocks": [text_block(response_text)],
             }
         try:
             evidence = result_querier(ResultEvidenceRequest(
@@ -96,14 +112,18 @@ def result_qa_node(
                 query=query,
             ))
         except LookupError:
+            response_text = "The requested result evidence was not found or is not accessible."
             return {
                 **base_update,
-                "response_text": "The requested result evidence was not found or is not accessible.",
+                "response_text": response_text,
+                "response_blocks": [text_block(response_text)],
             }
         if not _is_groundable_evidence(evidence, summary):
+            response_text = "The requested artifact did not provide verifiable evidence."
             return {
                 **base_update,
-                "response_text": "The requested artifact did not provide verifiable evidence.",
+                "response_text": response_text,
+                "response_blocks": [text_block(response_text)],
             }
 
         answer = pipeline.answer(
@@ -111,10 +131,17 @@ def result_qa_node(
             draft=state.grounded_answer,
             repair=None,
         )
+        response_text = _answer_text(answer)
+        blocks = [text_block(response_text)]
+        job = job_block_from_summary(summary)
+        if job is not None:
+            blocks.append(job)
+        blocks.append(AgentEvidenceBlock(claims=answer.claims))
         return {
             **base_update,
             "grounded_answer": answer,
-            "response_text": _answer_text(answer),
+            "response_text": response_text,
+            "response_blocks": blocks,
         }
 
     return run

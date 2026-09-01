@@ -10,6 +10,7 @@ from langgraph.graph import END
 from langgraph.types import Command, interrupt
 
 from ..fingerprint import compute_input_fingerprint
+from ..message_blocks import job_block, text_block
 from ..graph import (
     AnalysisExecutionRequest,
     ClarificationItem,
@@ -34,6 +35,7 @@ from ..validation import (
     derive_scoped_dataset_refs,
     validate_analysis_request,
 )
+from ...models import JobStatus
 
 
 class DatasetLoadError(ValueError):
@@ -216,6 +218,10 @@ def _handle_confirmation(
             "pending_interrupt": None,
             "pending_plan": None,
             "response_text": f"Analysis job {job_ref.job_id} was submitted.",
+            "response_blocks": [
+                text_block(f"Analysis job {job_ref.job_id} was submitted."),
+                job_block(job_ref.job_id, JobStatus.QUEUED),
+            ],
             "step_budget": next_budget,
         },
         goto=END,

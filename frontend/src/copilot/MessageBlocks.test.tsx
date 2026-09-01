@@ -66,11 +66,11 @@ describe("MessageBlocks", () => {
       status: "queued",
       progress: 0,
       progress_url: "/jobs/job-1",
-      results_url: null,
+      results_url: "/jobs/job-1/results?source=agent",
     }])} onRetry={vi.fn()} />);
 
     expect(screen.getByText("succeeded")).toBeVisible();
     expect(screen.getByText("100% complete")).toBeVisible();
-    expect(screen.getByRole("link", { name: /Open results/ })).toHaveAttribute("href", "/jobs/job-1/results");
+    expect(screen.getByRole("link", { name: /Open results/ })).toHaveAttribute("href", "/jobs/job-1/results?source=agent");
   });
 });
