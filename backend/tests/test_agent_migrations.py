@@ -110,3 +110,15 @@ def test_trace_id_migration_adds_owned_turn_and_message_columns() -> None:
     assert "alter column trace_id set not null" in sql
     assert "agent_turns_trace_idx" in sql
     assert "agent_messages_trace_idx" in sql
+
+
+def test_job_completion_migration_defines_wait_and_outbox_contract() -> None:
+    sql = (ROOT / "migrations" / "014_agent_job_completion_outbox.sql").read_text(encoding="utf-8").lower()
+    assert "create table agent_job_waits" in sql
+    assert "create table agent_job_events" in sql
+    assert "unique (job_id, thread_id, user_id)" in sql
+    assert "unique (job_id, status)" in sql
+    assert "status in ('waiting', 'resume_queued', 'completed', 'failed', 'cancelled', 'expired')" in sql
+    assert "status in ('succeeded', 'failed', 'cancelled')" in sql
+    assert "grant select, insert, update on agent_job_waits to omics_app" in sql
+    assert "grant select, insert, update on agent_job_events to omics_app" in sql
