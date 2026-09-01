@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+from hashlib import sha256
 from enum import Enum
 from typing import Literal
 
@@ -60,6 +61,9 @@ class AgentJobCompletionEvent(ContractModel):
     error_code: str | None = Field(default=None, max_length=200)
     attempt: int = Field(default=0, ge=0)
     occurred_at: datetime
+    published_at: datetime | None = None
+    delivery_attempts: int = Field(default=0, ge=0)
+    last_error: str | None = Field(default=None, max_length=500)
 
     @model_validator(mode="after")
     def _terminal_status_only(self) -> "AgentJobCompletionEvent":
@@ -85,3 +89,16 @@ def completion_event_id(job_id: str, status: JobStatus) -> str:
     }:
         raise ValueError("completion event requires a terminal Job status")
     return f"job-completion:{job_id}:{status.value}"
+
+
+def continuation_turn_id(event_id: str) -> str:
+    """Return a bounded, deterministic Agent turn id for one completion event."""
+
+    digest = sha256(event_id.encode("utf-8")).hexdigest()
+    return f"turn-job-{digest}"
+
+
+def continuation_idempotency_key(event_id: str) -> str:
+    """Stable idempotency key used when a completion event is redelivered."""
+
+    return f"agent-job-continuation:{event_id}"

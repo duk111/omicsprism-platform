@@ -6,6 +6,7 @@ from typing import Protocol
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from .graph import DatasetProfileRef, GraphResumeRequest, GraphState
+from .job_events import AgentJobCompletionEvent
 
 
 class AgentTurnInput(BaseModel):
@@ -39,15 +40,18 @@ class AgentTurnWorkItem(BaseModel):
     # Legacy start payload retained while already queued messages drain.
     state: GraphState | None = None
     resume: GraphResumeRequest | None = None
+    continuation: AgentJobCompletionEvent | None = None
     idempotency_key: str | None = Field(default=None, min_length=1, max_length=200)
 
     @model_validator(mode="after")
     def _one_operation(self) -> "AgentTurnWorkItem":
-        operations = sum(item is not None for item in (self.input, self.state, self.resume))
+        operations = sum(item is not None for item in (self.input, self.state, self.resume, self.continuation))
         if operations != 1:
             raise ValueError("work item must contain exactly one graph operation")
         if self.input is not None and self.idempotency_key is not None:
             raise ValueError("idempotency key is only valid for approved resume")
+        if self.continuation is not None and self.idempotency_key is not None:
+            raise ValueError("idempotency key is not accepted on Job continuation work")
         if self.state is not None and (
             self.state.thread_id != self.thread_id
             or self.state.turn_id not in {"turn-local", self.turn_id}
@@ -55,6 +59,11 @@ class AgentTurnWorkItem(BaseModel):
             or self.state.user_id != self.user_id
         ):
             raise ValueError("work item state does not match its owner")
+        if self.continuation is not None and (
+            self.continuation.thread_id != self.thread_id
+            or self.continuation.user_id != self.user_id
+        ):
+            raise ValueError("continuation event does not match its owner")
         if self.resume is not None:
             if self.resume.kind == "confirmation" and self.resume.approve is True:
                 if self.idempotency_key is None:

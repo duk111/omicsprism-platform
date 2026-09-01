@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from copy import deepcopy
 from datetime import datetime
+from hashlib import sha256
 from typing import Any, Protocol
 
 from .schemas import (
@@ -13,7 +14,13 @@ from .schemas import (
     AgentTurnRecord,
     AgentTurnStatus,
 )
-from .job_events import AgentJobWaitRecord
+from .job_events import (
+    AgentJobCompletionEvent,
+    AgentJobWaitRecord,
+    AgentJobWaitStatus,
+    continuation_idempotency_key,
+    continuation_turn_id,
+)
 from .trace import AgentTraceEvent
 
 
@@ -120,6 +127,29 @@ class AgentProductStore(Protocol):
     def get_job_wait(self, *, job_id: str, user_id: str) -> AgentJobWaitRecord:
         ...
 
+    def save_job_completion_event(self, event: AgentJobCompletionEvent) -> None:
+        ...
+
+    def list_pending_job_events(self, *, limit: int = 20) -> list[AgentJobCompletionEvent]:
+        ...
+
+    def prepare_job_continuation(
+        self, event: AgentJobCompletionEvent, *, now: datetime,
+    ) -> AgentTurnRecord | None:
+        ...
+
+    def mark_job_event_published(self, *, event_id: str, now: datetime) -> None:
+        ...
+
+    def mark_job_event_failed(self, *, event_id: str, error: str, now: datetime) -> None:
+        ...
+
+    def complete_job_wait(
+        self, *, job_id: str, user_id: str, continuation_turn_id: str,
+        status: AgentJobWaitStatus, now: datetime,
+    ) -> AgentJobWaitRecord:
+        ...
+
 
 class InMemoryAgentProductStore:
     """普通 CI 使用的精确 repository 契约，不生成业务假数据。"""
@@ -134,6 +164,7 @@ class InMemoryAgentProductStore:
         self._files = self._shared.setdefault("files", {})
         self._trace_events = self._shared.setdefault("trace_events", {})
         self._job_waits = self._shared.setdefault("job_waits", {})
+        self._job_events = self._shared.setdefault("job_events", {})
 
     def record_trace_event(self, event: AgentTraceEvent) -> None:
         if event.event_id in self._trace_events:
@@ -210,6 +241,9 @@ class InMemoryAgentProductStore:
         for wait_id, payload in list(self._job_waits.items()):
             if payload["thread_id"] == thread_id and payload["user_id"] == user_id:
                 del self._job_waits[wait_id]
+        for event_id, payload in list(self._job_events.items()):
+            if payload["thread_id"] == thread_id and payload["user_id"] == user_id:
+                del self._job_events[event_id]
         del self._threads[thread_id]
         return files
 
@@ -432,6 +466,112 @@ class InMemoryAgentProductStore:
             if payload["job_id"] == job_id and payload["user_id"] == user_id:
                 return AgentJobWaitRecord.model_validate(deepcopy(payload))
         raise AgentResourceNotFound(job_id)
+
+    def save_job_completion_event(self, event: AgentJobCompletionEvent) -> None:
+        self.get_thread(thread_id=event.thread_id, user_id=event.user_id)
+        current = self._job_events.get(event.event_id)
+        if current is not None:
+            current_event = AgentJobCompletionEvent.model_validate(deepcopy(current))
+            immutable = {"published_at", "delivery_attempts", "last_error"}
+            if current_event.model_dump(mode="json", exclude=immutable) != event.model_dump(
+                mode="json", exclude=immutable
+            ):
+                raise ValueError("job completion event already exists with different payload")
+            return
+        self._job_events[event.event_id] = event.model_dump(mode="json")
+
+    def list_pending_job_events(self, *, limit: int = 20) -> list[AgentJobCompletionEvent]:
+        bounded = max(1, min(limit, 100))
+        records = [
+            AgentJobCompletionEvent.model_validate(deepcopy(payload))
+            for payload in self._job_events.values()
+            if payload.get("published_at") is None
+        ]
+        records.sort(key=lambda item: (item.occurred_at, item.event_id))
+        return records[:bounded]
+
+    def prepare_job_continuation(
+        self, event: AgentJobCompletionEvent, *, now: datetime,
+    ) -> AgentTurnRecord | None:
+        stored_payload = self._job_events.get(event.event_id)
+        if stored_payload is None:
+            raise AgentResourceNotFound(event.event_id)
+        stored = AgentJobCompletionEvent.model_validate(deepcopy(stored_payload))
+        if stored.model_dump(mode="json") != event.model_dump(mode="json"):
+            raise ValueError("job completion event payload changed")
+        wait = self.get_job_wait(job_id=event.job_id, user_id=event.user_id)
+        if (wait.thread_id, wait.turn_id, wait.run_id, wait.trace_id) != (
+            event.thread_id, event.turn_id, event.run_id, event.trace_id,
+        ):
+            raise AgentResourceNotFound(event.job_id)
+        if wait.status in {
+            AgentJobWaitStatus.COMPLETED,
+            AgentJobWaitStatus.FAILED,
+            AgentJobWaitStatus.CANCELLED,
+            AgentJobWaitStatus.EXPIRED,
+        }:
+            return None
+        if wait.status is AgentJobWaitStatus.RESUME_QUEUED:
+            if wait.continuation_turn_id is None:
+                raise ValueError("job wait is queued without a continuation turn")
+            return self.get_turn(
+                turn_id=wait.continuation_turn_id,
+                user_id=event.user_id,
+            )
+        turn = _continuation_turn(event, now)
+        queued, _created = self.enqueue_turn(message=None, turn=turn)
+        updated = wait.model_copy(update={
+            "status": AgentJobWaitStatus.RESUME_QUEUED,
+            "continuation_turn_id": queued.turn_id,
+            "updated_at": now,
+        })
+        self._job_waits[wait.wait_id] = updated.model_dump(mode="json")
+        return queued
+
+    def mark_job_event_published(self, *, event_id: str, now: datetime) -> None:
+        payload = self._job_events.get(event_id)
+        if payload is None:
+            raise AgentResourceNotFound(event_id)
+        payload["published_at"] = now.isoformat()
+        payload["delivery_attempts"] = int(payload.get("delivery_attempts") or 0) + 1
+        payload["last_error"] = None
+
+    def mark_job_event_failed(self, *, event_id: str, error: str, now: datetime) -> None:
+        payload = self._job_events.get(event_id)
+        if payload is None:
+            raise AgentResourceNotFound(event_id)
+        payload["delivery_attempts"] = int(payload.get("delivery_attempts") or 0) + 1
+        payload["last_error"] = error[:500]
+        payload["occurred_at"] = payload.get("occurred_at") or now.isoformat()
+
+    def complete_job_wait(
+        self, *, job_id: str, user_id: str, continuation_turn_id: str,
+        status: AgentJobWaitStatus, now: datetime,
+    ) -> AgentJobWaitRecord:
+        if status not in {
+            AgentJobWaitStatus.COMPLETED,
+            AgentJobWaitStatus.FAILED,
+            AgentJobWaitStatus.CANCELLED,
+            AgentJobWaitStatus.EXPIRED,
+        }:
+            raise ValueError("job wait completion requires a terminal status")
+        wait = self.get_job_wait(job_id=job_id, user_id=user_id)
+        if wait.continuation_turn_id not in {None, continuation_turn_id}:
+            raise TurnConflict(continuation_turn_id)
+        if wait.status in {
+            AgentJobWaitStatus.COMPLETED,
+            AgentJobWaitStatus.FAILED,
+            AgentJobWaitStatus.CANCELLED,
+            AgentJobWaitStatus.EXPIRED,
+        }:
+            return wait
+        updated = wait.model_copy(update={
+            "status": status,
+            "continuation_turn_id": continuation_turn_id,
+            "updated_at": now,
+        })
+        self._job_waits[wait.wait_id] = updated.model_dump(mode="json")
+        return updated
 
 
 class PostgresAgentProductStore:
@@ -1077,6 +1217,219 @@ class PostgresAgentProductStore:
             raise AgentResourceNotFound(job_id)
         return _job_wait_from_row(row)
 
+    def save_job_completion_event(self, event: AgentJobCompletionEvent) -> None:
+        Jsonb = _jsonb_type()
+        with self._connect() as conn:
+            conn.execute(
+                """
+                insert into agent_job_events (
+                    event_id, event_type, job_id, thread_id, user_id, turn_id,
+                    run_id, trace_id, status, error_code, attempt, occurred_at,
+                    published_at, delivery_attempts, last_error
+                ) values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                on conflict (event_id) do nothing
+                """,
+                (
+                    event.event_id, event.event_type, event.job_id, event.thread_id,
+                    event.user_id, event.turn_id, event.run_id, event.trace_id,
+                    event.status.value, event.error_code, event.attempt,
+                    event.occurred_at, event.published_at, event.delivery_attempts,
+                    event.last_error,
+                ),
+            )
+
+    def list_pending_job_events(self, *, limit: int = 20) -> list[AgentJobCompletionEvent]:
+        bounded = max(1, min(limit, 100))
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                select event_id, event_type, job_id, thread_id, user_id, turn_id,
+                       run_id, trace_id, status, error_code, attempt, occurred_at,
+                       published_at, delivery_attempts, last_error
+                from agent_job_events
+                where published_at is null
+                order by occurred_at, event_id
+                limit %s
+                """,
+                (bounded,),
+            ).fetchall()
+        return [_job_event_from_row(row) for row in rows]
+
+    def prepare_job_continuation(
+        self, event: AgentJobCompletionEvent, *, now: datetime,
+    ) -> AgentTurnRecord | None:
+        try:
+            with self._connect() as conn:
+                row = conn.execute(
+                    """
+                    select e.event_id, e.event_type, e.job_id, e.thread_id, e.user_id,
+                           e.turn_id, e.run_id, e.trace_id, e.status, e.error_code,
+                           e.attempt, e.occurred_at, e.published_at,
+                           e.delivery_attempts, e.last_error,
+                           w.status, w.continuation_turn_id,
+                           j.owner_id, j.status
+                    from agent_job_events e
+                    join agent_job_waits w
+                      on w.job_id = e.job_id
+                     and w.thread_id = e.thread_id
+                     and w.user_id = e.user_id
+                    join jobs j
+                      on j.id = e.job_id
+                    where e.event_id = %s
+                    for update of e, w
+                    """,
+                    (event.event_id,),
+                ).fetchone()
+                if row is None:
+                    raise AgentResourceNotFound(event.event_id)
+                stored = _job_event_from_row(row[:15])
+                if stored.model_dump(mode="json") != event.model_dump(mode="json"):
+                    raise ValueError("job completion event payload changed")
+                wait_status = AgentJobWaitStatus(row[15])
+                continuation_id = row[16]
+                if row[17] != event.user_id or row[18] != event.status.value:
+                    return None
+                if wait_status in {
+                    AgentJobWaitStatus.COMPLETED,
+                    AgentJobWaitStatus.FAILED,
+                    AgentJobWaitStatus.CANCELLED,
+                    AgentJobWaitStatus.EXPIRED,
+                }:
+                    return None
+                if wait_status is AgentJobWaitStatus.RESUME_QUEUED:
+                    if not continuation_id:
+                        raise ValueError("job wait is queued without a continuation turn")
+                    turn_row = conn.execute(
+                        """
+                        select turn_id, thread_id, run_id, user_id, trace_id,
+                               idempotency_key, request_hash, status, attempt,
+                               error_code, created_at, updated_at, started_at, completed_at
+                        from agent_turns where turn_id = %s and user_id = %s
+                        """,
+                        (continuation_id, event.user_id),
+                    ).fetchone()
+                    if turn_row is None:
+                        raise AgentResourceNotFound(continuation_id)
+                    return _turn_from_row(turn_row)
+                turn = _continuation_turn(event, now)
+                turn_row = conn.execute(
+                    """
+                    insert into agent_turns (
+                        turn_id, thread_id, run_id, user_id, trace_id,
+                        idempotency_key, request_hash, status, attempt, error_code,
+                        created_at, updated_at, started_at, completed_at
+                    ) values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    on conflict (user_id, idempotency_key) do nothing
+                    returning turn_id, thread_id, run_id, user_id, trace_id,
+                              idempotency_key, request_hash, status, attempt,
+                              error_code, created_at, updated_at, started_at, completed_at
+                    """,
+                    _turn_values(turn),
+                ).fetchone()
+                if turn_row is None:
+                    turn_row = conn.execute(
+                        """
+                        select turn_id, thread_id, run_id, user_id, trace_id,
+                               idempotency_key, request_hash, status, attempt,
+                               error_code, created_at, updated_at, started_at, completed_at
+                        from agent_turns
+                        where user_id = %s and idempotency_key = %s
+                        """,
+                        (turn.user_id, turn.idempotency_key),
+                    ).fetchone()
+                if turn_row is None:
+                    raise RuntimeError("continuation turn insert returned no record")
+                queued = _turn_from_row(turn_row)
+                if (
+                    queued.thread_id != turn.thread_id
+                    or queued.run_id != turn.run_id
+                    or queued.request_hash != turn.request_hash
+                ):
+                    raise IdempotencyConflict(turn.idempotency_key)
+                updated = conn.execute(
+                    """
+                    update agent_job_waits
+                    set status = 'resume_queued', continuation_turn_id = %s,
+                        updated_at = %s
+                    where wait_id = %s and status = 'waiting'
+                    returning wait_id
+                    """,
+                    (queued.turn_id, now, row[0]),
+                ).fetchone()
+                if updated is None:
+                    raise TurnConflict(event.job_id)
+                return queued
+        except Exception as exc:
+            if _constraint_name(exc) == "agent_turns_one_active_per_thread_idx":
+                raise ActiveTurnConflict(event.thread_id) from exc
+            raise
+
+    def mark_job_event_published(self, *, event_id: str, now: datetime) -> None:
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                update agent_job_events
+                set published_at = coalesce(published_at, %s),
+                    delivery_attempts = delivery_attempts + 1,
+                    last_error = null
+                where event_id = %s
+                returning event_id
+                """,
+                (now, event_id),
+            ).fetchone()
+        if row is None:
+            raise AgentResourceNotFound(event_id)
+
+    def mark_job_event_failed(self, *, event_id: str, error: str, now: datetime) -> None:
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                update agent_job_events
+                set delivery_attempts = delivery_attempts + 1,
+                    last_error = %s
+                where event_id = %s and published_at is null
+                returning event_id
+                """,
+                (error[:500], event_id),
+            ).fetchone()
+        if row is None:
+            raise AgentResourceNotFound(event_id)
+
+    def complete_job_wait(
+        self, *, job_id: str, user_id: str, continuation_turn_id: str,
+        status: AgentJobWaitStatus, now: datetime,
+    ) -> AgentJobWaitRecord:
+        if status not in {
+            AgentJobWaitStatus.COMPLETED,
+            AgentJobWaitStatus.FAILED,
+            AgentJobWaitStatus.CANCELLED,
+            AgentJobWaitStatus.EXPIRED,
+        }:
+            raise ValueError("job wait completion requires a terminal status")
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                update agent_job_waits
+                set status = case when status in
+                    ('completed', 'failed', 'cancelled', 'expired')
+                    then status else %s end,
+                    continuation_turn_id = coalesce(continuation_turn_id, %s),
+                    updated_at = %s
+                where job_id = %s and user_id = %s
+                  and (continuation_turn_id = %s or continuation_turn_id is null)
+                returning wait_id, thread_id, user_id, turn_id, run_id, trace_id,
+                          job_id, status, continuation_turn_id, expires_at,
+                          created_at, updated_at
+                """,
+                (
+                    status.value, continuation_turn_id, now, job_id, user_id,
+                    continuation_turn_id,
+                ),
+            ).fetchone()
+        if row is None:
+            raise AgentResourceNotFound(job_id)
+        return _job_wait_from_row(row)
+
     def _connect(self):
         try:
             import psycopg
@@ -1110,6 +1463,40 @@ def _job_wait_from_row(row) -> AgentJobWaitRecord:
         "updated_at",
     )
     return AgentJobWaitRecord.model_validate(dict(zip(fields, row)))
+
+
+def _job_event_from_row(row) -> AgentJobCompletionEvent:
+    fields = (
+        "event_id", "event_type", "job_id", "thread_id", "user_id", "turn_id",
+        "run_id", "trace_id", "status", "error_code", "attempt", "occurred_at",
+        "published_at", "delivery_attempts", "last_error",
+    )
+    return AgentJobCompletionEvent.model_validate(dict(zip(fields, row)))
+
+
+def _continuation_turn(
+    event: AgentJobCompletionEvent,
+    now: datetime,
+) -> AgentTurnRecord:
+    turn_id = continuation_turn_id(event.event_id)
+    idempotency_key = continuation_idempotency_key(event.event_id)
+    request_hash = "sha256:" + sha256(event.event_id.encode("utf-8")).hexdigest()
+    return AgentTurnRecord(
+        turn_id=turn_id,
+        thread_id=event.thread_id,
+        run_id=event.run_id,
+        user_id=event.user_id,
+        trace_id=event.trace_id,
+        idempotency_key=idempotency_key,
+        request_hash=request_hash,
+        status=AgentTurnStatus.QUEUED,
+        attempt=0,
+        error_code=None,
+        created_at=now,
+        updated_at=now,
+        started_at=None,
+        completed_at=None,
+    )
 
 
 def _turn_values(turn: AgentTurnRecord) -> tuple[Any, ...]:

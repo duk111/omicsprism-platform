@@ -12,6 +12,8 @@ from .context import ContextAssembler, build_recent_messages
 from .graph import GraphInterrupt, GraphState
 from ..observability import log_context
 from .product_store import AgentResourceNotFound, TurnConflict
+from .job_events import AgentJobWaitStatus
+from .reconciliation import AgentJobEventReconciler
 from .queue import AgentTurnQueue, AgentTurnWorkItem
 from .schemas import (
     AgentMessageRecord,
@@ -31,9 +33,19 @@ _RUNTIME_ERROR_MESSAGE = "The request could not be completed. Please try again."
 class AgentRuntime:
     """Consumes durable Agent turns and executes the graph outside HTTP."""
 
-    def __init__(self, context: AgentApiContext, queue: AgentTurnQueue) -> None:
+    def __init__(
+        self,
+        context: AgentApiContext,
+        queue: AgentTurnQueue,
+        *,
+        reconciler: AgentJobEventReconciler | None = None,
+    ) -> None:
         self.context = context
         self.queue = queue
+        self.reconciler = reconciler or AgentJobEventReconciler(
+            context.product_store,
+            queue,
+        )
 
     def run_once(self, raw_item: str) -> None:
         try:
@@ -71,11 +83,15 @@ class AgentRuntime:
                 retry_count=max(0, turn.attempt - 1),
             )
             config = {"configurable": {"thread_id": item.thread_id}}
-            if item.input is not None or item.state is not None:
+            if item.continuation is not None:
+                self._run_continuation(item, config, turn.run_id)
+            elif item.input is not None or item.state is not None:
                 self._run_start(item, config, turn.attempt, turn.run_id)
             else:
                 self._run_resume(item, config)
             finalized = self._finalize(item, turn)
+            if finalized and item.continuation is not None:
+                self._complete_job_wait(item)
             if finalized:
                 self._record_turn_event(
                     "turn.completed",
@@ -133,6 +149,7 @@ class AgentRuntime:
     def run_forever(self) -> None:  # pragma: no cover - process entrypoint
         self.queue.recover_pending()
         while True:
+            self.reconciler.reconcile_once()
             raw_item = self.queue.reserve()
             if raw_item is None:
                 continue
@@ -327,6 +344,72 @@ class AgentRuntime:
         if item.idempotency_key is not None:
             value["idempotency_key"] = item.idempotency_key
         self._invoke_graph(item, Command(resume=value), config)
+
+    def _run_continuation(
+        self,
+        item: AgentTurnWorkItem,
+        config: dict,
+        run_id: str,
+    ) -> None:
+        event = item.continuation
+        if event is None:
+            raise ValueError("continuation work item is missing its event")
+        snapshot = self.context.graph.get_state(config)
+        state = GraphState.model_validate(snapshot.values)
+        if state.thread_id != item.thread_id or state.user_id != item.user_id:
+            raise ValueError("graph checkpoint ownership mismatch")
+        if state.run_id != event.run_id:
+            raise ValueError("Job completion event run does not match graph checkpoint")
+        # The graph receives a bounded system message. Job status and error
+        # details are read deterministically by the next graph node; no model
+        # supplied event fields are trusted for ownership or artifacts.
+        message = (
+            f"System Job event: {event.job_id} reached {event.status.value}."
+            if event.status.value == "succeeded"
+            else f"System Job event: {event.job_id} reached {event.status.value}."
+        )
+        updated = state.model_copy(update={
+            "turn_id": item.turn_id,
+            "run_id": run_id,
+            "trace_id": item.trace_id,
+            "user_message": message,
+            "response_text": None,
+            "decision": None,
+            "pending_interrupt": None,
+            "job_summary": None,
+            "grounded_answer": None,
+            "tool_observations": [],
+        })
+        if event.status.value != "succeeded":
+            outcome = "failed" if event.status.value == "failed" else "cancelled"
+            detail = f" ({event.error_code})" if event.error_code else ""
+            updated = updated.model_copy(update={
+                "response_text": (
+                    f"Analysis job {event.job_id} {outcome}{detail}. "
+                    "No result interpretation was generated."
+                ),
+            })
+            self.context.graph.update_state(config, updated.model_dump(mode="json"))
+            return
+        self.context.graph.update_state(config, updated.model_dump(mode="json"))
+        self._invoke_graph(item, updated.model_dump(mode="json"), config)
+
+    def _complete_job_wait(self, item: AgentTurnWorkItem) -> None:
+        event = item.continuation
+        if event is None:
+            return
+        status_map = {
+            "succeeded": AgentJobWaitStatus.COMPLETED,
+            "failed": AgentJobWaitStatus.FAILED,
+            "cancelled": AgentJobWaitStatus.CANCELLED,
+        }
+        self.context.product_store.complete_job_wait(
+            job_id=event.job_id,
+            user_id=event.user_id,
+            continuation_turn_id=item.turn_id,
+            status=status_map[event.status.value],
+            now=datetime.now(timezone.utc),
+        )
 
     def _invoke_graph(self, item: AgentTurnWorkItem, *args):
         with log_context(

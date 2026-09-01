@@ -17,6 +17,13 @@ from backend.app.agent.graph import (
 )
 from backend.app.agent.dataset_profile import MatrixProfile
 from backend.app.agent.product_store import InMemoryAgentProductStore
+from backend.app.agent.job_events import (
+    AgentJobCompletionEvent,
+    AgentJobWaitRecord,
+    AgentJobWaitStatus,
+    completion_event_id,
+    continuation_turn_id,
+)
 from backend.app.agent.queue import AgentTurnInput, AgentTurnWorkItem, InMemoryAgentTurnQueue
 from backend.app.agent.runtime import AgentRuntime
 from backend.app.agent.schemas import (
@@ -30,6 +37,7 @@ from backend.app.agent.schemas import (
     AgentTurnRecord,
     AgentTurnStatus,
 )
+from backend.app.models import JobStatus
 from langgraph.checkpoint.memory import InMemorySaver
 
 
@@ -145,6 +153,120 @@ def test_runtime_completes_queued_turn_and_persists_assistant_message() -> None:
     messages = context.product_store.list_messages(thread_id=turn.thread_id, user_id=turn.user_id)
     assert [block.text for block in messages[0].blocks] == ["runtime complete"]
     assert not queue.processing
+
+
+def test_runtime_executes_job_continuation_and_closes_wait() -> None:
+    context, queue, turn = _context(_Graph())
+    now = datetime.now(timezone.utc)
+    store = context.product_store
+    running = store.claim_turn(turn_id=turn.turn_id, user_id=turn.user_id, now=now)
+    store.finish_turn(
+        turn_id=running.turn_id,
+        user_id=running.user_id,
+        status=AgentTurnStatus.COMPLETED,
+        now=now,
+    )
+    store.create_job_wait(AgentJobWaitRecord(
+        wait_id="wait-job-1",
+        thread_id="thread-1",
+        user_id="user-1",
+        turn_id=turn.turn_id,
+        run_id=turn.run_id,
+        trace_id=turn.trace_id,
+        job_id="job-1",
+        created_at=now,
+        updated_at=now,
+    ))
+    event = AgentJobCompletionEvent(
+        event_id=completion_event_id("job-1", JobStatus.SUCCEEDED),
+        job_id="job-1",
+        thread_id="thread-1",
+        user_id="user-1",
+        turn_id=turn.turn_id,
+        run_id=turn.run_id,
+        trace_id=turn.trace_id,
+        status=JobStatus.SUCCEEDED,
+        occurred_at=now,
+    )
+    store.save_job_completion_event(event)
+    continuation = store.prepare_job_continuation(event, now=now)
+    assert continuation is not None
+    context.graph.update_state({}, GraphState(
+        thread_id="thread-1",
+        user_id="user-1",
+        trace_id="trace-1",
+        turn_id=turn.turn_id,
+        run_id=turn.run_id,
+        user_message="Analysis job submitted.",
+    ).model_dump(mode="json"))
+    item = AgentTurnWorkItem(
+        turn_id=continuation.turn_id,
+        thread_id="thread-1",
+        user_id="user-1",
+        trace_id="trace-1",
+        continuation=event,
+    )
+
+    AgentRuntime(context, queue).run_once(item.model_dump_json())
+
+    completed = store.get_turn(
+        turn_id=continuation_turn_id(event.event_id), user_id="user-1"
+    )
+    assert completed.status is AgentTurnStatus.COMPLETED
+    wait = store.get_job_wait(job_id="job-1", user_id="user-1")
+    assert wait.status is AgentJobWaitStatus.COMPLETED
+
+
+def test_runtime_does_not_call_model_for_failed_job_continuation() -> None:
+    context, queue, turn = _context(_Graph())
+    now = datetime.now(timezone.utc)
+    store = context.product_store
+    running = store.claim_turn(turn_id=turn.turn_id, user_id=turn.user_id, now=now)
+    store.finish_turn(
+        turn_id=running.turn_id,
+        user_id=running.user_id,
+        status=AgentTurnStatus.COMPLETED,
+        now=now,
+    )
+    store.create_job_wait(AgentJobWaitRecord(
+        wait_id="wait-job-failed",
+        thread_id="thread-1",
+        user_id="user-1",
+        turn_id=turn.turn_id,
+        run_id=turn.run_id,
+        trace_id=turn.trace_id,
+        job_id="job-failed",
+        created_at=now,
+        updated_at=now,
+    ))
+    event = AgentJobCompletionEvent(
+        event_id=completion_event_id("job-failed", JobStatus.FAILED),
+        job_id="job-failed",
+        thread_id="thread-1",
+        user_id="user-1",
+        turn_id=turn.turn_id,
+        run_id=turn.run_id,
+        trace_id=turn.trace_id,
+        status=JobStatus.FAILED,
+        error_code="analysis_failed",
+        occurred_at=now,
+    )
+    store.save_job_completion_event(event)
+    continuation = store.prepare_job_continuation(event, now=now)
+    assert continuation is not None
+    context.graph.update_state({}, GraphState(
+        thread_id="thread-1", user_id="user-1", trace_id="trace-1",
+        turn_id=turn.turn_id, run_id=turn.run_id, user_message="submitted",
+    ).model_dump(mode="json"))
+    AgentRuntime(context, queue).run_once(AgentTurnWorkItem(
+        turn_id=continuation.turn_id,
+        thread_id="thread-1",
+        user_id="user-1",
+        trace_id="trace-1",
+        continuation=event,
+    ).model_dump_json())
+    messages = store.list_messages(thread_id="thread-1", user_id="user-1")
+    assert "analysis_failed" in messages[-1].blocks[0].text
 
 
 def test_runtime_explicitly_invokes_a_new_turn_after_a_completed_checkpoint() -> None:
