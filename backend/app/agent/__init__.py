@@ -24,7 +24,17 @@ from .validation import (
     validate_analysis_request,
 )
 from .model import VllmGraphModel
-from .context import ContextAssembler, DecisionLedger, FactIndex, MainModelContext, WorkingSet
+from .context import (
+    ContextAssembler,
+    ConversationMemory,
+    DecisionLedger,
+    FactIndex,
+    MainModelContext,
+    RecentMessage,
+    RecentMessages,
+    WorkingSet,
+)
+from .queue import AgentTurnInput
 from .graph import PendingPlan, PlanVersionConflict, ProvenanceSource, StratumSummary
 from .product_store import InMemoryAgentProductStore, PostgresAgentProductStore
 from .trace import AgentTraceEvent, ModelUsage, TraceRecorder
@@ -78,10 +88,14 @@ __all__ = [
     "compute_input_fingerprint",
     "VllmGraphModel",
     "ContextAssembler",
+    "ConversationMemory",
     "FactIndex",
     "DecisionLedger",
     "WorkingSet",
     "MainModelContext",
+    "RecentMessage",
+    "RecentMessages",
+    "AgentTurnInput",
     "PendingPlan",
     "PlanVersionConflict",
     "ProvenanceSource",

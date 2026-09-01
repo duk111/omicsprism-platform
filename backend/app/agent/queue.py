@@ -5,7 +5,25 @@ from typing import Protocol
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from .graph import GraphResumeRequest, GraphState
+from .graph import DatasetProfileRef, GraphResumeRequest, GraphState
+
+
+class AgentTurnInput(BaseModel):
+    """Only the new user input supplied for one graph turn."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    message: str = Field(min_length=1, max_length=4000)
+    input_bundle_id: str | None = Field(default=None, min_length=1, max_length=200)
+    dataset_profiles: list[DatasetProfileRef] = Field(default_factory=list, max_length=6)
+    # An empty list means that the existing thread focus remains unchanged.
+    focus_job_ids: list[str] = Field(default_factory=list, max_length=20)
+
+    @model_validator(mode="after")
+    def _profiles_require_bundle_reference(self) -> "AgentTurnInput":
+        if self.dataset_profiles and self.input_bundle_id is None:
+            raise ValueError("dataset profiles require an input bundle reference")
+        return self
 
 
 class AgentTurnWorkItem(BaseModel):
@@ -17,14 +35,19 @@ class AgentTurnWorkItem(BaseModel):
     thread_id: str = Field(min_length=1, max_length=200)
     trace_id: str = Field(default="trace-local", min_length=1, max_length=200)
     user_id: str = Field(min_length=1, max_length=200)
+    input: AgentTurnInput | None = None
+    # Legacy start payload retained while already queued messages drain.
     state: GraphState | None = None
     resume: GraphResumeRequest | None = None
     idempotency_key: str | None = Field(default=None, min_length=1, max_length=200)
 
     @model_validator(mode="after")
     def _one_operation(self) -> "AgentTurnWorkItem":
-        if (self.state is None) == (self.resume is None):
+        operations = sum(item is not None for item in (self.input, self.state, self.resume))
+        if operations != 1:
             raise ValueError("work item must contain exactly one graph operation")
+        if self.input is not None and self.idempotency_key is not None:
+            raise ValueError("idempotency key is only valid for approved resume")
         if self.state is not None and (
             self.state.thread_id != self.thread_id
             or self.state.turn_id not in {"turn-local", self.turn_id}

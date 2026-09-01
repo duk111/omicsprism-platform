@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from hashlib import sha256
+from collections.abc import Iterable
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -11,6 +12,46 @@ from .param_resolver import ScopeSpec
 
 
 ScalarValue = str | int | float | bool | None
+
+
+class RecentMessage(BaseModel):
+    """A bounded, prompt-safe message representation."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    role: Literal["user", "assistant"]
+    turn_id: str = Field(min_length=1, max_length=200)
+    text: str = Field(min_length=1, max_length=800)
+    truncated: bool = False
+
+
+class RecentMessages(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    context_version: str = Field(min_length=1, max_length=80)
+    messages: list[RecentMessage] = Field(default_factory=list, max_length=8)
+    truncated: bool = False
+
+
+class ConversationMemory(BaseModel):
+    """Durable facts distilled from previous turns, never raw conversation."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    context_version: str = Field(min_length=1, max_length=80)
+    truncated: bool = False
+    analysis_type: Literal["DEG", "DEM", "GMA"] | None = None
+    compare_field: str | None = Field(default=None, max_length=200)
+    tested_level: str | None = Field(default=None, max_length=200)
+    reference_level: str | None = Field(default=None, max_length=200)
+    scope: ScopeSpec | None = None
+    parameter_values: dict[str, ScalarValue] = Field(default_factory=dict, max_length=32)
+    user_corrections: list[str] = Field(default_factory=list, max_length=12)
+    preferences: dict[str, ScalarValue] = Field(default_factory=dict, max_length=32)
+    current_job_id: str | None = Field(default=None, max_length=200)
+    recent_job_ids: list[str] = Field(default_factory=list, max_length=20)
+    unresolved_questions: list[str] = Field(default_factory=list, max_length=12)
+    citation_refs: list[str] = Field(default_factory=list, max_length=20)
 
 
 class FactIndex(BaseModel):
@@ -81,6 +122,12 @@ class MainModelContext(BaseModel):
     fact_index: FactIndex
     decision_ledger: DecisionLedger
     working_set: WorkingSet
+    recent_messages: RecentMessages = Field(default_factory=lambda: RecentMessages(
+        context_version="messages.v1:empty"
+    ))
+    conversation_memory: ConversationMemory = Field(default_factory=lambda: ConversationMemory(
+        context_version="memory.v1:empty"
+    ))
 
 
 class ContextAssembler:
@@ -96,6 +143,10 @@ class ContextAssembler:
         fact_index = self._fact_index(state)
         ledger = self._decision_ledger(state)
         working_set = self._working_set(state)
+        recent_messages = getattr(state, "recent_messages", None)
+        if not isinstance(recent_messages, RecentMessages):
+            recent_messages = RecentMessages(context_version="messages.v1:empty")
+        memory = self._conversation_memory(state, ledger)
         summary = getattr(state, "conversation_summary", None)
         if summary:
             summary = str(summary)[:1200]
@@ -110,6 +161,8 @@ class ContextAssembler:
             fact_index=fact_index,
             decision_ledger=ledger,
             working_set=working_set,
+            recent_messages=recent_messages,
+            conversation_memory=memory,
         )
 
     def _fact_index(self, state: object) -> FactIndex:
@@ -174,6 +227,8 @@ class ContextAssembler:
         parameter_values: dict[str, ScalarValue] = {}
         resolved = getattr(state, "resolved_request", None)
         params = getattr(resolved, "params", None)
+        if params is None:
+            params = getattr(state, "confirmed_params", None)
         if params is not None:
             analysis_type = str(getattr(params, "analysis_type", "")) or None
             contrast = getattr(params, "contrast", None)
@@ -225,6 +280,51 @@ class ContextAssembler:
             rejected_candidates=rejected,
         )
 
+    def _conversation_memory(self, state: object, ledger: DecisionLedger) -> ConversationMemory:
+        existing = getattr(state, "conversation_memory", None)
+        values = existing.model_dump(mode="python") if isinstance(existing, ConversationMemory) else {}
+        current_job = getattr(state, "current_job", None)
+        focus = getattr(state, "focus", None)
+        preferences = dict(values.get("preferences", {}) or {})
+        preferences.update(getattr(focus, "preferences", {}) or {})
+        citation_refs = list(values.get("citation_refs", []) or [])[:20]
+        citation = getattr(focus, "last_citation", None)
+        if citation is not None:
+            artifact = str(getattr(citation, "artifact", ""))
+            checksum = str(getattr(citation, "checksum", ""))
+            if artifact and checksum:
+                citation_ref = f"{artifact}#{checksum}"
+                if citation_ref not in citation_refs:
+                    citation_refs.append(citation_ref)
+        recent_job_ids = [
+            str(getattr(item, "job_id", ""))
+            for item in (getattr(state, "recent_jobs", []) or [])
+            if getattr(item, "job_id", None)
+        ][-20:]
+        if current_job is not None and getattr(current_job, "job_id", None):
+            current_job_id = str(current_job.job_id)
+        else:
+            current_job_id = values.get("current_job_id")
+        payload = {
+            "analysis_type": ledger.analysis_type,
+            "compare_field": ledger.compare_field,
+            "tested_level": ledger.tested_level,
+            "reference_level": ledger.reference_level,
+            "scope": ledger.scope.model_dump(mode="python") if ledger.scope else None,
+            "parameter_values": ledger.parameter_values,
+            "user_corrections": values.get("user_corrections", [])[:12],
+            "preferences": preferences,
+            "current_job_id": current_job_id,
+            "recent_job_ids": recent_job_ids or values.get("recent_job_ids", [])[:20],
+            "unresolved_questions": values.get("unresolved_questions", [])[:12],
+            "citation_refs": citation_refs,
+        }
+        return ConversationMemory(
+            context_version=_version("memory", payload),
+            truncated=bool(values.get("truncated", False)),
+            **payload,
+        )
+
     def _working_set(self, state: object) -> WorkingSet:
         items: list[WorkingSetItem] = []
         for observation in (getattr(state, "tool_observations", []) or [])[-self._MAX_WORKING_ITEMS :]:
@@ -269,3 +369,41 @@ class ContextAssembler:
 def _version(prefix: str, payload: object) -> str:
     canonical = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     return f"{prefix}.v1:{sha256(canonical.encode('utf-8')).hexdigest()[:16]}"
+
+
+def build_recent_messages(records: Iterable[object], *, limit: int = 8) -> tuple[RecentMessages, str | None]:
+    """Convert persisted message records into bounded prompt context."""
+
+    normalized: list[RecentMessage] = []
+    all_items = list(records)
+    for record in all_items:
+        role_value = getattr(record, "role", "")
+        role = str(getattr(role_value, "value", role_value)).lower()
+        if role not in {"user", "assistant"}:
+            continue
+        parts: list[str] = []
+        for block in getattr(record, "blocks", []) or []:
+            text = getattr(block, "text", None)
+            if text:
+                parts.append(str(text))
+        text = "\n".join(parts).strip()
+        if not text:
+            continue
+        clipped = text[:800]
+        normalized.append(RecentMessage(
+            role=role,  # type: ignore[arg-type]
+            turn_id=str(getattr(record, "message_id", "message")),
+            text=clipped,
+            truncated=len(text) > 800,
+        ))
+    recent = normalized[-max(1, min(limit, 8)):]
+    older = normalized[:-len(recent)] if recent else normalized
+    summary = None
+    if older:
+        summary = "\n".join(f"{item.role}: {item.text}" for item in older)[-1200:]
+    payload = [item.model_dump(mode="python") for item in recent]
+    return RecentMessages(
+        context_version=_version("messages", payload),
+        messages=recent,
+        truncated=bool(older) or any(item.truncated for item in normalized),
+    ), summary

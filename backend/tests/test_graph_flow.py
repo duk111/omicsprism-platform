@@ -470,6 +470,8 @@ def test_main_model_context_excludes_owner_and_dataset_payloads() -> None:
         "fact_index",
         "decision_ledger",
         "working_set",
+        "recent_messages",
+        "conversation_memory",
     }
     assert "user_id" not in payload
     assert "owner_id" not in payload
@@ -717,6 +719,8 @@ def test_default_checkpointer_resumes_confirmation_flow_once() -> None:
     assert completed.recent_jobs == [completed.current_job]
     assert completed.pending_interrupt is None
     assert completed.pending_plan is None
+    assert completed.confirmed_params is not None
+    assert completed.confirmed_params.contrast.tested_level == "salt"
     assert len(submitter.requests) == 1
     request = submitter.requests[0]
     assert request.user_id == "user-1"

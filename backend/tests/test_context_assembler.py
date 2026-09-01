@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-from backend.app.agent.context import ContextAssembler
+from backend.app.agent.context import ContextAssembler, build_recent_messages
 from backend.app.agent.dataset_profile import MetadataProfile, MatrixProfile
 from backend.app.agent.graph import DatasetProfileRef, GraphState, JobRef, JobSummary
 from backend.app.agent.param_resolver import ContrastSpec, DEGParams, ResolvedRequest, ScopeSpec
@@ -131,3 +131,23 @@ def test_context_assembler_truncates_large_metadata_index() -> None:
     assert len(context.fact_index.metadata_fields) == 20
     assert len(context.fact_index.metadata_levels) == 19
     assert context.fact_index.truncated
+
+
+def test_recent_messages_are_bounded_and_compacted_deterministically() -> None:
+    records = [
+        SimpleNamespace(
+            message_id=f"turn-{index}",
+            role="user" if index % 2 == 0 else "assistant",
+            blocks=[SimpleNamespace(text=f"message {index}")],
+        )
+        for index in range(12)
+    ]
+
+    recent, summary = build_recent_messages(records)
+
+    assert len(recent.messages) == 8
+    assert recent.truncated
+    assert summary is not None
+    assert "message 0" in summary
+    assert "message 11" not in summary
+    assert recent.messages[-1].text == "message 11"

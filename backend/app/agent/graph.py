@@ -25,10 +25,12 @@ from .schemas import (
 )
 from .validation import ContrastPreview, DatasetRef, Issue, ValidationReport
 from .context import (
+    ConversationMemory,
     ContextAssembler,
     DecisionLedger,
     FactIndex,
     MainModelContext,
+    RecentMessages,
     WorkingSet,
 )
 
@@ -540,6 +542,13 @@ class GraphState(BaseModel):
     ))
     version: int = Field(default=0, ge=0)
     conversation_summary: str | None = Field(default=None, max_length=4000)
+    recent_messages: RecentMessages = Field(default_factory=lambda: RecentMessages(
+        context_version="messages.v1:empty"
+    ))
+    conversation_memory: ConversationMemory = Field(default_factory=lambda: ConversationMemory(
+        context_version="memory.v1:empty"
+    ))
+    active_input_bundle_id: str | None = Field(default=None, min_length=1, max_length=200)
     dataset_profiles: list[DatasetProfileRef] = Field(default_factory=list, max_length=6)
     current_job: JobRef | None = None
     recent_jobs: list[JobRef] = Field(default_factory=list, max_length=20)
@@ -551,6 +560,7 @@ class GraphState(BaseModel):
     job_summary: JobSummary | None = None
     grounded_answer: GroundedAnswer | None = None
     pending_plan: PendingPlan | None = None
+    confirmed_params: AnalysisParams | None = None
     tool_observations: list[ToolObservation] = Field(default_factory=list, max_length=12)
     pending_interrupt: PendingInterrupt | None = None
     step_budget: StepBudget = Field(default_factory=StepBudget)

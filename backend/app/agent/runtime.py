@@ -8,6 +8,7 @@ from langgraph.types import Command
 from psycopg import OperationalError
 
 from .bootstrap import AgentApiContext
+from .context import ContextAssembler, build_recent_messages
 from .graph import GraphInterrupt, GraphState
 from ..observability import log_context
 from .product_store import AgentResourceNotFound, TurnConflict
@@ -70,8 +71,8 @@ class AgentRuntime:
                 retry_count=max(0, turn.attempt - 1),
             )
             config = {"configurable": {"thread_id": item.thread_id}}
-            if item.state is not None:
-                self._run_start(item, config, turn.attempt)
+            if item.input is not None or item.state is not None:
+                self._run_start(item, config, turn.attempt, turn.run_id)
             else:
                 self._run_resume(item, config)
             finalized = self._finalize(item, turn)
@@ -137,9 +138,39 @@ class AgentRuntime:
                 continue
             self.run_once(raw_item)
 
-    def _run_start(self, item: AgentTurnWorkItem, config: dict, attempt: int) -> None:
-        if item.state is None:
-            raise ValueError("start work item is missing graph state")
+    def _run_start(
+        self,
+        item: AgentTurnWorkItem,
+        config: dict,
+        attempt: int,
+        run_id: str,
+    ) -> None:
+        if item.state is None and item.input is None:
+            raise ValueError("start work item is missing input")
+        if item.input is not None:
+            snapshot = self.context.graph.get_state(config)
+            values = getattr(snapshot, "values", None)
+            if isinstance(values, GraphState):
+                current = values
+            elif values:
+                try:
+                    current = GraphState.model_validate(values)
+                except (TypeError, ValueError):
+                    current = None
+            else:
+                current = None
+            if attempt > 1 and current is not None:
+                if _snapshot_interrupts(snapshot):
+                    return
+                if current.turn_id == item.turn_id:
+                    if getattr(snapshot, "next", ()):  # retry after a transient failure
+                        self._invoke_graph(item, None, config)
+                    return
+            merged = self._merge_turn_input(item, current, run_id)
+            self.context.graph.update_state(config, merged.model_dump(mode="json"))
+            self._invoke_graph(item, merged.model_dump(mode="json"), config)
+            return
+        assert item.state is not None
         if attempt == 1:
             state_values = item.state.model_dump(mode="json")
             self.context.graph.update_state(
@@ -161,6 +192,125 @@ class AgentRuntime:
             state_values = item.state.model_dump(mode="json")
             self.context.graph.update_state(config, state_values)
             self._invoke_graph(item, state_values, config)
+
+    def _merge_turn_input(
+        self,
+        item: AgentTurnWorkItem,
+        current: GraphState | None,
+        run_id: str,
+    ) -> GraphState:
+        turn_input = item.input
+        if turn_input is None:
+            raise ValueError("turn input is missing")
+        if current is None:
+            current = GraphState(
+                thread_id=item.thread_id,
+                user_id=item.user_id,
+                trace_id=item.trace_id,
+                turn_id=item.turn_id,
+                run_id=run_id,
+                user_message=turn_input.message,
+            )
+        if current.thread_id != item.thread_id or current.user_id != item.user_id:
+            raise ValueError("graph checkpoint ownership mismatch")
+        focus = current.focus
+        version = current.version
+        recent_jobs = list(current.recent_jobs)
+        existing_memory = current.conversation_memory
+        corrections = list(existing_memory.user_corrections)
+        if _is_explicit_correction(turn_input.message):
+            corrections.append(turn_input.message[:400])
+        if turn_input.focus_job_ids:
+            focus = focus.model_copy(update={"in_scope_job_ids": list(turn_input.focus_job_ids)})
+            version += 1
+            for job_id in turn_input.focus_job_ids:
+                recent_jobs = [item for item in recent_jobs if item.job_id != job_id]
+                from .graph import JobRef
+                recent_jobs.append(JobRef(job_id=job_id, owner_id=item.user_id))
+        has_new_inputs = bool(turn_input.dataset_profiles)
+        inherited_profiles = (
+            list(current.dataset_profiles)
+            if not has_new_inputs and self._can_inherit_dataset_profiles(current, item)
+            else []
+        )
+        merged = current.model_copy(update={
+            "trace_id": item.trace_id,
+            "turn_id": item.turn_id,
+            "run_id": run_id,
+            "user_message": turn_input.message,
+            "focus": focus,
+            "version": version,
+            "dataset_profiles": (
+                list(turn_input.dataset_profiles)
+                if has_new_inputs
+                else inherited_profiles
+            ),
+            "active_input_bundle_id": (
+                turn_input.input_bundle_id if has_new_inputs
+                else current.active_input_bundle_id if inherited_profiles else None
+            ),
+            "recent_jobs": recent_jobs[-20:],
+            # Per-turn state must never leak into the next user message.
+            "decision": None,
+            "response_text": None,
+            "clarification_answer": None,
+            "resolved_request": None,
+            "validation_report": None,
+            "job_summary": None,
+            "grounded_answer": None,
+            "pending_plan": None,
+            "pending_interrupt": None,
+            "tool_observations": [],
+            "step_budget": type(current.step_budget)(),
+            "conversation_memory": existing_memory.model_copy(update={
+                "user_corrections": corrections[-12:],
+                "preferences": dict(focus.preferences),
+            }),
+        })
+        try:
+            messages = self.context.product_store.list_messages(
+                thread_id=item.thread_id,
+                user_id=item.user_id,
+                limit=100,
+            )
+            recent, summary = build_recent_messages(messages)
+            ledger_memory = ContextAssembler().assemble(merged).conversation_memory
+            merged = merged.model_copy(update={
+                "recent_messages": recent,
+                "conversation_summary": summary or current.conversation_summary,
+                "conversation_memory": ledger_memory,
+            })
+        except Exception:
+            # Message history is an optimization for prompting; checkpoint
+            # ownership and the turn input remain sufficient to execute safely.
+            LOG.warning("unable to refresh bounded conversation context", extra={
+                "event": "agent.context.refresh_failed",
+                "thread_id": item.thread_id,
+            })
+        return merged
+
+    def _can_inherit_dataset_profiles(
+        self,
+        current: GraphState,
+        item: AgentTurnWorkItem,
+    ) -> bool:
+        bundle_id = current.active_input_bundle_id
+        if bundle_id is None:
+            # Checkpoints created before Stage 3 have no bundle reference.
+            # Preserve their bounded profile references for compatibility.
+            return True
+        try:
+            bundle = self.context.product_store.get_input_bundle(
+                bundle_id=bundle_id,
+                user_id=item.user_id,
+            )
+        except AgentResourceNotFound:
+            return False
+        return (
+            bundle.thread_id == item.thread_id
+            and bundle.status.value == "active"
+            and datetime.now(timezone.utc) < bundle.expires_at
+        )
 
     def _run_resume(self, item: AgentTurnWorkItem, config: dict) -> None:
         if item.resume is None:
@@ -347,3 +497,9 @@ def _checkpoint_matches(snapshot: object, state: GraphState) -> bool:
     except (TypeError, ValueError):
         return False
     return current.model_dump(mode="json") == state.model_dump(mode="json")
+
+
+def _is_explicit_correction(message: str) -> bool:
+    normalized = message.casefold()
+    markers = ("改为", "更正", "修正", "instead", "change ", "replace ")
+    return any(marker in normalized for marker in markers)

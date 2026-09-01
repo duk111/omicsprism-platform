@@ -28,7 +28,7 @@ from .graph import (
     ConfirmationPayload,
 )
 from .product_store import ActiveTurnConflict, AgentResourceNotFound, IdempotencyConflict, TurnConflict
-from .queue import AgentTurnWorkItem
+from .queue import AgentTurnInput, AgentTurnWorkItem
 from .schemas import (
     AgentInputBundleRecord,
     AgentInputBundleResponse,
@@ -306,7 +306,7 @@ def create_agent_router(
         ctx: AgentApiContext = Depends(current_context),
     ) -> GraphTurnResult:
         thread = _owned_thread(ctx, thread_id, user_id)
-        focus, version = _owned_graph_focus(ctx, thread_id, user_id)
+        focus, _ = _owned_graph_focus(ctx, thread_id, user_id)
         _require_owned_jobs(ctx, payload.focus_job_ids, user_id)
         blocks = [AgentTextBlock(text=payload.message)]
         input_files: list[AgentInputFileRecord] = []
@@ -318,25 +318,15 @@ def create_agent_router(
             ))
         focus_job_ids = payload.focus_job_ids or focus.in_scope_job_ids
         _require_owned_jobs(ctx, focus_job_ids, user_id)
-        if payload.focus_job_ids:
-            focus = focus.model_copy(update={"in_scope_job_ids": list(payload.focus_job_ids)})
-            version += 1
         turn_id = f"turn-{uuid4()}"
         trace_id = f"trace-{uuid4()}"
-        graph_state = GraphState(
-            thread_id=thread_id,
-            user_id=user_id,
-            trace_id=trace_id,
-            turn_id=turn_id,
-            run_id=thread.current_run_id,
-            user_message=payload.message,
-            focus=focus,
-            version=version,
+        turn_input = AgentTurnInput(
+            message=payload.message,
+            input_bundle_id=payload.input_bundle_id,
             dataset_profiles=_graph_dataset_profiles(ctx, input_files, user_id),
-            recent_jobs=[
-                JobRef(job_id=job_id, owner_id=user_id)
-                for job_id in focus_job_ids
-            ],
+            # Only explicit focus changes belong to this turn. An empty list
+            # tells the runtime to retain the checkpoint focus.
+            focus_job_ids=list(payload.focus_job_ids),
         )
         now = datetime.now(timezone.utc)
         turn = AgentTurnRecord(
@@ -379,10 +369,7 @@ def create_agent_router(
                     thread_id=queued.thread_id,
                     trace_id=queued.trace_id,
                     user_id=queued.user_id,
-                    state=graph_state.model_copy(update={
-                        "trace_id": queued.trace_id,
-                        "turn_id": queued.turn_id,
-                    }),
+                    input=turn_input,
                 ))
             return _queued_graph_turn_result(queued)
         _enqueue_work(ctx, AgentTurnWorkItem(
@@ -390,7 +377,7 @@ def create_agent_router(
             thread_id=thread_id,
             trace_id=trace_id,
             user_id=user_id,
-            state=graph_state,
+            input=turn_input,
         ))
         if ctx.trace_recorder is not None:
             ctx.trace_recorder.turn_event(
@@ -727,6 +714,10 @@ def _initialize_graph_checkpoint(
         user_message="Thread initialized",
         focus=focus,
         version=0,
+        recent_jobs=[
+            JobRef(job_id=job_id, owner_id=user_id)
+            for job_id in focus.in_scope_job_ids
+        ],
     )
     ctx.graph.update_state(
         _graph_config(thread_id),

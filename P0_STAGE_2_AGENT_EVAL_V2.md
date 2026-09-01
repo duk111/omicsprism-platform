@@ -53,9 +53,9 @@ states, zero illegal automatic executions, 1.0 clarification precision/recall,
 evaluator self-tests. Capability isolation is reported separately with pass@1,
 tool parameter accuracy, trace linkage, and illegal auto-execution counts.
 
-The eight multi-turn scenarios are non-gating baselines because durable
-cross-runtime message history is Stage 3 work. They remain visible rather than
-being presented as a current production guarantee.
+Stage 3 promoted the eight multi-turn scenarios to the release gate. They now
+regress bounded durable context availability alongside the other deterministic
+graph contracts.
 
 ## Commands
 

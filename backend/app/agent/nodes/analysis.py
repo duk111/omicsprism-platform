@@ -83,7 +83,7 @@ def analysis_node(
             prior_params=(
                 state.pending_plan.params
                 if state.pending_plan is not None
-                else None
+                else state.confirmed_params
             ),
         )
         report = validate_analysis_request(resolved, dataset_refs)
@@ -212,6 +212,7 @@ def _handle_confirmation(
         update={
             "current_job": job_ref,
             "recent_jobs": recent_jobs[-20:],
+            "confirmed_params": payload.resolved_params,
             "pending_interrupt": None,
             "pending_plan": None,
             "response_text": f"Analysis job {job_ref.job_id} was submitted.",

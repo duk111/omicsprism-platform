@@ -103,7 +103,8 @@ def test_evaluator_self_tests_keep_malformed_evidence_out_of_agent_quality_metri
     assert report.evaluator_self_test_passed
     assert report.release_gate.passed
     assert report.quality.case_count == 24
-    assert report.quality.known_gap_count == 8
+    assert report.quality.release_case_count == 24
+    assert report.quality.known_gap_count == 0
     assert report.capability.case_count == 6
     assert report.capability.pass_at_1 == 1
     assert report.capability.tool_parameter_accuracy == 1

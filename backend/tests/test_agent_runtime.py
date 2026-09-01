@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
 import pytest
@@ -9,15 +9,27 @@ from psycopg import OperationalError
 from backend.app.agent.bootstrap import AgentApiContext
 from backend.app.agent.graph import (
     AgentDecision,
+    DatasetProfileRef,
     GraphState,
     JobRef,
     MainModelOutput,
     build_agent_graph,
 )
+from backend.app.agent.dataset_profile import MatrixProfile
 from backend.app.agent.product_store import InMemoryAgentProductStore
-from backend.app.agent.queue import AgentTurnWorkItem, InMemoryAgentTurnQueue
+from backend.app.agent.queue import AgentTurnInput, AgentTurnWorkItem, InMemoryAgentTurnQueue
 from backend.app.agent.runtime import AgentRuntime
-from backend.app.agent.schemas import AgentErrorBlock, AgentThreadRecord, AgentTurnRecord, AgentTurnStatus
+from backend.app.agent.schemas import (
+    AgentInputBundleRecord,
+    AgentInputBundleStatus,
+    AgentErrorBlock,
+    AgentMessageRecord,
+    AgentMessageRole,
+    AgentTextBlock,
+    AgentThreadRecord,
+    AgentTurnRecord,
+    AgentTurnStatus,
+)
 from langgraph.checkpoint.memory import InMemorySaver
 
 
@@ -216,6 +228,171 @@ def test_runtime_runs_consecutive_turns_with_a_real_langgraph_checkpoint() -> No
         "answer 1",
         "answer 2",
     ]
+
+
+def test_runtime_merges_new_input_and_retains_only_durable_context() -> None:
+    class _AnswerModel:
+        def __init__(self) -> None:
+            self.contexts = []
+
+        def __call__(self, context):
+            self.contexts.append(context)
+            return MainModelOutput(
+                decision=AgentDecision(action="answer"),
+                answer=f"answer {len(self.contexts)}",
+            )
+
+    model = _AnswerModel()
+    graph = build_agent_graph(
+        model,
+        lambda _request: [],
+        lambda request: JobRef(job_id="job-1", owner_id=request.user_id),
+        lambda _request: (_ for _ in ()).throw(LookupError()),
+        lambda _request: (_ for _ in ()).throw(LookupError()),
+        checkpointer=InMemorySaver(),
+    )
+    context, queue, first_turn = _context(graph)
+    runtime = AgentRuntime(context, queue)
+    context.product_store.append_message(AgentMessageRecord(
+        message_id="user-turn-1-input",
+        thread_id="thread-1",
+        run_id="run-1",
+        user_id="user-1",
+        role=AgentMessageRole.USER,
+        blocks=[AgentTextBlock(text="first question")],
+        created_at=datetime.now(timezone.utc),
+    ))
+
+    runtime.run_once(AgentTurnWorkItem(
+        turn_id=first_turn.turn_id,
+        thread_id=first_turn.thread_id,
+        user_id=first_turn.user_id,
+        input=AgentTurnInput(message="first question"),
+    ).model_dump_json())
+
+    now = datetime.now(timezone.utc)
+    second_turn = first_turn.model_copy(update={
+        "turn_id": "turn-2-input",
+        "idempotency_key": "turn-key-2-input",
+        "request_hash": "sha256:request-2-input",
+        "status": AgentTurnStatus.QUEUED,
+        "attempt": 0,
+        "created_at": now,
+        "updated_at": now,
+    })
+    context.product_store.create_turn(second_turn)
+    context.product_store.append_message(AgentMessageRecord(
+        message_id="user-turn-2-input",
+        thread_id="thread-1",
+        run_id="run-1",
+        user_id="user-1",
+        role=AgentMessageRole.USER,
+        blocks=[AgentTextBlock(text="second question")],
+        created_at=now,
+    ))
+    # A new runtime instance proves this turn only depends on the persisted
+    # thread/checkpoint boundaries, not the first consumer's local variables.
+    AgentRuntime(context, queue).run_once(AgentTurnWorkItem(
+        turn_id=second_turn.turn_id,
+        thread_id=second_turn.thread_id,
+        user_id=second_turn.user_id,
+        input=AgentTurnInput(message="second question"),
+    ).model_dump_json())
+
+    state = GraphState.model_validate(
+        graph.get_state({"configurable": {"thread_id": "thread-1"}}).values
+    )
+    assert state.user_message == "second question"
+    assert state.turn_id == second_turn.turn_id
+    assert state.step_budget.used_model_steps == 1
+    assert state.decision.action == "answer"
+    assert [item.text for item in model.contexts[1].recent_messages.messages] == [
+        "first question", "answer 1", "second question",
+    ]
+
+
+def test_runtime_retains_explicit_user_corrections_in_structured_memory() -> None:
+    context, queue, turn = _context(_Graph())
+    runtime = AgentRuntime(context, queue)
+    runtime.run_once(AgentTurnWorkItem(
+        turn_id=turn.turn_id,
+        thread_id=turn.thread_id,
+        user_id=turn.user_id,
+        input=AgentTurnInput(message="first question"),
+    ).model_dump_json())
+    now = datetime.now(timezone.utc)
+    follow_up = turn.model_copy(update={
+        "turn_id": "turn-correction",
+        "idempotency_key": "turn-correction-key",
+        "request_hash": "sha256:turn-correction",
+        "status": AgentTurnStatus.QUEUED,
+        "attempt": 0,
+        "created_at": now,
+        "updated_at": now,
+    })
+    context.product_store.create_turn(follow_up)
+    runtime.run_once(AgentTurnWorkItem(
+        turn_id=follow_up.turn_id,
+        thread_id=follow_up.thread_id,
+        user_id=follow_up.user_id,
+        input=AgentTurnInput(message="Please change reference to control instead."),
+    ).model_dump_json())
+
+    assert context.graph.state is not None
+    assert context.graph.state.conversation_memory.user_corrections == [
+        "Please change reference to control instead.",
+    ]
+
+
+def test_runtime_does_not_inherit_an_expired_input_bundle() -> None:
+    context, queue, turn = _context(_Graph())
+    now = datetime.now(timezone.utc)
+    context.product_store.save_input_bundle(AgentInputBundleRecord(
+        bundle_id="bundle-expired",
+        thread_id=turn.thread_id,
+        user_id=turn.user_id,
+        status=AgentInputBundleStatus.EXPIRED,
+        expires_at=now - timedelta(seconds=1),
+        created_at=now - timedelta(hours=1),
+    ))
+    context.graph.state = _state().model_copy(update={
+        "active_input_bundle_id": "bundle-expired",
+    })
+
+    AgentRuntime(context, queue).run_once(AgentTurnWorkItem(
+        turn_id=turn.turn_id,
+        thread_id=turn.thread_id,
+        user_id=turn.user_id,
+        input=AgentTurnInput(message="follow up without new files"),
+    ).model_dump_json())
+
+    assert context.graph.state is not None
+    assert context.graph.state.active_input_bundle_id is None
+    assert context.graph.state.dataset_profiles == []
+
+
+def test_turn_input_rejects_profiles_without_their_bundle_reference() -> None:
+    profile = DatasetProfileRef(
+        dataset_id="counts-1",
+        owner_id="user-1",
+        filename="counts.csv",
+        checksum="sha256:" + "a" * 64,
+        profile=MatrixProfile(
+            role="counts",
+            shape=(1, 2),
+            sample_ids=["s1", "s2"],
+            feature_type="gene",
+            feature_id_examples=["g1"],
+            numeric_type="integer_counts",
+            has_negative=False,
+            missing_rate=0,
+        ),
+    )
+    with pytest.raises(ValueError, match="bundle reference"):
+        AgentTurnInput.model_validate({
+            "message": "analyze",
+            "dataset_profiles": [profile],
+        })
 
 
 def test_runtime_persists_model_boundary_fallback_as_assistant_message() -> None:
