@@ -16,6 +16,7 @@ from .param_resolver import (
     ScopeSpec,
 )
 from .schemas import (
+    AgentJobWaitResponse,
     AgentMessageResponse,
     AgentTurnResponse,
     GroundedAnswer,
@@ -342,8 +343,13 @@ class AgentStreamEvent(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     event_id: str = Field(min_length=1, max_length=500)
-    event_type: Literal["turn.updated", "message.created", "interrupt.updated"]
-    data: AgentTurnResponse | AgentMessageResponse | GraphPendingInterrupt | None
+    event_type: Literal[
+        "turn.updated",
+        "message.created",
+        "job.updated",
+        "interrupt.updated",
+    ]
+    data: AgentTurnResponse | AgentMessageResponse | AgentJobWaitResponse | GraphPendingInterrupt | None
 
 
 class GraphClarificationResumeRequest(BaseModel):

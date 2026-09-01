@@ -27,6 +27,7 @@ from .graph import (
     JobRef,
     ConfirmationPayload,
 )
+from .job_events import AgentJobWaitRecord
 from .product_store import ActiveTurnConflict, AgentResourceNotFound, IdempotencyConflict, TurnConflict
 from .queue import AgentTurnInput, AgentTurnWorkItem
 from .schemas import (
@@ -35,6 +36,8 @@ from .schemas import (
     AgentInputFileRecord,
     AgentInputFileResponse,
     AgentInputSummaryBlock,
+    AgentJobWaitListResponse,
+    AgentJobWaitResponse,
     AgentMessageListResponse,
     AgentMessageRecord,
     AgentMessageResponse,
@@ -140,6 +143,27 @@ def create_agent_router(
     ) -> GraphPendingInterrupt | None:
         _owned_thread(ctx, thread_id, user_id)
         return _pending_graph_interrupt(ctx, thread_id, user_id)
+
+    @router.get(
+        "/threads/{thread_id}/job-waits",
+        response_model=AgentJobWaitListResponse,
+    )
+    def list_job_waits(
+        thread_id: str,
+        limit: Annotated[int, Query(ge=1, le=100)] = 100,
+        user_id: str = Depends(session_dependency),
+        ctx: AgentApiContext = Depends(current_context),
+    ) -> AgentJobWaitListResponse:
+        _owned_thread(ctx, thread_id, user_id)
+        waits = ctx.product_store.list_job_waits(
+            thread_id=thread_id,
+            user_id=user_id,
+            limit=limit,
+        )
+        return AgentJobWaitListResponse(
+            waits=[_job_wait_response(ctx, wait) for wait in waits],
+            next_cursor=None,
+        )
 
     @router.delete("/threads/{thread_id}", status_code=204)
     def delete_thread(
@@ -536,7 +560,17 @@ def create_agent_router(
                     pending_interrupt = _pending_graph_interrupt(ctx, thread_id, user_id, turns=turns)
                 except HTTPException:
                     pending_interrupt = None
-                events = project_stream_events(turns, messages, pending_interrupt)
+                waits = ctx.product_store.list_job_waits(
+                    thread_id=thread_id,
+                    user_id=user_id,
+                    limit=100,
+                )
+                events = project_stream_events(
+                    turns,
+                    messages,
+                    pending_interrupt,
+                    [_job_wait_response(ctx, wait) for wait in waits],
+                )
                 if not cursor_found and not any(event.event_id == last_event_id for event in events):
                     # 游标已超出窗口时重放当前快照；客户端随后用 REST 快照去重。
                     cursor_found = True
@@ -572,6 +606,7 @@ def project_stream_events(
     turns: list[AgentTurnRecord],
     messages: list[AgentMessageRecord],
     pending_interrupt: GraphPendingInterrupt | None = None,
+    job_waits: list[AgentJobWaitResponse] | None = None,
 ) -> list[AgentStreamEvent]:
     projected: list[tuple[datetime, AgentStreamEvent]] = []
     for turn in turns:
@@ -588,6 +623,17 @@ def project_stream_events(
             data=_message_response(message),
         )
         projected.append((message.created_at, event))
+    for wait in job_waits or []:
+        event = AgentStreamEvent(
+            event_id=(
+                f"job:{wait.wait_id}:{wait.wait_status}:"
+                f"{wait.job_status.value if wait.job_status is not None else 'unknown'}:"
+                f"{wait.progress}:{wait.job_updated_at or wait.updated_at}"
+            ),
+            event_type="job.updated",
+            data=wait,
+        )
+        projected.append((wait.job_updated_at or wait.updated_at, event))
     if pending_interrupt is not None:
         fingerprint = sha256(pending_interrupt.model_dump_json().encode("utf-8")).hexdigest()
         event_id = f"interrupt:{pending_interrupt.checkpoint_turn_id}:{fingerprint}"
@@ -601,6 +647,36 @@ def project_stream_events(
         ))
     projected.sort(key=lambda item: (item[0], item[1].event_id))
     return [item[1] for item in projected]
+
+
+def _job_wait_response(
+    ctx: AgentApiContext,
+    wait: AgentJobWaitRecord,
+) -> AgentJobWaitResponse:
+    try:
+        job = ctx.job_store.get_for_user(wait.job_id, wait.user_id)
+    except HTTPException as exc:
+        if exc.status_code != 404:
+            raise
+        job = None
+    except (AgentResourceNotFound, KeyError, LookupError):
+        job = None
+    return AgentJobWaitResponse(
+        wait_id=wait.wait_id,
+        thread_id=wait.thread_id,
+        turn_id=wait.turn_id,
+        run_id=wait.run_id,
+        job_id=wait.job_id,
+        wait_status=wait.status.value,
+        job_status=job.status if job is not None else None,
+        progress=job.progress if job is not None else None,
+        progress_step=job.progress_step if job is not None else None,
+        error=job.error if job is not None else None,
+        continuation_turn_id=wait.continuation_turn_id,
+        created_at=wait.created_at,
+        updated_at=wait.updated_at,
+        job_updated_at=job.updated_at if job is not None else None,
+    )
 
 
 def _owned_thread(ctx: AgentApiContext, thread_id: str, user_id: str) -> AgentThreadRecord:

@@ -264,6 +264,37 @@ class AgentTurnListResponse(ContractModel):
     turns: list[AgentTurnResponse]
     next_cursor: str | None = None
 
+
+class AgentJobWaitResponse(ContractModel):
+    """Public projection of an Agent wait and its owned analysis Job."""
+
+    wait_id: str = Field(min_length=1)
+    thread_id: str = Field(min_length=1)
+    turn_id: str = Field(min_length=1)
+    run_id: str = Field(min_length=1)
+    job_id: str = Field(min_length=1)
+    wait_status: Literal[
+        "waiting",
+        "resume_queued",
+        "completed",
+        "failed",
+        "cancelled",
+        "expired",
+    ]
+    job_status: JobStatus | None = None
+    progress: int | None = Field(default=None, ge=0, le=100)
+    progress_step: str | None = Field(default=None, max_length=200)
+    error: str | None = Field(default=None, max_length=1000)
+    continuation_turn_id: str | None = None
+    created_at: datetime
+    updated_at: datetime
+    job_updated_at: datetime | None = None
+
+
+class AgentJobWaitListResponse(ContractModel):
+    waits: list[AgentJobWaitResponse]
+    next_cursor: str | None = None
+
 class AgentMessageRecord(ContractModel):
     message_id: str = Field(min_length=1)
     thread_id: str = Field(min_length=1)

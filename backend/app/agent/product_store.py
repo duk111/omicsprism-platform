@@ -127,6 +127,11 @@ class AgentProductStore(Protocol):
     def get_job_wait(self, *, job_id: str, user_id: str) -> AgentJobWaitRecord:
         ...
 
+    def list_job_waits(
+        self, *, thread_id: str, user_id: str, limit: int = 100,
+    ) -> list[AgentJobWaitRecord]:
+        ...
+
     def save_job_completion_event(self, event: AgentJobCompletionEvent) -> None:
         ...
 
@@ -466,6 +471,19 @@ class InMemoryAgentProductStore:
             if payload["job_id"] == job_id and payload["user_id"] == user_id:
                 return AgentJobWaitRecord.model_validate(deepcopy(payload))
         raise AgentResourceNotFound(job_id)
+
+    def list_job_waits(
+        self, *, thread_id: str, user_id: str, limit: int = 100,
+    ) -> list[AgentJobWaitRecord]:
+        self.get_thread(thread_id=thread_id, user_id=user_id)
+        bounded = max(1, min(limit, 100))
+        records = [
+            AgentJobWaitRecord.model_validate(deepcopy(payload))
+            for payload in self._job_waits.values()
+            if payload["thread_id"] == thread_id and payload["user_id"] == user_id
+        ]
+        records.sort(key=lambda item: (item.updated_at, item.wait_id))
+        return records[-bounded:]
 
     def save_job_completion_event(self, event: AgentJobCompletionEvent) -> None:
         self.get_thread(thread_id=event.thread_id, user_id=event.user_id)
@@ -1216,6 +1234,25 @@ class PostgresAgentProductStore:
         if row is None:
             raise AgentResourceNotFound(job_id)
         return _job_wait_from_row(row)
+
+    def list_job_waits(
+        self, *, thread_id: str, user_id: str, limit: int = 100,
+    ) -> list[AgentJobWaitRecord]:
+        self.get_thread(thread_id=thread_id, user_id=user_id)
+        bounded = max(1, min(limit, 100))
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                select wait_id, thread_id, user_id, turn_id, run_id, trace_id, job_id,
+                       status, continuation_turn_id, expires_at, created_at, updated_at
+                from agent_job_waits
+                where thread_id = %s and user_id = %s
+                order by updated_at desc, wait_id desc
+                limit %s
+                """,
+                (thread_id, user_id, bounded),
+            ).fetchall()
+        return [_job_wait_from_row(row) for row in reversed(rows)]
 
     def save_job_completion_event(self, event: AgentJobCompletionEvent) -> None:
         Jsonb = _jsonb_type()

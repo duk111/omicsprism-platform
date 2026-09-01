@@ -56,6 +56,28 @@ export interface AgentJobBlock {
   results_url?: string | null;
 }
 
+export interface AgentJobWaitResponse {
+  wait_id: string;
+  thread_id: string;
+  turn_id: string;
+  run_id: string;
+  job_id: string;
+  wait_status: "waiting" | "resume_queued" | "completed" | "failed" | "cancelled" | "expired";
+  job_status?: JobStatus | null;
+  progress?: number | null;
+  progress_step?: string | null;
+  error?: string | null;
+  continuation_turn_id?: string | null;
+  created_at: string;
+  updated_at: string;
+  job_updated_at?: string | null;
+}
+
+export interface AgentJobWaitListResponse {
+  waits: AgentJobWaitResponse[];
+  next_cursor?: string | null;
+}
+
 export interface AgentMessageListResponse {
   messages: AgentMessageResponse[];
   next_cursor?: string | null;
@@ -92,8 +114,8 @@ export interface AgentRunResponse {
 
 export interface AgentStreamEvent {
   event_id: string;
-  event_type: "turn.updated" | "message.created" | "interrupt.updated";
-  data: AgentTurnResponse | AgentMessageResponse | GraphPendingInterrupt | null;
+  event_type: "turn.updated" | "message.created" | "job.updated" | "interrupt.updated";
+  data: AgentTurnResponse | AgentMessageResponse | AgentJobWaitResponse | GraphPendingInterrupt | null;
 }
 
 export interface AgentTextBlock {

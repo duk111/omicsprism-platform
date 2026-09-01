@@ -17,6 +17,7 @@ from backend.app.agent.graph import (
     GraphPendingInterrupt,
     GraphState,
 )
+from backend.app.agent.job_events import AgentJobWaitRecord
 from backend.app.agent.product_store import InMemoryAgentProductStore
 from backend.app.agent.queue import InMemoryAgentTurnQueue
 from backend.app.agent.runtime import AgentRuntime
@@ -26,6 +27,7 @@ from backend.app.agent.schemas import (
     AgentThreadRecord,
     AgentTurnRecord,
 )
+from backend.app.models import AnalysisType, JobRecord
 from backend.app.settings import AppSettings
 from backend.app.storage_service import FileStorageService
 
@@ -36,12 +38,13 @@ COOKIE = "omicsprism_session"
 class _Jobs:
     def __init__(self) -> None:
         self.owners: dict[str, str] = {}
+        self.records: dict[str, JobRecord] = {}
         self.created = 0
 
     def get_for_user(self, job_id: str, user_id: str):
         if self.owners.get(job_id) != user_id:
             raise KeyError(job_id)
-        return object()
+        return self.records.get(job_id, object())
 
 
 class _Graph:
@@ -341,6 +344,71 @@ def test_stream_projection_includes_public_pending_interrupt() -> None:
     assert event.data == pending
 
 
+def test_job_wait_projection_exposes_owned_job_progress_and_status() -> None:
+    now = datetime.now(timezone.utc)
+    wait = AgentJobWaitRecord(
+        wait_id="wait-1",
+        thread_id="thread-1",
+        user_id="user-a",
+        turn_id="turn-1",
+        run_id="run-1",
+        trace_id="trace-1",
+        job_id="job-1",
+        created_at=now,
+        updated_at=now,
+    )
+    from backend.app.agent.api import _job_wait_response
+
+    context = _context()
+    context.product_store.save_thread(AgentThreadRecord(
+        thread_id="thread-1", user_id="user-a", title="thread", current_run_id="run-1",
+        status="active", version=0, created_at=now, updated_at=now,
+    ))
+    context.product_store.create_job_wait(wait)
+    context.job_store.owners["job-1"] = "user-a"
+    context.job_store.records["job-1"] = JobRecord(
+        id="job-1", project_name="test", analysis_type=AnalysisType.DEG,
+        status="running", created_at=now, updated_at=now,
+        progress=42, progress_step="Running model",
+    )
+
+    response = _job_wait_response(context, wait)
+    assert response.job_status.value == "running"
+    assert response.progress == 42
+    event = project_stream_events([], [], None, [response])[0]
+    assert event.event_type == "job.updated"
+    assert event.data == response
+
+
+def test_job_wait_endpoint_is_ownership_bound() -> None:
+    context = _context()
+    client = _client(context)
+    thread_id = _create_thread(client, "user-a")["thread_id"]
+    now = datetime.now(timezone.utc)
+    wait = AgentJobWaitRecord(
+        wait_id="wait-endpoint",
+        thread_id=thread_id,
+        user_id="user-a",
+        turn_id="turn-1",
+        run_id="run-1",
+        trace_id="trace-1",
+        job_id="job-endpoint",
+        created_at=now,
+        updated_at=now,
+    )
+    context.product_store.create_job_wait(wait)
+    context.job_store.owners["job-endpoint"] = "user-a"
+    context.job_store.records["job-endpoint"] = JobRecord(
+        id="job-endpoint", project_name="test", analysis_type=AnalysisType.DEM,
+        status="queued", created_at=now, updated_at=now,
+    )
+    body = client.get(f"/api/agent/threads/{thread_id}/job-waits")
+    assert body.status_code == 200
+    assert body.json()["waits"][0]["job_status"] == "queued"
+    _as_user(client, "user-b")
+    assert client.get(f"/api/agent/threads/{thread_id}/job-waits").status_code == 404
+
+
 def test_message_cursor_and_sse_snapshot_support_disconnect_recovery() -> None:
     context = _context()
     client = _client(context)
@@ -388,6 +456,7 @@ def test_openapi_exposes_agent_contract_without_api_model_dependency() -> None:
         "/api/agent/threads",
         "/api/agent/threads/{thread_id}",
         "/api/agent/threads/{thread_id}/pending-interrupt",
+        "/api/agent/threads/{thread_id}/job-waits",
         "/api/agent/threads/{thread_id}/messages",
         "/api/agent/threads/{thread_id}/turns",
         "/api/agent/threads/{thread_id}/turns/{turn_id}",

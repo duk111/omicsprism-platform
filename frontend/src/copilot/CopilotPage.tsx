@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { AlertCircle, Bot, ChevronDown, FilePlus2, Menu, MessageSquarePlus, Paperclip, Send, Square, Trash2, Wifi, WifiOff, X } from "lucide-react";
+import { AlertCircle, Bot, CheckCircle2, ChevronDown, CircleAlert, Clock3, FilePlus2, LoaderCircle, Menu, MessageSquarePlus, Paperclip, Send, Square, Trash2, Wifi, WifiOff, X } from "lucide-react";
 import { useSearchParams } from "react-router-dom";
-import type { AgentMessageResponse, AgentRunResponse, AgentStreamEvent, AgentThreadResponse, AgentTurnResponse, GraphInterrupt, GraphPendingInterrupt, GraphTurnResult } from "../api-types";
+import type { AgentJobWaitResponse, AgentMessageResponse, AgentRunResponse, AgentStreamEvent, AgentThreadResponse, AgentTurnResponse, GraphInterrupt, GraphPendingInterrupt, GraphTurnResult } from "../api-types";
 import { ApiRequestError } from "../api";
 import { createClientId } from "../clientId";
 import { agentApi, isGraphTurnResult } from "./agentApi";
@@ -22,6 +22,7 @@ export default function CopilotPage() {
   const [run, setRun] = useState<AgentRunResponse | null>(null);
   const [messages, setMessages] = useState<AgentMessageResponse[]>([]);
   const [turns, setTurns] = useState<AgentTurnResponse[]>([]);
+  const [jobWaits, setJobWaits] = useState<AgentJobWaitResponse[]>([]);
   const [draft, setDraft] = useState("");
   const [attachments, setAttachments] = useState<Attachment[]>([]);
   const [loading, setLoading] = useState(true);
@@ -37,20 +38,21 @@ export default function CopilotPage() {
   const messageEnd = useRef<HTMLDivElement>(null);
 
   const recover = useCallback(async (threadId: string) => {
-    const [detail, messageList, turnList, interrupt] = await Promise.all([
+    const [detail, messageList, turnList, interrupt, waitList] = await Promise.all([
       agentApi.getThread(threadId),
       agentApi.listMessages(threadId),
       agentApi.listTurns(threadId),
       agentApi.getPendingInterrupt(threadId),
+      agentApi.listJobWaits(threadId),
     ]);
     setRun(detail.run); setMessages(messageList.messages); setTurns(turnList.turns);
-    setPendingGraph(interrupt);
+    setPendingGraph(interrupt); setJobWaits(waitList.waits);
   }, []);
 
   const createThread = useCallback(async (focusIds: string[] = []) => {
     const created = await agentApi.createThread(focusIds);
     setThreads(current => [created, ...current.filter(item => item.thread_id !== created.thread_id)]);
-    setPendingGraph(null); setGraphBusy(false);
+    setPendingGraph(null); setGraphBusy(false); setJobWaits([]);
     setActiveId(created.thread_id); setRailOpen(false); setNotice(null);
     if (focusIds.length) setSearchParams({}, { replace: true });
     return created.thread_id;
@@ -85,6 +87,7 @@ export default function CopilotPage() {
       const payload = JSON.parse(event.data) as AgentStreamEvent;
       setConnection("live");
       if (payload.event_type === "message.created") setMessages(current => upsert(current, payload.data as AgentMessageResponse, "message_id"));
+      else if (payload.event_type === "job.updated") setJobWaits(current => upsert(current, payload.data as AgentJobWaitResponse, "wait_id"));
       else if (payload.event_type === "turn.updated") {
         const turn = payload.data as AgentTurnResponse;
         setTurns(current => upsert(current, turn, "turn_id"));
@@ -96,6 +99,7 @@ export default function CopilotPage() {
       }
     };
     source.addEventListener("message.created", accept);
+    source.addEventListener("job.updated", accept);
     source.addEventListener("turn.updated", accept);
     source.addEventListener("interrupt.updated", accept);
     source.onopen = () => setConnection("live");
@@ -106,10 +110,11 @@ export default function CopilotPage() {
     return () => { source.close(); if (fallback) window.clearInterval(fallback); };
   }, [activeId, recover]);
 
-  useEffect(() => { messageEnd.current?.scrollIntoView({ behavior: "smooth", block: "end" }); }, [messages, pendingGraph]);
+  useEffect(() => { messageEnd.current?.scrollIntoView({ behavior: "smooth", block: "end" }); }, [messages, pendingGraph, jobWaits]);
 
   const pendingTurn = turns.some(turn => turn.status === "queued" || turn.status === "running");
   const pendingTurnRecord = turns.find(turn => turn.status === "queued" || turn.status === "running");
+  const activeJobWaits = jobWaits.filter(wait => wait.wait_status === "waiting" || wait.wait_status === "resume_queued");
   const focusIds = run?.focus.in_scope_job_ids ?? [];
   const checkpointLabel = run ? `Version ${run.version}` : "Ready";
 
@@ -193,6 +198,7 @@ export default function CopilotPage() {
       <div className="message-scroll" aria-live="polite">
         {loading ? <EmptyState loading /> : messages.length === 0 ? <EmptyState /> : messages.map(message => <article className={`copilot-message ${message.role}`} key={message.message_id}><div className="message-author">{message.role === "assistant" ? <Bot size={16} /> : null}{message.role === "assistant" ? "Copilot" : "You"}</div><div className="message-body"><MessageBlocks message={message} onRetry={() => setDraft(latestUserText(messages))} /></div></article>)}
         {pendingGraph && <GraphInterruptPanel interrupt={pendingGraph.interrupt} busy={graphBusy} onResume={request => void resumeGraph(request)} />}
+        {activeJobWaits.map(wait => <JobWaitingState key={wait.wait_id} wait={wait} />)}
         {pendingTurn && !pendingGraph && <div className="working-state"><span /><span /><span /><em>Working on your request</em><button type="button" className="stop-request" disabled={canceling || !pendingTurnRecord} onClick={() => void cancelPendingTurn()} title="Stop request"><Square size={14} />Stop</button></div>}
         {notice && <div className="copilot-notice" role="alert"><AlertCircle size={17} /><span>{notice}</span><button type="button" aria-label="Dismiss" onClick={() => setNotice(null)}><X size={16} /></button></div>}
         <div ref={messageEnd} />
@@ -206,6 +212,28 @@ export default function CopilotPage() {
     <aside className="copilot-context" aria-label="Conversation context"><section><span className="context-label">Checkpoint</span><strong>{checkpointLabel}</strong><p>Graph checkpoint</p></section><section><span className="context-label">Focused jobs</span>{focusIds.length ? <ul>{focusIds.map(id => <li key={id}><a href={`/jobs/${encodeURIComponent(id)}`}>{id.slice(0, 8)}...</a></li>)}</ul> : <p>No job selected</p>}</section><section><span className="context-label">Input roles</span><p>Assign each CSV its role before sending. Copilot validates the files before confirmation.</p></section></aside>
     {railOpen && <button className="rail-backdrop" type="button" aria-label="Close conversations" onClick={() => setRailOpen(false)} />}
   </main>;
+}
+
+function JobWaitingState({ wait }: { wait: AgentJobWaitResponse }) {
+  const queued = wait.job_status === "queued";
+  const running = wait.job_status === "running";
+  const failed = wait.job_status === "failed" || wait.job_status === "cancelled";
+  const title = wait.wait_status === "resume_queued"
+    ? "Preparing the analysis result"
+    : failed
+      ? "Analysis finished with an issue"
+      : queued
+        ? "Waiting for the analysis worker"
+        : running
+          ? "Analysis is running"
+          : "Waiting for the analysis job";
+  const Icon = failed ? CircleAlert : wait.wait_status === "resume_queued" ? LoaderCircle : running ? Clock3 : queued ? Clock3 : CheckCircle2;
+  const progress = wait.progress == null ? null : Math.max(0, Math.min(100, wait.progress));
+  return <section className={`job-waiting${failed ? " failed" : ""}`} aria-live="polite">
+    <div className="job-waiting-heading"><Icon size={17} className={wait.wait_status === "resume_queued" || running ? "spinning" : ""} /><div><strong>{title}</strong><small>Job {wait.job_id.slice(0, 12)}...</small></div>{progress != null && <b>{progress}%</b>}</div>
+    {progress != null && <div className="job-progress" aria-label={`Analysis progress ${progress}%`}><span style={{ width: `${progress}%` }} /></div>}
+    <p>{wait.progress_step || (failed ? wait.error || "The analysis job did not complete successfully." : "The Copilot will continue when the analysis is complete.")}</p>
+  </section>;
 }
 
 function EmptyState({ loading = false }: { loading?: boolean }) {
