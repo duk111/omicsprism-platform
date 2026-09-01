@@ -9,7 +9,7 @@ from psycopg import OperationalError
 
 from .bootstrap import AgentApiContext
 from .context import ContextAssembler, build_recent_messages
-from .graph import GraphInterrupt, GraphState
+from .graph import GraphInterrupt, GraphState, JobLookupRequest, JobRef, JobSummary
 from ..observability import log_context
 from .product_store import AgentResourceNotFound, TurnConflict
 from .job_events import AgentJobWaitStatus
@@ -381,6 +381,15 @@ class AgentRuntime:
             "run_id": run_id,
             "trace_id": item.trace_id,
             "user_message": message,
+            # Completion events are the authoritative ownership-bound Job
+            # reference. A later user turn may have changed current_job on the
+            # same thread, so continuation must never resolve against stale
+            # checkpoint focus or ask the model to guess which Job completed.
+            "current_job": JobRef(job_id=event.job_id, owner_id=event.user_id),
+            "recent_jobs": [
+                *[job for job in state.recent_jobs if job.job_id != event.job_id],
+                JobRef(job_id=event.job_id, owner_id=event.user_id),
+            ][-20:],
             "response_text": None,
             "decision": None,
             "pending_interrupt": None,
@@ -399,6 +408,31 @@ class AgentRuntime:
             })
             self.context.graph.update_state(config, updated.model_dump(mode="json"))
             return
+        if self.context.job_reader is not None:
+            try:
+                summary = self.context.job_reader(JobLookupRequest(
+                    user_id=event.user_id,
+                    job_id=event.job_id,
+                ))
+                if summary.owner_id != event.user_id or summary.job_id != event.job_id:
+                    raise ValueError("completion Job reader returned an invalid Job")
+                updated = updated.model_copy(update={"job_summary": summary})
+                if not summary.artifacts:
+                    updated = updated.model_copy(update={
+                        "response_text": (
+                            f"Analysis job {event.job_id} succeeded, but no result artifacts are available for interpretation."
+                        ),
+                    })
+                    self.context.graph.update_state(config, updated.model_dump(mode="json"))
+                    return
+            except LookupError:
+                updated = updated.model_copy(update={
+                    "response_text": (
+                        f"Analysis job {event.job_id} succeeded, but its result metadata is unavailable."
+                    ),
+                })
+                self.context.graph.update_state(config, updated.model_dump(mode="json"))
+                return
         self.context.graph.update_state(config, updated.model_dump(mode="json"))
         self._invoke_graph(item, updated.model_dump(mode="json"), config)
 

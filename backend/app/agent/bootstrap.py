@@ -31,6 +31,7 @@ from .graph import (
     GraphState,
     ToolCallRequest,
     DatasetLoader,
+    JobReader,
     JobLookupRequest,
     JobRef,
     JobSummary,
@@ -65,6 +66,9 @@ class AgentApiContext:
     stream_poll_seconds: float = 1.0
     turn_queue: AgentTurnQueue | None = None
     trace_recorder: TraceRecorder | None = None
+    # Runtime uses this ownership-bound reader to materialize a completed Job
+    # summary before resuming the graph after a completion event.
+    job_reader: JobReader | None = None
 
     def close(self) -> None:
         """Release application-owned graph checkpoint resources."""
@@ -383,4 +387,5 @@ def create_agent_api_context(
         stream_poll_seconds=max(0.1, settings.agent_poll_seconds),
         turn_queue=turn_queue,
         trace_recorder=trace_recorder,
+        job_reader=read_job,
     )

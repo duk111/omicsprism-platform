@@ -11,8 +11,12 @@ from backend.app.agent.graph import (
     AgentDecision,
     DatasetProfileRef,
     GraphState,
+    JobLookupRequest,
     JobRef,
+    JobSummary,
     MainModelOutput,
+    ResultEvidenceRequest,
+    ResultQuerySpec,
     build_agent_graph,
 )
 from backend.app.agent.dataset_profile import MatrixProfile
@@ -36,6 +40,8 @@ from backend.app.agent.schemas import (
     AgentThreadRecord,
     AgentTurnRecord,
     AgentTurnStatus,
+    ToolName,
+    ToolResult,
 )
 from backend.app.models import JobStatus
 from langgraph.checkpoint.memory import InMemorySaver
@@ -86,7 +92,11 @@ class _BrokenGraph(_Graph):
         raise ValueError("invalid graph state")
 
 
-def _context(graph: _Graph) -> tuple[AgentApiContext, InMemoryAgentTurnQueue, AgentTurnRecord]:
+def _context(
+    graph: object,
+    *,
+    job_reader: object | None = None,
+) -> tuple[AgentApiContext, InMemoryAgentTurnQueue, AgentTurnRecord]:
     now = datetime.now(timezone.utc)
     store = InMemoryAgentProductStore()
     store.save_thread(AgentThreadRecord(
@@ -122,6 +132,7 @@ def _context(graph: _Graph) -> tuple[AgentApiContext, InMemoryAgentTurnQueue, Ag
         graph=graph,
         files=None,
         turn_queue=queue,
+        job_reader=job_reader,  # type: ignore[arg-type]
     )
     return context, queue, turn
 
@@ -132,6 +143,54 @@ def _state() -> GraphState:
         user_id="user-1",
         user_message="hello",
     )
+
+
+def _prepare_job_continuation(
+    context: AgentApiContext,
+    turn: AgentTurnRecord,
+    *,
+    job_id: str,
+    status: JobStatus = JobStatus.SUCCEEDED,
+) -> tuple[AgentJobCompletionEvent, AgentTurnRecord]:
+    """Persist one terminal event for a completed parent Agent turn."""
+
+    now = datetime.now(timezone.utc)
+    store = context.product_store
+    current = store.get_turn(turn_id=turn.turn_id, user_id=turn.user_id)
+    if current.status is not AgentTurnStatus.COMPLETED:
+        running = store.claim_turn(turn_id=turn.turn_id, user_id=turn.user_id, now=now)
+        store.finish_turn(
+            turn_id=running.turn_id,
+            user_id=running.user_id,
+            status=AgentTurnStatus.COMPLETED,
+            now=now,
+        )
+    store.create_job_wait(AgentJobWaitRecord(
+        wait_id=f"wait-{job_id}",
+        thread_id=turn.thread_id,
+        user_id=turn.user_id,
+        turn_id=turn.turn_id,
+        run_id=turn.run_id,
+        trace_id=turn.trace_id,
+        job_id=job_id,
+        created_at=now,
+        updated_at=now,
+    ))
+    event = AgentJobCompletionEvent(
+        event_id=completion_event_id(job_id, status),
+        job_id=job_id,
+        thread_id=turn.thread_id,
+        user_id=turn.user_id,
+        turn_id=turn.turn_id,
+        run_id=turn.run_id,
+        trace_id=turn.trace_id,
+        status=status,
+        occurred_at=now,
+    )
+    store.save_job_completion_event(event)
+    continuation = store.prepare_job_continuation(event, now=now)
+    assert continuation is not None
+    return event, continuation
 
 
 def test_runtime_completes_queued_turn_and_persists_assistant_message() -> None:
@@ -215,6 +274,190 @@ def test_runtime_executes_job_continuation_and_closes_wait() -> None:
     assert completed.status is AgentTurnStatus.COMPLETED
     wait = store.get_job_wait(job_id="job-1", user_id="user-1")
     assert wait.status is AgentJobWaitStatus.COMPLETED
+
+
+def test_successful_continuation_reads_the_completed_job_and_returns_grounded_evidence() -> None:
+    artifact = "differential_gene_counts.csv"
+    summary = JobSummary(
+        job_id="job-completed",
+        owner_id="user-1",
+        status="succeeded",
+        progress=100,
+        artifacts=[artifact],
+    )
+    evidence = ToolResult(
+        tool=ToolName.QUERY_RESULT_EVIDENCE,
+        ok=True,
+        rows=[{
+            "_row_id": 7,
+            "Gene": "GeneA",
+            "log2FoldChange": "2.5",
+            "padj": "0.01",
+        }],
+        truncated=False,
+        row_count=1,
+        artifact=artifact,
+        checksum="sha256:result-fixture",
+        filters={},
+        sort=None,
+        error_code=None,
+    )
+    reader_requests: list[JobLookupRequest] = []
+    query_requests: list[ResultEvidenceRequest] = []
+
+    def read_job(request: JobLookupRequest) -> JobSummary:
+        reader_requests.append(request)
+        assert request.user_id == "user-1"
+        assert request.job_id == summary.job_id
+        return summary
+
+    def query_result(request: ResultEvidenceRequest) -> ToolResult:
+        query_requests.append(request)
+        assert request.user_id == "user-1"
+        assert request.job_id == summary.job_id
+        return evidence
+
+    class _CompletionModel:
+        def __init__(self) -> None:
+            self.contexts = []
+
+        def __call__(self, context):
+            self.contexts.append(context)
+            if context.user_message == "initial turn":
+                return MainModelOutput(
+                    decision=AgentDecision(action="answer"),
+                    answer="Analysis job submitted.",
+                )
+            assert context.user_message.startswith("System Job event: job-completed")
+            assert context.conversation_memory.current_job_id == "job-completed"
+            assert context.fact_index.job_artifacts == {"job-completed": [artifact]}
+            return MainModelOutput(
+                decision=AgentDecision(
+                    action="query_result",
+                    result_query=ResultQuerySpec(
+                        artifact=artifact,
+                        resolve_entity="GeneA",
+                    ),
+                ),
+            )
+
+    model = _CompletionModel()
+    graph = build_agent_graph(
+        model,
+        lambda _request: [],
+        lambda request: JobRef(job_id="unused", owner_id=request.user_id),
+        read_job,
+        query_result,
+        checkpointer=InMemorySaver(),
+    )
+    context, queue, turn = _context(graph, job_reader=read_job)
+    runtime = AgentRuntime(context, queue)
+    initial_state = _state().model_copy(update={
+        "turn_id": turn.turn_id,
+        "run_id": turn.run_id,
+        "trace_id": turn.trace_id,
+        "user_message": "initial turn",
+        "current_job": JobRef(job_id="job-other", owner_id=turn.user_id),
+        "recent_jobs": [JobRef(job_id="job-other", owner_id=turn.user_id)],
+    })
+    runtime.run_once(AgentTurnWorkItem(
+        turn_id=turn.turn_id,
+        thread_id=turn.thread_id,
+        user_id=turn.user_id,
+        state=initial_state,
+    ).model_dump_json())
+
+    event, continuation = _prepare_job_continuation(
+        context, turn, job_id=summary.job_id
+    )
+    raw = AgentTurnWorkItem(
+        turn_id=continuation.turn_id,
+        thread_id=turn.thread_id,
+        user_id=turn.user_id,
+        trace_id=turn.trace_id,
+        continuation=event,
+    ).model_dump_json()
+    runtime.run_once(raw)
+
+    messages = context.product_store.list_messages(
+        thread_id=turn.thread_id, user_id=turn.user_id
+    )
+    continuation_message = next(
+        message for message in messages
+        if message.message_id == f"assistant-{continuation.turn_id}"
+    )
+    assert "GeneA" in continuation_message.blocks[0].text
+    assert "2.5" in continuation_message.blocks[0].text
+    assert reader_requests == [
+        JobLookupRequest(user_id=turn.user_id, job_id=summary.job_id),
+        JobLookupRequest(user_id=turn.user_id, job_id=summary.job_id),
+    ]
+    assert query_requests == [ResultEvidenceRequest(
+        user_id=turn.user_id,
+        job_id=summary.job_id,
+        query=ResultQuerySpec(artifact=artifact, resolve_entity="GeneA"),
+    )]
+
+    # A newly constructed consumer simulates a runtime restart receiving the
+    # same at-least-once delivery. The completed continuation is not rerun.
+    AgentRuntime(context, queue).run_once(raw)
+    repeated = context.product_store.list_messages(
+        thread_id=turn.thread_id, user_id=turn.user_id
+    )
+    assert sum(
+        message.message_id == f"assistant-{continuation.turn_id}"
+        for message in repeated
+    ) == 1
+    assert len(model.contexts) == 2
+
+
+def test_successful_continuation_without_artifacts_skips_model_and_explains_limit() -> None:
+    class _NoInvokeGraph(_Graph):
+        def invoke(self, _input: object, _config: dict) -> None:
+            raise AssertionError("a completion without artifacts must not invoke the model")
+
+    summary = JobSummary(
+        job_id="job-no-artifacts",
+        owner_id="user-1",
+        status="succeeded",
+        progress=100,
+        artifacts=[],
+    )
+    context, queue, turn = _context(
+        _NoInvokeGraph(),
+        job_reader=lambda request: summary,
+    )
+    context.graph.update_state({}, _state().model_copy(update={
+        "turn_id": turn.turn_id,
+        "run_id": turn.run_id,
+        "trace_id": turn.trace_id,
+        "current_job": JobRef(job_id="job-other", owner_id=turn.user_id),
+    }).model_dump(mode="json"))
+    event, continuation = _prepare_job_continuation(
+        context, turn, job_id=summary.job_id
+    )
+
+    AgentRuntime(context, queue).run_once(AgentTurnWorkItem(
+        turn_id=continuation.turn_id,
+        thread_id=turn.thread_id,
+        user_id=turn.user_id,
+        trace_id=turn.trace_id,
+        continuation=event,
+    ).model_dump_json())
+
+    completed = context.product_store.get_turn(
+        turn_id=continuation.turn_id, user_id=turn.user_id
+    )
+    assert completed.status is AgentTurnStatus.COMPLETED
+    assert context.graph.state is not None
+    assert context.graph.state.current_job == JobRef(
+        job_id=summary.job_id, owner_id=turn.user_id
+    )
+    assert context.graph.state.job_summary == summary
+    messages = context.product_store.list_messages(
+        thread_id=turn.thread_id, user_id=turn.user_id
+    )
+    assert "no result artifacts are available" in messages[-1].blocks[0].text
 
 
 def test_cancelled_job_wait_prevents_continuation_graph_execution() -> None:
