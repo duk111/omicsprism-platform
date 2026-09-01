@@ -4,7 +4,7 @@ from datetime import datetime
 from enum import Enum
 from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from ..models import AnalysisType, JobStatus
 
@@ -317,6 +317,120 @@ class AgentMessageResponse(ContractModel):
 class AgentMessageListResponse(ContractModel):
     messages: list[AgentMessageResponse]
     next_cursor: str | None = None
+
+
+class AgentFeedbackRating(str, Enum):
+    HELPFUL = "helpful"
+    UNHELPFUL = "unhelpful"
+
+
+class AgentFeedbackCategory(str, Enum):
+    INCORRECT_RESULT = "incorrect_result"
+    MISSING_CONTEXT = "missing_context"
+    BAD_PLAN = "bad_plan"
+    UNSAFE_ACTION = "unsafe_action"
+    LATENCY = "latency"
+    OTHER = "other"
+
+
+class AgentFeedbackCreateRequest(ContractModel):
+    rating: AgentFeedbackRating
+    failure_category: AgentFeedbackCategory | None = None
+    correction_text: str | None = Field(default=None, min_length=1, max_length=1200)
+
+    @field_validator("correction_text")
+    @classmethod
+    def _normalize_correction_text(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        return value.strip() or None
+
+    @model_validator(mode="after")
+    def _feedback_shape(self) -> "AgentFeedbackCreateRequest":
+        if self.rating is AgentFeedbackRating.UNHELPFUL and self.failure_category is None:
+            raise ValueError("unhelpful feedback requires a failure_category")
+        if self.rating is AgentFeedbackRating.HELPFUL and self.failure_category is not None:
+            raise ValueError("helpful feedback cannot include a failure_category")
+        return self
+
+
+class AgentFeedbackRecord(ContractModel):
+    feedback_id: str = Field(min_length=1, max_length=200)
+    thread_id: str = Field(min_length=1, max_length=200)
+    turn_id: str = Field(min_length=1, max_length=200)
+    message_id: str = Field(min_length=1, max_length=200)
+    trace_id: str = Field(min_length=1, max_length=200)
+    user_id: str = Field(min_length=1, max_length=200)
+    rating: AgentFeedbackRating
+    failure_category: AgentFeedbackCategory | None = None
+    correction_text: str | None = Field(default=None, min_length=1, max_length=1200)
+    created_at: datetime
+    updated_at: datetime
+
+
+class AgentFeedbackResponse(ContractModel):
+    feedback_id: str = Field(min_length=1, max_length=200)
+    message_id: str = Field(min_length=1, max_length=200)
+    rating: AgentFeedbackRating
+    failure_category: AgentFeedbackCategory | None = None
+    correction_text: str | None = Field(default=None, min_length=1, max_length=1200)
+    created_at: datetime
+    updated_at: datetime
+
+
+class AgentFeedbackListResponse(ContractModel):
+    feedback: list[AgentFeedbackResponse]
+    next_cursor: str | None = None
+
+
+class AgentEvalCandidateStatus(str, Enum):
+    PENDING_REVIEW = "pending_review"
+    APPROVED = "approved"
+    REJECTED = "rejected"
+    WITHDRAWN = "withdrawn"
+
+
+class AgentEvalTraceSummary(ContractModel):
+    event_types: list[str] = Field(default_factory=list, max_length=12)
+    model_calls: int = Field(default=0, ge=0)
+    tool_calls: int = Field(default=0, ge=0)
+    total_latency_ms: float = Field(default=0, ge=0)
+    error_codes: list[str] = Field(default_factory=list, max_length=12)
+
+
+class AgentEvalCandidateRecord(ContractModel):
+    """Internal, redacted candidate that requires separate human review."""
+
+    candidate_id: str = Field(min_length=1, max_length=200)
+    feedback_id: str = Field(min_length=1, max_length=200)
+    thread_id: str = Field(min_length=1, max_length=200)
+    turn_id: str = Field(min_length=1, max_length=200)
+    message_id: str = Field(min_length=1, max_length=200)
+    trace_id: str = Field(min_length=1, max_length=200)
+    user_id: str = Field(min_length=1, max_length=200)
+    status: AgentEvalCandidateStatus = AgentEvalCandidateStatus.PENDING_REVIEW
+    rating: AgentFeedbackRating
+    failure_category: AgentFeedbackCategory | None = None
+    user_message_summary: str = Field(min_length=1, max_length=1200)
+    assistant_message_summary: str = Field(min_length=1, max_length=1200)
+    correction_summary: str | None = Field(default=None, min_length=1, max_length=1200)
+    trace_summary: AgentEvalTraceSummary
+    created_at: datetime
+    updated_at: datetime
+
+
+class AgentEvalCandidateExport(ContractModel):
+    """Redacted review payload; it intentionally omits user and source ids."""
+
+    candidate_id: str = Field(min_length=1, max_length=200)
+    rating: AgentFeedbackRating
+    failure_category: AgentFeedbackCategory | None = None
+    user_message_summary: str = Field(min_length=1, max_length=1200)
+    assistant_message_summary: str = Field(min_length=1, max_length=1200)
+    correction_summary: str | None = Field(default=None, min_length=1, max_length=1200)
+    trace_summary: AgentEvalTraceSummary
+    created_at: datetime
+
 
 class AgentInputBundleRecord(ContractModel):
     bundle_id: str = Field(min_length=1)

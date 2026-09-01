@@ -42,6 +42,24 @@ describe("agentApi.resumeTurn", () => {
   });
 });
 
+describe("agentApi.saveFeedback", () => {
+  it("sends only the public structured feedback payload", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse());
+    vi.stubGlobal("fetch", fetchMock);
+
+    await agentApi.saveFeedback("thread/1", "assistant/1", {
+      rating: "unhelpful", failure_category: "bad_plan", correction_text: "Use paired samples.",
+    });
+
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe("/api/agent/threads/thread%2F1/messages/assistant%2F1/feedback");
+    expect(init.method).toBe("PUT");
+    expect(JSON.parse(init.body as string)).toEqual({
+      rating: "unhelpful", failure_category: "bad_plan", correction_text: "Use paired samples.",
+    });
+  });
+});
+
 function jsonResponse() {
   return new Response(JSON.stringify({}), { status: 200, headers: { "Content-Type": "application/json" } });
 }

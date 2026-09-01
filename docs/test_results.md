@@ -38,15 +38,53 @@ clean after each commit.
 | Phase 4 durable Job waits | `32 passed` | `233 passed, 2 skipped` | Added public Job-wait SSE/API projections, wait cancellation with continuation-race protection, and worker timeout watchdog with explicit `job_timeout`. |
 | Phase 4 result continuation closure | `20 passed` | `237 passed, 2 skipped` | Completion continuations now bind the terminal Job into the checkpoint, prefetch the ownership-validated Job summary, avoid model calls when successful Jobs expose no artifacts, and cover grounded evidence plus duplicate delivery. |
 | Phase 5 structured response blocks | `31 passed` | `237 passed, 2 skipped` | Typed graph output now persists text, Job, and evidence blocks unchanged through runtime, API, SSE, and the existing frontend renderer. Job URLs are derived only from ownership-bound Job ids; evidence retains artifact, checksum, and row ids. |
+| Phase 6.1 feedback-to-eval review loop | `26 passed` | `243 passed, 2 skipped` | Assistant-message feedback is ownership-bound to its turn and trace. Negative feedback or a correction creates a redacted pending-review candidate; helpful feedback removes any prior candidate. Candidates can only be exported by the internal review script and have no public approval or golden-set API. |
 
 | Frontend unit tests | `4 files, 13 passed` | Not applicable | `npm --prefix frontend run test`. |
 | Frontend production build | Successful | Not applicable | `npm --prefix frontend run build`; Vite emitted a large-chunk warning only. |
+| Phase 6.1 frontend feedback tests | `5 files, 16 passed` | Not applicable | `npm --prefix frontend run test -- --run`; includes typed feedback API and feedback-control coverage. |
 | Frontend E2E after contract cleanup | `6 passed` | Not applicable | `npm --prefix frontend run test:e2e`; Vite logged expected job-progress proxy errors because no backend was running during the mocked browser run. |
 | Production deployment audit | Passed static checks | Not applicable | Compose YAML parsed; API model settings are injected and Uvicorn is fixed to one worker for `InMemorySaver`. Docker CLI was unavailable in the local verification environment. |
 
 The Phase 6 targeted suites were run with the relevant prior suites. For
 example, 6.3 included the Phase 4 grounding and JSON query tests, and 6.4
 included the complete graph flow suite.
+
+## Phase 6.1 Feedback Review Loop
+
+The implementation accepts helpful or unhelpful feedback only for an owned
+assistant message. The repository resolves the message to its owned turn and
+trace rather than trusting any client-supplied identifiers. An unhelpful
+rating requires a failure category; optional correction text is normalized
+before storage.
+
+Only an unhelpful rating or correction text creates a review candidate. Before
+the candidate is persisted, message summaries are redacted for connection
+strings, secrets, object-storage references, email addresses, IP addresses,
+local paths, and table-shaped CSV content. The persisted candidate starts as
+pending_review. The browser has no candidate, approval, rejection, or
+golden-set route. Updating feedback to helpful removes the candidate; deleting
+the conversation cascades the feedback and candidate records.
+
+Internal reviewers may obtain anonymized pending candidates with:
+
+    .venv\Scripts\python.exe scripts\export_agent_eval_candidates.py --output pending-agent-eval-candidates.json
+
+The export intentionally excludes user_id, thread_id, turn_id, message_id,
+trace_id, and feedback_id. It does not approve candidates or write evaluation
+fixtures. A reviewer must make any golden-set promotion as a separate,
+auditable change.
+
+Observed verification:
+
+    .venv\Scripts\python.exe -m pytest backend/tests -q --basetemp .pytest-phase6-feedback-release
+    243 passed, 2 skipped
+
+    npm --prefix frontend run test -- --run
+    5 files, 16 passed
+
+    npm --prefix frontend run build
+    Successful; existing Plotly bundle-size warning only
 
 ## Historical Full-Test Failures (Resolved)
 

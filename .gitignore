@@ -14,6 +14,7 @@ frontend/dist/
 frontend/dist-check-*/
 frontend/.vite/
 frontend/*.tsbuildinfo
+frontend/openapi.json
 frontend/test-results/
 frontend/playwright-report/
 frontend/vite.config.d.ts

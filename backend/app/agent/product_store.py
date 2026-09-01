@@ -6,6 +6,8 @@ from hashlib import sha256
 from typing import Any, Protocol
 
 from .schemas import (
+    AgentEvalCandidateRecord,
+    AgentFeedbackRecord,
     AgentInputBundleRecord,
     AgentInputFileRecord,
     AgentMessageRecord,
@@ -47,6 +49,39 @@ class AgentProductStore(Protocol):
     def list_trace_events(
         self, *, trace_id: str, user_id: str, limit: int = 100,
     ) -> list[AgentTraceEvent]:
+        ...
+
+    def get_feedback_target(
+        self, *, thread_id: str, message_id: str, user_id: str,
+    ) -> tuple[AgentMessageRecord, AgentTurnRecord, AgentMessageRecord | None]:
+        ...
+
+    def save_feedback(self, feedback: AgentFeedbackRecord) -> AgentFeedbackRecord:
+        ...
+
+    def list_feedback(
+        self, *, thread_id: str, user_id: str, limit: int = 100,
+    ) -> list[AgentFeedbackRecord]:
+        ...
+
+    def save_eval_candidate(
+        self, candidate: AgentEvalCandidateRecord,
+    ) -> AgentEvalCandidateRecord:
+        ...
+
+    def get_eval_candidate(
+        self, *, candidate_id: str, user_id: str,
+    ) -> AgentEvalCandidateRecord:
+        ...
+
+    def list_eval_candidates_for_review(
+        self, *, limit: int = 100,
+    ) -> list[AgentEvalCandidateRecord]:
+        ...
+
+    def delete_eval_candidate_for_feedback(
+        self, *, feedback_id: str, user_id: str,
+    ) -> None:
         ...
 
     def save_thread(self, thread: AgentThreadRecord) -> None:
@@ -173,6 +208,9 @@ class InMemoryAgentProductStore:
         self._bundles = self._shared.setdefault("bundles", {})
         self._files = self._shared.setdefault("files", {})
         self._trace_events = self._shared.setdefault("trace_events", {})
+        self._feedback = self._shared.setdefault("feedback", {})
+        self._eval_candidates = self._shared.setdefault("eval_candidates", {})
+        self._candidate_feedback_ids = self._shared.setdefault("candidate_feedback_ids", {})
         self._job_waits = self._shared.setdefault("job_waits", {})
         self._job_events = self._shared.setdefault("job_events", {})
 
@@ -193,6 +231,138 @@ class InMemoryAgentProductStore:
         ]
         records.sort(key=lambda item: (item.created_at, item.event_id))
         return records[-bounded:]
+
+    def get_feedback_target(
+        self, *, thread_id: str, message_id: str, user_id: str,
+    ) -> tuple[AgentMessageRecord, AgentTurnRecord, AgentMessageRecord | None]:
+        self.get_thread(thread_id=thread_id, user_id=user_id)
+        payload = self._messages.get(message_id)
+        if (
+            payload is None
+            or payload["thread_id"] != thread_id
+            or payload["user_id"] != user_id
+            or payload["role"] != AgentMessageRole.ASSISTANT.value
+            or not message_id.startswith("assistant-")
+        ):
+            raise AgentResourceNotFound(message_id)
+        assistant = AgentMessageRecord.model_validate(deepcopy(payload))
+        turn_id = message_id.removeprefix("assistant-")
+        turn = self.get_turn(turn_id=turn_id, user_id=user_id)
+        if (
+            turn.thread_id != thread_id
+            or turn.run_id != assistant.run_id
+            or turn.trace_id != assistant.trace_id
+        ):
+            raise AgentResourceNotFound(message_id)
+        user_payload = self._messages.get(f"user-{turn_id}")
+        user_message = (
+            AgentMessageRecord.model_validate(deepcopy(user_payload))
+            if user_payload is not None
+            and user_payload["thread_id"] == thread_id
+            and user_payload["user_id"] == user_id
+            and user_payload["role"] == AgentMessageRole.USER.value
+            and user_payload["run_id"] == turn.run_id
+            and user_payload["trace_id"] == turn.trace_id
+            else None
+        )
+        return assistant, turn, user_message
+
+    def save_feedback(self, feedback: AgentFeedbackRecord) -> AgentFeedbackRecord:
+        _assistant, turn, _ = self.get_feedback_target(
+            thread_id=feedback.thread_id,
+            message_id=feedback.message_id,
+            user_id=feedback.user_id,
+        )
+        if (turn.turn_id, turn.trace_id) != (feedback.turn_id, feedback.trace_id):
+            raise AgentResourceNotFound(feedback.message_id)
+        key = (feedback.message_id, feedback.user_id)
+        current_id = self._feedback.get(key)
+        if current_id is not None:
+            current = AgentFeedbackRecord.model_validate(deepcopy(self._feedback[current_id]))
+            feedback = feedback.model_copy(update={
+                "feedback_id": current.feedback_id,
+                "created_at": current.created_at,
+            })
+        self._feedback[key] = feedback.feedback_id
+        self._feedback[feedback.feedback_id] = feedback.model_dump(mode="json")
+        return feedback.model_copy(deep=True)
+
+    def list_feedback(
+        self, *, thread_id: str, user_id: str, limit: int = 100,
+    ) -> list[AgentFeedbackRecord]:
+        self.get_thread(thread_id=thread_id, user_id=user_id)
+        bounded = max(1, min(limit, 100))
+        records = [
+            AgentFeedbackRecord.model_validate(deepcopy(payload))
+            for key, payload in self._feedback.items()
+            if isinstance(key, str)
+            and payload["thread_id"] == thread_id
+            and payload["user_id"] == user_id
+        ]
+        records.sort(key=lambda item: (item.updated_at, item.feedback_id), reverse=True)
+        return records[:bounded]
+
+    def save_eval_candidate(
+        self, candidate: AgentEvalCandidateRecord,
+    ) -> AgentEvalCandidateRecord:
+        if candidate.status.value != "pending_review":
+            raise ValueError("candidate review status is controlled outside the public feedback flow")
+        feedback_payload = self._feedback.get(candidate.feedback_id)
+        if feedback_payload is None or not isinstance(feedback_payload, dict):
+            raise AgentResourceNotFound(candidate.feedback_id)
+        feedback = AgentFeedbackRecord.model_validate(deepcopy(feedback_payload))
+        if (
+            feedback.user_id, feedback.thread_id, feedback.turn_id, feedback.message_id,
+            feedback.trace_id, feedback.rating, feedback.failure_category
+        ) != (
+            candidate.user_id, candidate.thread_id, candidate.turn_id, candidate.message_id,
+            candidate.trace_id, candidate.rating, candidate.failure_category
+        ):
+            raise AgentResourceNotFound(candidate.feedback_id)
+        current_id = self._candidate_feedback_ids.get(candidate.feedback_id)
+        if current_id is not None:
+            current = AgentEvalCandidateRecord.model_validate(
+                deepcopy(self._eval_candidates[current_id])
+            )
+            candidate = candidate.model_copy(update={
+                "candidate_id": current.candidate_id,
+                "created_at": current.created_at,
+            })
+        self._candidate_feedback_ids[candidate.feedback_id] = candidate.candidate_id
+        self._eval_candidates[candidate.candidate_id] = candidate.model_dump(mode="json")
+        return candidate.model_copy(deep=True)
+
+    def get_eval_candidate(
+        self, *, candidate_id: str, user_id: str,
+    ) -> AgentEvalCandidateRecord:
+        payload = self._eval_candidates.get(candidate_id)
+        if payload is None or payload["user_id"] != user_id:
+            raise AgentResourceNotFound(candidate_id)
+        return AgentEvalCandidateRecord.model_validate(deepcopy(payload))
+
+    def list_eval_candidates_for_review(
+        self, *, limit: int = 100,
+    ) -> list[AgentEvalCandidateRecord]:
+        bounded = max(1, min(limit, 1000))
+        records = [
+            AgentEvalCandidateRecord.model_validate(deepcopy(payload))
+            for payload in self._eval_candidates.values()
+            if payload["status"] == "pending_review"
+        ]
+        records.sort(key=lambda item: (item.updated_at, item.candidate_id))
+        return records[:bounded]
+
+    def delete_eval_candidate_for_feedback(
+        self, *, feedback_id: str, user_id: str,
+    ) -> None:
+        candidate_id = self._candidate_feedback_ids.get(feedback_id)
+        if candidate_id is None:
+            return
+        payload = self._eval_candidates.get(candidate_id)
+        if payload is None or payload["user_id"] != user_id:
+            raise AgentResourceNotFound(feedback_id)
+        del self._candidate_feedback_ids[feedback_id]
+        del self._eval_candidates[candidate_id]
 
     def save_thread(self, thread: AgentThreadRecord) -> None:
         current = self._threads.get(thread.thread_id)
@@ -248,6 +418,16 @@ class InMemoryAgentProductStore:
         for event_id, payload in list(self._trace_events.items()):
             if payload["thread_id"] == thread_id and payload["user_id"] == user_id:
                 del self._trace_events[event_id]
+        for feedback_id, payload in list(self._feedback.items()):
+            if isinstance(feedback_id, str) and isinstance(payload, dict) and (
+                payload["thread_id"] == thread_id and payload["user_id"] == user_id
+            ):
+                self._feedback.pop((payload["message_id"], payload["user_id"]), None)
+                del self._feedback[feedback_id]
+        for candidate_id, payload in list(self._eval_candidates.items()):
+            if payload["thread_id"] == thread_id and payload["user_id"] == user_id:
+                self._candidate_feedback_ids.pop(payload["feedback_id"], None)
+                del self._eval_candidates[candidate_id]
         for wait_id, payload in list(self._job_waits.items()):
             if payload["thread_id"] == thread_id and payload["user_id"] == user_id:
                 del self._job_waits[wait_id]
@@ -673,6 +853,205 @@ class PostgresAgentProductStore:
                 (trace_id, user_id, bounded),
             ).fetchall()
         return [_trace_event_from_row(row) for row in reversed(rows)]
+
+    def get_feedback_target(
+        self, *, thread_id: str, message_id: str, user_id: str,
+    ) -> tuple[AgentMessageRecord, AgentTurnRecord, AgentMessageRecord | None]:
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                select
+                    m.message_id, m.thread_id, m.run_id, m.trace_id, m.user_id,
+                    m.role, m.blocks, m.created_at,
+                    t.turn_id, t.thread_id, t.run_id, t.user_id, t.trace_id,
+                    t.idempotency_key, t.request_hash, t.status, t.attempt,
+                    t.error_code, t.created_at, t.updated_at, t.started_at,
+                    t.completed_at
+                from agent_messages m
+                join agent_turns t
+                  on m.message_id = 'assistant-' || t.turn_id
+                 and m.thread_id = t.thread_id
+                 and m.run_id = t.run_id
+                 and m.trace_id = t.trace_id
+                 and m.user_id = t.user_id
+                where m.message_id = %s
+                  and m.thread_id = %s
+                  and m.user_id = %s
+                  and m.role = 'assistant'
+                """,
+                (message_id, thread_id, user_id),
+            ).fetchone()
+            if row is None:
+                raise AgentResourceNotFound(message_id)
+            assistant = _message_from_row(row[:8])
+            turn = _turn_from_row(row[8:])
+            user_row = conn.execute(
+                """
+                select message_id, thread_id, run_id, trace_id, user_id, role, blocks, created_at
+                from agent_messages
+                where message_id = 'user-' || %s
+                  and thread_id = %s and run_id = %s and trace_id = %s
+                  and user_id = %s and role = 'user'
+                """,
+                (turn.turn_id, thread_id, turn.run_id, turn.trace_id, user_id),
+            ).fetchone()
+        return assistant, turn, _message_from_row(user_row) if user_row is not None else None
+
+    def save_feedback(self, feedback: AgentFeedbackRecord) -> AgentFeedbackRecord:
+        self._validate_feedback_record(feedback)
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                insert into agent_feedback (
+                    feedback_id, thread_id, turn_id, message_id, trace_id, user_id,
+                    rating, failure_category, correction_text, created_at, updated_at
+                ) values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                on conflict (message_id, user_id) do update set
+                    rating = excluded.rating,
+                    failure_category = excluded.failure_category,
+                    correction_text = excluded.correction_text,
+                    updated_at = excluded.updated_at
+                returning feedback_id, thread_id, turn_id, message_id, trace_id, user_id,
+                          rating, failure_category, correction_text, created_at, updated_at
+                """,
+                (
+                    feedback.feedback_id, feedback.thread_id, feedback.turn_id,
+                    feedback.message_id, feedback.trace_id, feedback.user_id,
+                    feedback.rating.value,
+                    feedback.failure_category.value if feedback.failure_category else None,
+                    feedback.correction_text, feedback.created_at, feedback.updated_at,
+                ),
+            ).fetchone()
+        return _feedback_from_row(row)
+
+    def list_feedback(
+        self, *, thread_id: str, user_id: str, limit: int = 100,
+    ) -> list[AgentFeedbackRecord]:
+        self.get_thread(thread_id=thread_id, user_id=user_id)
+        bounded = max(1, min(limit, 100))
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                select feedback_id, thread_id, turn_id, message_id, trace_id, user_id,
+                       rating, failure_category, correction_text, created_at, updated_at
+                from agent_feedback
+                where thread_id = %s and user_id = %s
+                order by updated_at desc, feedback_id desc limit %s
+                """,
+                (thread_id, user_id, bounded),
+            ).fetchall()
+        return [_feedback_from_row(row) for row in rows]
+
+    def save_eval_candidate(
+        self, candidate: AgentEvalCandidateRecord,
+    ) -> AgentEvalCandidateRecord:
+        if candidate.status.value != "pending_review":
+            raise ValueError("candidate review status is controlled outside the public feedback flow")
+        Jsonb = _jsonb_type()
+        with self._connect() as conn:
+            feedback_row = conn.execute(
+                """
+                select thread_id, turn_id, message_id, trace_id, user_id, rating, failure_category
+                from agent_feedback where feedback_id = %s
+                """,
+                (candidate.feedback_id,),
+            ).fetchone()
+            if feedback_row is None or tuple(feedback_row) != (
+                candidate.thread_id, candidate.turn_id, candidate.message_id,
+                candidate.trace_id, candidate.user_id, candidate.rating.value,
+                candidate.failure_category.value if candidate.failure_category else None,
+            ):
+                raise AgentResourceNotFound(candidate.feedback_id)
+            row = conn.execute(
+                """
+                insert into agent_eval_candidates (
+                    candidate_id, feedback_id, thread_id, turn_id, message_id, trace_id,
+                    user_id, status, rating, failure_category, user_message_summary,
+                    assistant_message_summary, correction_summary, trace_summary,
+                    created_at, updated_at
+                ) values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                on conflict (feedback_id) do update set
+                    status = excluded.status, rating = excluded.rating,
+                    failure_category = excluded.failure_category,
+                    user_message_summary = excluded.user_message_summary,
+                    assistant_message_summary = excluded.assistant_message_summary,
+                    correction_summary = excluded.correction_summary,
+                    trace_summary = excluded.trace_summary, updated_at = excluded.updated_at
+                returning candidate_id, feedback_id, thread_id, turn_id, message_id, trace_id,
+                          user_id, status, rating, failure_category, user_message_summary,
+                          assistant_message_summary, correction_summary, trace_summary,
+                          created_at, updated_at
+                """,
+                (
+                    candidate.candidate_id, candidate.feedback_id, candidate.thread_id,
+                    candidate.turn_id, candidate.message_id, candidate.trace_id,
+                    candidate.user_id, candidate.status.value, candidate.rating.value,
+                    candidate.failure_category.value if candidate.failure_category else None,
+                    candidate.user_message_summary, candidate.assistant_message_summary,
+                    candidate.correction_summary, Jsonb(candidate.trace_summary.model_dump(mode="json")),
+                    candidate.created_at, candidate.updated_at,
+                ),
+            ).fetchone()
+        return _eval_candidate_from_row(row)
+
+    def get_eval_candidate(
+        self, *, candidate_id: str, user_id: str,
+    ) -> AgentEvalCandidateRecord:
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                select candidate_id, feedback_id, thread_id, turn_id, message_id, trace_id,
+                       user_id, status, rating, failure_category, user_message_summary,
+                       assistant_message_summary, correction_summary, trace_summary,
+                       created_at, updated_at
+                from agent_eval_candidates
+                where candidate_id = %s and user_id = %s
+                """,
+                (candidate_id, user_id),
+            ).fetchone()
+        if row is None:
+            raise AgentResourceNotFound(candidate_id)
+        return _eval_candidate_from_row(row)
+
+    def list_eval_candidates_for_review(
+        self, *, limit: int = 100,
+    ) -> list[AgentEvalCandidateRecord]:
+        bounded = max(1, min(limit, 1000))
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                select candidate_id, feedback_id, thread_id, turn_id, message_id, trace_id,
+                       user_id, status, rating, failure_category, user_message_summary,
+                       assistant_message_summary, correction_summary, trace_summary,
+                       created_at, updated_at
+                from agent_eval_candidates
+                where status = 'pending_review'
+                order by updated_at, candidate_id limit %s
+                """,
+                (bounded,),
+            ).fetchall()
+        return [_eval_candidate_from_row(row) for row in rows]
+
+    def delete_eval_candidate_for_feedback(
+        self, *, feedback_id: str, user_id: str,
+    ) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                """
+                delete from agent_eval_candidates
+                where feedback_id = %s and user_id = %s
+                """,
+                (feedback_id, user_id),
+            )
+
+    def _validate_feedback_record(self, feedback: AgentFeedbackRecord) -> None:
+        _assistant, turn, _user_message = self.get_feedback_target(
+            thread_id=feedback.thread_id,
+            message_id=feedback.message_id,
+            user_id=feedback.user_id,
+        )
+        if (turn.turn_id, turn.trace_id) != (feedback.turn_id, feedback.trace_id):
+            raise AgentResourceNotFound(feedback.message_id)
 
     def save_thread(self, thread: AgentThreadRecord) -> None:
         with self._connect() as conn:
@@ -1530,6 +1909,25 @@ def _thread_from_row(row) -> AgentThreadRecord:
 def _message_from_row(row) -> AgentMessageRecord:
     fields = ("message_id", "thread_id", "run_id", "trace_id", "user_id", "role", "blocks", "created_at")
     return AgentMessageRecord.model_validate(dict(zip(fields, row)))
+
+
+def _feedback_from_row(row) -> AgentFeedbackRecord:
+    fields = (
+        "feedback_id", "thread_id", "turn_id", "message_id", "trace_id",
+        "user_id", "rating", "failure_category", "correction_text",
+        "created_at", "updated_at",
+    )
+    return AgentFeedbackRecord.model_validate(dict(zip(fields, row)))
+
+
+def _eval_candidate_from_row(row) -> AgentEvalCandidateRecord:
+    fields = (
+        "candidate_id", "feedback_id", "thread_id", "turn_id", "message_id",
+        "trace_id", "user_id", "status", "rating", "failure_category",
+        "user_message_summary", "assistant_message_summary", "correction_summary",
+        "trace_summary", "created_at", "updated_at",
+    )
+    return AgentEvalCandidateRecord.model_validate(dict(zip(fields, row)))
 
 
 def _input_file_from_row(row) -> AgentInputFileRecord:

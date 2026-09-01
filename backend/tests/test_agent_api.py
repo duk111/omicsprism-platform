@@ -513,6 +513,8 @@ def test_openapi_exposes_agent_contract_without_api_model_dependency() -> None:
         "/api/agent/threads/{thread_id}/job-waits",
         "/api/agent/threads/{thread_id}/job-waits/{wait_id}/cancel",
         "/api/agent/threads/{thread_id}/messages",
+        "/api/agent/threads/{thread_id}/feedback",
+        "/api/agent/threads/{thread_id}/messages/{message_id}/feedback",
         "/api/agent/threads/{thread_id}/turns",
         "/api/agent/threads/{thread_id}/turns/{turn_id}",
         "/api/agent/threads/{thread_id}/input-bundles",
@@ -521,6 +523,7 @@ def test_openapi_exposes_agent_contract_without_api_model_dependency() -> None:
     }
     assert expected_paths <= set(schema["paths"])
     assert "/api/agent/threads/{thread_id}/approvals/{approval_id}" not in schema["paths"]
+    assert all("eval-candidates" not in path for path in schema["paths"])
     request_properties = schema["components"]["schemas"]["AgentTurnCreateRequest"]["properties"]
     assert "user_id" not in request_properties
     generated = Path("frontend/src/api-types.ts").read_text(encoding="utf-8")

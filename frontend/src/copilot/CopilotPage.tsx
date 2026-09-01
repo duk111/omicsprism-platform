@@ -1,12 +1,13 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AlertCircle, Bot, CheckCircle2, ChevronDown, CircleAlert, Clock3, FilePlus2, LoaderCircle, Menu, MessageSquarePlus, Paperclip, Send, Square, Trash2, Wifi, WifiOff, X } from "lucide-react";
 import { useSearchParams } from "react-router-dom";
-import type { AgentJobWaitResponse, AgentMessageResponse, AgentRunResponse, AgentStreamEvent, AgentThreadResponse, AgentTurnResponse, GraphInterrupt, GraphPendingInterrupt, GraphTurnResult } from "../api-types";
+import type { AgentFeedbackCreateRequest, AgentFeedbackResponse, AgentJobWaitResponse, AgentMessageResponse, AgentRunResponse, AgentStreamEvent, AgentThreadResponse, AgentTurnResponse, GraphInterrupt, GraphPendingInterrupt, GraphTurnResult } from "../api-types";
 import { ApiRequestError } from "../api";
 import { createClientId } from "../clientId";
 import { agentApi, isGraphTurnResult } from "./agentApi";
 import type { GraphResumeRequest } from "./agentApi";
 import { GraphInterruptPanel } from "./GraphInterruptPanel";
+import { FeedbackControls } from "./FeedbackControls";
 import { MessageBlocks } from "./MessageBlocks";
 import "./copilot.css";
 
@@ -23,6 +24,8 @@ export default function CopilotPage() {
   const [messages, setMessages] = useState<AgentMessageResponse[]>([]);
   const [turns, setTurns] = useState<AgentTurnResponse[]>([]);
   const [jobWaits, setJobWaits] = useState<AgentJobWaitResponse[]>([]);
+  const [feedbackByMessage, setFeedbackByMessage] = useState<Record<string, AgentFeedbackResponse>>({});
+  const [savingFeedbackFor, setSavingFeedbackFor] = useState<string | null>(null);
   const [draft, setDraft] = useState("");
   const [attachments, setAttachments] = useState<Attachment[]>([]);
   const [loading, setLoading] = useState(true);
@@ -39,15 +42,17 @@ export default function CopilotPage() {
   const messageEnd = useRef<HTMLDivElement>(null);
 
   const recover = useCallback(async (threadId: string) => {
-    const [detail, messageList, turnList, interrupt, waitList] = await Promise.all([
+    const [detail, messageList, turnList, interrupt, waitList, feedbackList] = await Promise.all([
       agentApi.getThread(threadId),
       agentApi.listMessages(threadId),
       agentApi.listTurns(threadId),
       agentApi.getPendingInterrupt(threadId),
       agentApi.listJobWaits(threadId),
+      agentApi.listFeedback(threadId),
     ]);
     setRun(detail.run); setMessages(messageList.messages); setTurns(turnList.turns);
     setPendingGraph(interrupt); setJobWaits(waitList.waits);
+    setFeedbackByMessage(Object.fromEntries(feedbackList.feedback.map(item => [item.message_id, item])));
   }, []);
 
   const createThread = useCallback(async (focusIds: string[] = []) => {
@@ -168,6 +173,16 @@ export default function CopilotPage() {
     finally { setCancelingWaitId(null); }
   }
 
+  async function saveFeedback(messageId: string, payload: AgentFeedbackCreateRequest) {
+    if (!activeId || savingFeedbackFor) return;
+    setSavingFeedbackFor(messageId); setNotice(null);
+    try {
+      const feedback = await agentApi.saveFeedback(activeId, messageId, payload);
+      setFeedbackByMessage(current => ({ ...current, [messageId]: feedback }));
+    } catch (error) { setNotice(errorMessage(error)); }
+    finally { setSavingFeedbackFor(null); }
+  }
+
   async function deleteConversation(threadId: string) {
     if (!window.confirm("Delete this conversation and its stored history?")) return;
     try {
@@ -208,7 +223,7 @@ export default function CopilotPage() {
     <section className="conversation-panel">
       <header className="conversation-header"><div><span className="conversation-kicker">OmicsPrism Copilot</span><h2>{activeThread?.title || "New conversation"}</h2></div><div className={`connection-state ${connection}`} title="Connection status">{connection === "live" ? <Wifi size={15} /> : <WifiOff size={15} />}{statusLabel}</div></header>
       <div className="message-scroll" aria-live="polite">
-        {loading ? <EmptyState loading /> : messages.length === 0 ? <EmptyState /> : messages.map(message => <article className={`copilot-message ${message.role}`} key={message.message_id}><div className="message-author">{message.role === "assistant" ? <Bot size={16} /> : null}{message.role === "assistant" ? "Copilot" : "You"}</div><div className="message-body"><MessageBlocks message={message} onRetry={() => setDraft(latestUserText(messages))} /></div></article>)}
+        {loading ? <EmptyState loading /> : messages.length === 0 ? <EmptyState /> : messages.map(message => <article className={`copilot-message ${message.role}`} key={message.message_id}><div className="message-author">{message.role === "assistant" ? <Bot size={16} /> : null}{message.role === "assistant" ? "Copilot" : "You"}</div><div className="message-body"><MessageBlocks message={message} onRetry={() => setDraft(latestUserText(messages))} />{message.role === "assistant" && <FeedbackControls feedback={feedbackByMessage[message.message_id]} busy={savingFeedbackFor === message.message_id} onSave={payload => saveFeedback(message.message_id, payload)} />}</div></article>)}
         {pendingGraph && <GraphInterruptPanel interrupt={pendingGraph.interrupt} busy={graphBusy} onResume={request => void resumeGraph(request)} />}
         {activeJobWaits.map(wait => <JobWaitingState key={wait.wait_id} wait={wait} canceling={cancelingWaitId === wait.wait_id} onCancel={() => void cancelJobWait(wait)} />)}
         {pendingTurn && !pendingGraph && <div className="working-state"><span /><span /><span /><em>Working on your request</em><button type="button" className="stop-request" disabled={canceling || !pendingTurnRecord} onClick={() => void cancelPendingTurn()} title="Stop request"><Square size={14} />Stop</button></div>}

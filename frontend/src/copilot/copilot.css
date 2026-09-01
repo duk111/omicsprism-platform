@@ -25,6 +25,9 @@
 .message-body { min-width: 0; color: #202925; }
 .copilot-message.user .message-body { padding: 12px 14px; border-radius: 6px; background: #eaf2ee; }
 .copilot-text { margin: 0; line-height: 1.62; white-space: pre-wrap; overflow-wrap: anywhere; }
+.message-feedback { display: grid; justify-items: start; gap: 7px; margin-top: 10px; }
+.feedback-actions { display: flex; gap: 3px; }.feedback-actions button { width: 30px; height: 28px; display: grid; place-items: center; border: 1px solid transparent; border-radius: 4px; background: transparent; color: #67756e; }.feedback-actions button:hover:not(:disabled), .feedback-actions button.selected { border-color: #b7cbc1; background: #edf5f1; color: #17664d; }.feedback-actions button:disabled { opacity: .55; }
+.feedback-form { width: min(100%, 410px); display: grid; grid-template-columns: 150px 1fr auto; gap: 6px; }.feedback-form select, .feedback-form textarea { min-width: 0; border: 1px solid #bdcbc5; border-radius: 4px; background: white; color: #31423b; font: inherit; font-size: 12px; }.feedback-form select { min-height: 34px; padding: 0 7px; }.feedback-form textarea { min-height: 34px; max-height: 92px; padding: 7px; resize: vertical; }.feedback-form button { min-height: 34px; padding: 0 9px; border: 1px solid #17664d; border-radius: 4px; background: #17664d; color: white; font: inherit; font-size: 12px; font-weight: 700; }.feedback-form button:disabled { opacity: .55; }
 .message-section, .advisory-block, .job-block, .evidence-block, .error-block { margin-top: 10px; border: 1px solid #dbe1de; border-radius: 6px; background: #fbfcfb; }
 .advisory-block { padding: 14px 16px; border-left: 3px solid #4d7a64; }
 .advisory-block h3 { display: flex; align-items: center; gap: 7px; margin: 0 0 8px; color: #315844; font-size: 13px; }

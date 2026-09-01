@@ -13,6 +13,7 @@ from ..observability import LOG
 from ..storage_service import AGENT_BUNDLE_MAX_BYTES
 from .bootstrap import AgentApiContext
 from .dataset_profile import build_dataset_profiles
+from .feedback import build_eval_candidate, requires_eval_review
 from .graph import (
     DatasetLoadRequest,
     DatasetProfileRef,
@@ -36,6 +37,10 @@ from .schemas import (
     AgentInputFileRecord,
     AgentInputFileResponse,
     AgentInputSummaryBlock,
+    AgentFeedbackCreateRequest,
+    AgentFeedbackListResponse,
+    AgentFeedbackRecord,
+    AgentFeedbackResponse,
     AgentJobWaitListResponse,
     AgentJobWaitResponse,
     AgentMessageListResponse,
@@ -259,6 +264,72 @@ def create_agent_router(
             messages=[_message_response(item) for item in page],
             next_cursor=page[-1].message_id if len(records) > limit and page else None,
         )
+
+    @router.get("/threads/{thread_id}/feedback", response_model=AgentFeedbackListResponse)
+    def list_feedback(
+        thread_id: str,
+        limit: Annotated[int, Query(ge=1, le=100)] = 100,
+        user_id: str = Depends(session_dependency),
+        ctx: AgentApiContext = Depends(current_context),
+    ) -> AgentFeedbackListResponse:
+        _owned_thread(ctx, thread_id, user_id)
+        records = ctx.product_store.list_feedback(
+            thread_id=thread_id, user_id=user_id, limit=limit,
+        )
+        return AgentFeedbackListResponse(
+            feedback=[_feedback_response(item) for item in records],
+            next_cursor=None,
+        )
+
+    @router.put(
+        "/threads/{thread_id}/messages/{message_id}/feedback",
+        response_model=AgentFeedbackResponse,
+    )
+    def save_feedback(
+        thread_id: str,
+        message_id: str,
+        payload: AgentFeedbackCreateRequest,
+        user_id: str = Depends(session_dependency),
+        ctx: AgentApiContext = Depends(current_context),
+    ) -> AgentFeedbackResponse:
+        _owned_thread(ctx, thread_id, user_id)
+        try:
+            assistant, turn, user_message = ctx.product_store.get_feedback_target(
+                thread_id=thread_id, message_id=message_id, user_id=user_id,
+            )
+            now = datetime.now(timezone.utc)
+            feedback = ctx.product_store.save_feedback(AgentFeedbackRecord(
+                feedback_id=f"feedback-{uuid4()}",
+                thread_id=thread_id,
+                turn_id=turn.turn_id,
+                message_id=assistant.message_id,
+                trace_id=turn.trace_id,
+                user_id=user_id,
+                rating=payload.rating,
+                failure_category=payload.failure_category,
+                correction_text=payload.correction_text,
+                created_at=now,
+                updated_at=now,
+            ))
+            if requires_eval_review(feedback):
+                candidate = build_eval_candidate(
+                    feedback=feedback,
+                    user_message=user_message,
+                    assistant_message=assistant,
+                    trace_events=ctx.product_store.list_trace_events(
+                        trace_id=turn.trace_id, user_id=user_id, limit=500,
+                    ),
+                )
+                ctx.product_store.save_eval_candidate(candidate)
+            else:
+                ctx.product_store.delete_eval_candidate_for_feedback(
+                    feedback_id=feedback.feedback_id, user_id=user_id,
+                )
+        except AgentResourceNotFound as exc:
+            raise _not_found() from exc
+        except ValueError as exc:
+            raise _conflict("Feedback could not be recorded") from exc
+        return _feedback_response(feedback)
 
     @router.get("/threads/{thread_id}/turns", response_model=AgentTurnListResponse)
     def list_turns(
@@ -977,6 +1048,12 @@ def _turn_response(record: AgentTurnRecord) -> AgentTurnResponse:
 
 def _message_response(record: AgentMessageRecord) -> AgentMessageResponse:
     return AgentMessageResponse.model_validate(record.model_dump(exclude={"user_id"}))
+
+
+def _feedback_response(record: AgentFeedbackRecord) -> AgentFeedbackResponse:
+    return AgentFeedbackResponse.model_validate(record.model_dump(exclude={
+        "thread_id", "turn_id", "trace_id", "user_id",
+    }))
 
 
 def _file_response(record: AgentInputFileRecord) -> AgentInputFileResponse:

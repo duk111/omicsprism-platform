@@ -122,3 +122,15 @@ def test_job_completion_migration_defines_wait_and_outbox_contract() -> None:
     assert "status in ('succeeded', 'failed', 'cancelled')" in sql
     assert "grant select, insert, update on agent_job_waits to omics_app" in sql
     assert "grant select, insert, update on agent_job_events to omics_app" in sql
+
+
+def test_feedback_candidate_migration_is_owned_and_review_gated() -> None:
+    sql = (ROOT / "migrations" / "015_agent_feedback_candidates.sql").read_text(encoding="utf-8").lower()
+    assert "create table agent_feedback" in sql
+    assert "create table agent_eval_candidates" in sql
+    assert "unique (message_id, user_id)" in sql
+    assert "references agent_threads (thread_id, user_id) on delete cascade" in sql
+    assert "references agent_feedback (feedback_id) on delete cascade" in sql
+    assert "pending_review" in sql
+    assert "grant select, insert, update on agent_feedback to omics_app" in sql
+    assert "grant select, insert, update on agent_eval_candidates to omics_app" in sql

@@ -20,6 +20,31 @@ export interface AgentEvidenceBlock {
   claims: GroundedClaim[];
 }
 
+export type AgentFeedbackCategory = "incorrect_result" | "missing_context" | "bad_plan" | "unsafe_action" | "latency" | "other";
+
+export interface AgentFeedbackCreateRequest {
+  rating: AgentFeedbackRating;
+  failure_category?: AgentFeedbackCategory | null;
+  correction_text?: string | null;
+}
+
+export interface AgentFeedbackListResponse {
+  feedback: AgentFeedbackResponse[];
+  next_cursor?: string | null;
+}
+
+export type AgentFeedbackRating = "helpful" | "unhelpful";
+
+export interface AgentFeedbackResponse {
+  feedback_id: string;
+  message_id: string;
+  rating: AgentFeedbackRating;
+  failure_category?: AgentFeedbackCategory | null;
+  correction_text?: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
 export interface AgentInputBundleResponse {
   bundle_id: string;
   thread_id: string;
@@ -56,6 +81,11 @@ export interface AgentJobBlock {
   results_url?: string | null;
 }
 
+export interface AgentJobWaitListResponse {
+  waits: AgentJobWaitResponse[];
+  next_cursor?: string | null;
+}
+
 export interface AgentJobWaitResponse {
   wait_id: string;
   thread_id: string;
@@ -73,11 +103,6 @@ export interface AgentJobWaitResponse {
   job_updated_at?: string | null;
 }
 
-export interface AgentJobWaitListResponse {
-  waits: AgentJobWaitResponse[];
-  next_cursor?: string | null;
-}
-
 export interface AgentMessageListResponse {
   messages: AgentMessageResponse[];
   next_cursor?: string | null;
@@ -87,6 +112,7 @@ export interface AgentMessageResponse {
   message_id: string;
   thread_id: string;
   run_id: string;
+  trace_id?: string;
   role: AgentMessageRole;
   blocks: (AgentTextBlock | AgentAdvisoryBlock | AgentInputSummaryBlock | AgentRecommendationBlock | AgentJobBlock | AgentEvidenceBlock | AgentErrorBlock)[];
   created_at: string;
@@ -164,6 +190,7 @@ export interface AgentTurnResponse {
   turn_id: string;
   thread_id: string;
   run_id: string;
+  trace_id?: string;
   status: AgentTurnStatus;
   attempt: number;
   error_code: string | null;
