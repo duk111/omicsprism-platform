@@ -13,6 +13,7 @@ from .schemas import (
     AgentTurnRecord,
     AgentTurnStatus,
 )
+from .trace import AgentTraceEvent
 
 
 class AgentResourceNotFound(LookupError):
@@ -32,6 +33,14 @@ class TurnConflict(RuntimeError):
 
 
 class AgentProductStore(Protocol):
+    def record_trace_event(self, event: AgentTraceEvent) -> None:
+        ...
+
+    def list_trace_events(
+        self, *, trace_id: str, user_id: str, limit: int = 100,
+    ) -> list[AgentTraceEvent]:
+        ...
+
     def save_thread(self, thread: AgentThreadRecord) -> None:
         ...
 
@@ -116,6 +125,25 @@ class InMemoryAgentProductStore:
         self._turn_keys = self._shared.setdefault("turn_keys", {})
         self._bundles = self._shared.setdefault("bundles", {})
         self._files = self._shared.setdefault("files", {})
+        self._trace_events = self._shared.setdefault("trace_events", {})
+
+    def record_trace_event(self, event: AgentTraceEvent) -> None:
+        if event.event_id in self._trace_events:
+            return
+        self.get_thread(thread_id=event.thread_id, user_id=event.user_id)
+        self._trace_events[event.event_id] = event.model_dump(mode="json")
+
+    def list_trace_events(
+        self, *, trace_id: str, user_id: str, limit: int = 100,
+    ) -> list[AgentTraceEvent]:
+        bounded = max(1, min(limit, 500))
+        records = [
+            AgentTraceEvent.model_validate(deepcopy(payload))
+            for payload in self._trace_events.values()
+            if payload["trace_id"] == trace_id and payload["user_id"] == user_id
+        ]
+        records.sort(key=lambda item: (item.created_at, item.event_id))
+        return records[-bounded:]
 
     def save_thread(self, thread: AgentThreadRecord) -> None:
         current = self._threads.get(thread.thread_id)
@@ -168,6 +196,9 @@ class InMemoryAgentProductStore:
             if payload["thread_id"] == thread_id and payload["user_id"] == user_id:
                 self._turn_keys.pop((user_id, payload["idempotency_key"]), None)
                 del self._turns[turn_id]
+        for event_id, payload in list(self._trace_events.items()):
+            if payload["thread_id"] == thread_id and payload["user_id"] == user_id:
+                del self._trace_events[event_id]
         del self._threads[thread_id]
         return files
 
@@ -377,6 +408,59 @@ class PostgresAgentProductStore:
     def __init__(self, database_url: str) -> None:
         self.database_url = database_url
 
+    def record_trace_event(self, event: AgentTraceEvent) -> None:
+        Jsonb = _jsonb_type()
+        with self._connect() as conn:
+            conn.execute(
+                """
+                insert into agent_trace_events (
+                    event_id, trace_id, thread_id, turn_id, run_id, user_id,
+                    event_type, component, name, schema_version, graph_version,
+                    prompt_version, prompt_hash, model_provider, model_name,
+                    tool_name, tool_schema_hash, job_id, outcome, latency_ms,
+                    prompt_tokens, completion_tokens, total_tokens, cached_tokens,
+                    usage_status, retry_count, error_code, created_at
+                ) values (
+                    %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
+                    %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
+                    %s, %s
+                ) on conflict (event_id) do nothing
+                """,
+                (
+                    event.event_id, event.trace_id, event.thread_id, event.turn_id,
+                    event.run_id, event.user_id, event.event_type, event.component,
+                    event.name, event.schema_version, event.graph_version,
+                    event.prompt_version, event.prompt_hash, event.model_provider,
+                    event.model_name, event.tool_name, event.tool_schema_hash,
+                    event.job_id, event.outcome, event.latency_ms, event.prompt_tokens,
+                    event.completion_tokens, event.total_tokens, event.cached_tokens,
+                    event.usage_status, event.retry_count, event.error_code,
+                    event.created_at,
+                ),
+            )
+
+    def list_trace_events(
+        self, *, trace_id: str, user_id: str, limit: int = 100,
+    ) -> list[AgentTraceEvent]:
+        bounded = max(1, min(limit, 500))
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                select event_id, trace_id, thread_id, turn_id, run_id, user_id,
+                       event_type, component, name, schema_version, graph_version,
+                       prompt_version, prompt_hash, model_provider, model_name,
+                       tool_name, tool_schema_hash, job_id, outcome, latency_ms,
+                       prompt_tokens, completion_tokens, total_tokens, cached_tokens,
+                       usage_status, retry_count, error_code, created_at
+                from agent_trace_events
+                where trace_id = %s and user_id = %s
+                order by created_at desc, event_id desc
+                limit %s
+                """,
+                (trace_id, user_id, bounded),
+            ).fetchall()
+        return [_trace_event_from_row(row) for row in reversed(rows)]
+
     def save_thread(self, thread: AgentThreadRecord) -> None:
         with self._connect() as conn:
             row = conn.execute(
@@ -455,6 +539,7 @@ class PostgresAgentProductStore:
             conn.execute("delete from agent_input_bundles where thread_id = %s and user_id = %s", (thread_id, user_id))
             conn.execute("delete from agent_messages where thread_id = %s and user_id = %s", (thread_id, user_id))
             conn.execute("delete from agent_turns where thread_id = %s and user_id = %s", (thread_id, user_id))
+            conn.execute("delete from agent_trace_events where thread_id = %s and user_id = %s", (thread_id, user_id))
             conn.execute("delete from agent_threads where thread_id = %s and user_id = %s", (thread_id, user_id))
         return [_input_file_from_row(row) for row in rows]
 
@@ -465,13 +550,14 @@ class PostgresAgentProductStore:
             conn.execute(
                 """
                 insert into agent_messages (
-                    message_id, thread_id, run_id, user_id, role, blocks, created_at
-                ) values (%s, %s, %s, %s, %s, %s, %s)
+                    message_id, thread_id, run_id, trace_id, user_id, role, blocks, created_at
+                ) values (%s, %s, %s, %s, %s, %s, %s, %s)
                 """,
                 (
                     message.message_id,
                     message.thread_id,
                     message.run_id,
+                    message.trace_id,
                     message.user_id,
                     message.role.value,
                     Jsonb([block.model_dump(mode="json") for block in message.blocks]),
@@ -485,7 +571,7 @@ class PostgresAgentProductStore:
         with self._connect() as conn:
             rows = conn.execute(
                 """
-                select message_id, thread_id, run_id, user_id, role, blocks, created_at
+                select message_id, thread_id, run_id, trace_id, user_id, role, blocks, created_at
                 from agent_messages
                 where thread_id = %s and user_id = %s
                 order by created_at desc, message_id desc limit %s
@@ -518,7 +604,7 @@ class PostgresAgentProductStore:
                     raise AgentResourceNotFound(turn.thread_id)
                 existing_row = conn.execute(
                     """
-                    select turn_id, thread_id, run_id, user_id, idempotency_key, request_hash,
+                    select turn_id, thread_id, run_id, user_id, trace_id, idempotency_key, request_hash,
                            status, attempt, error_code,
                            created_at, updated_at, started_at, completed_at
                     from agent_turns where user_id = %s and idempotency_key = %s
@@ -537,10 +623,10 @@ class PostgresAgentProductStore:
                 row = conn.execute(
                     """
                     insert into agent_turns (
-                        turn_id, thread_id, run_id, user_id, idempotency_key, request_hash,
+                        turn_id, thread_id, run_id, user_id, trace_id, idempotency_key, request_hash,
                         status, attempt, error_code,
                         created_at, updated_at, started_at, completed_at
-                    ) values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    ) values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                     on conflict (user_id, idempotency_key) do nothing
                     returning turn_id
                     """,
@@ -549,7 +635,7 @@ class PostgresAgentProductStore:
                 if row is None:
                     existing_row = conn.execute(
                         """
-                        select turn_id, thread_id, run_id, user_id, idempotency_key, request_hash,
+                        select turn_id, thread_id, run_id, user_id, trace_id, idempotency_key, request_hash,
                                status, attempt, error_code,
                                created_at, updated_at, started_at, completed_at
                         from agent_turns where user_id = %s and idempotency_key = %s
@@ -574,13 +660,14 @@ class PostgresAgentProductStore:
                     conn.execute(
                         """
                         insert into agent_messages (
-                            message_id, thread_id, run_id, user_id, role, blocks, created_at
-                        ) values (%s, %s, %s, %s, %s, %s, %s)
+                            message_id, thread_id, run_id, trace_id, user_id, role, blocks, created_at
+                        ) values (%s, %s, %s, %s, %s, %s, %s, %s)
                         """,
                         (
                             message.message_id,
                             message.thread_id,
                             message.run_id,
+                            message.trace_id,
                             message.user_id,
                             message.role.value,
                             Jsonb([block.model_dump(mode="json") for block in message.blocks]),
@@ -597,7 +684,7 @@ class PostgresAgentProductStore:
         with self._connect() as conn:
             row = conn.execute(
                 """
-                select turn_id, thread_id, run_id, user_id, idempotency_key, request_hash,
+                select turn_id, thread_id, run_id, user_id, trace_id, idempotency_key, request_hash,
                        status, attempt, error_code,
                        created_at, updated_at, started_at, completed_at
                 from agent_turns where turn_id = %s and user_id = %s
@@ -615,7 +702,7 @@ class PostgresAgentProductStore:
                 update agent_turns set status = 'running', attempt = attempt + 1,
                     started_at = %s, updated_at = %s, error_code = null
                 where turn_id = %s and user_id = %s and status in ('queued', 'running')
-                returning turn_id, thread_id, run_id, user_id, idempotency_key,
+                returning turn_id, thread_id, run_id, user_id, trace_id, idempotency_key,
                           request_hash, status, attempt, error_code,
                           created_at, updated_at, started_at, completed_at
                 """,
@@ -632,7 +719,7 @@ class PostgresAgentProductStore:
                 update agent_turns set status = 'queued', error_code = null,
                     started_at = null, completed_at = null, updated_at = %s
                 where turn_id = %s and user_id = %s and status = 'running'
-                returning turn_id, thread_id, run_id, user_id, idempotency_key,
+                returning turn_id, thread_id, run_id, user_id, trace_id, idempotency_key,
                           request_hash, status, attempt, error_code,
                           created_at, updated_at, started_at, completed_at
                 """,
@@ -648,7 +735,7 @@ class PostgresAgentProductStore:
         with self._connect() as conn:
             rows = conn.execute(
                 """
-                select turn_id, thread_id, run_id, user_id, idempotency_key, request_hash,
+                select turn_id, thread_id, run_id, user_id, trace_id, idempotency_key, request_hash,
                        status, attempt, error_code,
                        created_at, updated_at, started_at, completed_at
                 from agent_turns
@@ -673,7 +760,7 @@ class PostgresAgentProductStore:
                     completed_at = %s, updated_at = %s
                 where turn_id = %s and user_id = %s
                   and status = 'running'
-                returning turn_id, thread_id, run_id, user_id, idempotency_key,
+                returning turn_id, thread_id, run_id, user_id, trace_id, idempotency_key,
                           request_hash, status, attempt,
                           error_code, created_at, updated_at, started_at, completed_at
                 """,
@@ -690,10 +777,10 @@ class PostgresAgentProductStore:
                 conn.execute(
                     """
                     insert into agent_messages (
-                        message_id, thread_id, run_id, user_id, role, blocks, created_at
-                    ) values (%s, %s, %s, %s, %s, %s, %s)
+                        message_id, thread_id, run_id, trace_id, user_id, role, blocks, created_at
+                    ) values (%s, %s, %s, %s, %s, %s, %s, %s)
                     """,
-                    (message.message_id, message.thread_id, message.run_id,
+                    (message.message_id, message.thread_id, message.run_id, message.trace_id,
                      message.user_id, message.role.value,
                      Jsonb([block.model_dump(mode="json") for block in message.blocks]),
                      message.created_at),
@@ -708,7 +795,7 @@ class PostgresAgentProductStore:
                     completed_at = %s, updated_at = %s
                 where turn_id = %s and user_id = %s
                   and status in ('queued', 'running')
-                returning turn_id, thread_id, run_id, user_id, idempotency_key,
+                returning turn_id, thread_id, run_id, user_id, trace_id, idempotency_key,
                           request_hash, status, attempt, error_code,
                           created_at, updated_at, started_at, completed_at
                 """,
@@ -909,7 +996,7 @@ def _thread_from_row(row) -> AgentThreadRecord:
 
 
 def _message_from_row(row) -> AgentMessageRecord:
-    fields = ("message_id", "thread_id", "run_id", "user_id", "role", "blocks", "created_at")
+    fields = ("message_id", "thread_id", "run_id", "trace_id", "user_id", "role", "blocks", "created_at")
     return AgentMessageRecord.model_validate(dict(zip(fields, row)))
 
 
@@ -927,6 +1014,7 @@ def _turn_values(turn: AgentTurnRecord) -> tuple[Any, ...]:
         turn.thread_id,
         turn.run_id,
         turn.user_id,
+        turn.trace_id,
         turn.idempotency_key,
         turn.request_hash,
         turn.status.value,
@@ -941,11 +1029,23 @@ def _turn_values(turn: AgentTurnRecord) -> tuple[Any, ...]:
 
 def _turn_from_row(row) -> AgentTurnRecord:
     fields = (
-        "turn_id", "thread_id", "run_id", "user_id", "idempotency_key", "request_hash",
+        "turn_id", "thread_id", "run_id", "user_id", "trace_id", "idempotency_key", "request_hash",
         "status", "attempt", "error_code",
         "created_at", "updated_at", "started_at", "completed_at",
     )
     return AgentTurnRecord.model_validate(dict(zip(fields, row)))
+
+
+def _trace_event_from_row(row) -> AgentTraceEvent:
+    fields = (
+        "event_id", "trace_id", "thread_id", "turn_id", "run_id", "user_id",
+        "event_type", "component", "name", "schema_version", "graph_version",
+        "prompt_version", "prompt_hash", "model_provider", "model_name",
+        "tool_name", "tool_schema_hash", "job_id", "outcome", "latency_ms",
+        "prompt_tokens", "completion_tokens", "total_tokens", "cached_tokens",
+        "usage_status", "retry_count", "error_code", "created_at",
+    )
+    return AgentTraceEvent.model_validate(dict(zip(fields, row)))
 
 
 def _jsonb_type():

@@ -321,9 +321,14 @@ def create_agent_router(
         if payload.focus_job_ids:
             focus = focus.model_copy(update={"in_scope_job_ids": list(payload.focus_job_ids)})
             version += 1
+        turn_id = f"turn-{uuid4()}"
+        trace_id = f"trace-{uuid4()}"
         graph_state = GraphState(
             thread_id=thread_id,
             user_id=user_id,
+            trace_id=trace_id,
+            turn_id=turn_id,
+            run_id=thread.current_run_id,
             user_message=payload.message,
             focus=focus,
             version=version,
@@ -334,12 +339,12 @@ def create_agent_router(
             ],
         )
         now = datetime.now(timezone.utc)
-        turn_id = f"turn-{uuid4()}"
         turn = AgentTurnRecord(
             turn_id=turn_id,
             thread_id=thread_id,
             run_id=thread.current_run_id,
             user_id=user_id,
+            trace_id=trace_id,
             idempotency_key=idempotency_key,
             request_hash=_request_hash(thread_id, payload.model_dump(mode="json")),
             status=AgentTurnStatus.QUEUED,
@@ -354,6 +359,7 @@ def create_agent_router(
             message_id=f"user-{turn_id}",
             thread_id=thread_id,
             run_id=thread.current_run_id,
+            trace_id=trace_id,
             user_id=user_id,
             role=AgentMessageRole.USER,
             blocks=blocks,
@@ -371,16 +377,31 @@ def create_agent_router(
                 _enqueue_work(ctx, AgentTurnWorkItem(
                     turn_id=queued.turn_id,
                     thread_id=queued.thread_id,
+                    trace_id=queued.trace_id,
                     user_id=queued.user_id,
-                    state=graph_state,
+                    state=graph_state.model_copy(update={
+                        "trace_id": queued.trace_id,
+                        "turn_id": queued.turn_id,
+                    }),
                 ))
             return _queued_graph_turn_result(queued)
         _enqueue_work(ctx, AgentTurnWorkItem(
             turn_id=turn_id,
             thread_id=thread_id,
+            trace_id=trace_id,
             user_id=user_id,
             state=graph_state,
         ))
+        if ctx.trace_recorder is not None:
+            ctx.trace_recorder.turn_event(
+                event_type="turn.queued",
+                trace_id=trace_id,
+                thread_id=thread_id,
+                turn_id=turn_id,
+                run_id=thread.current_run_id,
+                user_id=user_id,
+                outcome="queued",
+            )
         return _queued_graph_turn_result(queued)
 
     @router.post(
@@ -448,6 +469,7 @@ def create_agent_router(
             _enqueue_work(ctx, AgentTurnWorkItem(
                 turn_id=turn.turn_id,
                 thread_id=thread_id,
+                trace_id=turn.trace_id,
                 user_id=user_id,
                 resume=payload,
                 idempotency_key=idempotency_key,

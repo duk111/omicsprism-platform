@@ -17,6 +17,7 @@ from backend.app.agent.schemas import (
     ToolName,
     ToolResult,
 )
+from backend.app.agent.trace import ModelUsage
 
 
 class _Model:
@@ -148,7 +149,7 @@ def test_step_budget_uses_separate_dimensions() -> None:
     assert budget.used_tokens == 20
 
 
-def test_model_token_counter_stays_within_budget() -> None:
+def test_unknown_model_usage_does_not_fake_a_token_count() -> None:
     model = _Model([
         MainModelOutput(decision=AgentDecision(action="answer"), answer="bounded"),
     ])
@@ -165,7 +166,33 @@ def test_model_token_counter_stays_within_budget() -> None:
     state = GraphState.model_validate(result)
 
     assert state.response_text == "bounded"
-    assert state.step_budget.used_tokens == state.step_budget.max_tokens == 1
+    assert state.step_budget.used_tokens == 0
+    assert state.step_budget.unknown_usage_model_calls == 1
+
+
+def test_reported_model_usage_updates_separate_budget_counters() -> None:
+    model = _Model([
+        MainModelOutput(decision=AgentDecision(action="answer"), answer="bounded"),
+    ])
+    model.last_usage = ModelUsage(
+        status="reported",
+        prompt_tokens=8,
+        completion_tokens=3,
+        total_tokens=11,
+    )
+    result = build_agent_graph(
+        model,
+        lambda _request: [],
+        lambda _request: None,
+        lambda _request: None,
+        lambda _request: None,
+    ).invoke(_state(), _config())
+    state = GraphState.model_validate(result)
+
+    assert state.step_budget.used_prompt_tokens == 8
+    assert state.step_budget.used_completion_tokens == 3
+    assert state.step_budget.used_tokens == 11
+    assert state.step_budget.unknown_usage_model_calls == 0
 
 
 def test_grounded_loop_verifies_model_draft_and_falls_back_to_evidence() -> None:

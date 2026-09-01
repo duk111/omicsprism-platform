@@ -236,6 +236,7 @@ class AgentTurnRecord(ContractModel):
     thread_id: str = Field(min_length=1)
     run_id: str = Field(min_length=1)
     user_id: str = Field(min_length=1)
+    trace_id: str = Field(default="trace-local", min_length=1, max_length=200)
     idempotency_key: str = Field(min_length=1, max_length=200)
     request_hash: str = Field(min_length=1)
     status: AgentTurnStatus
@@ -250,6 +251,7 @@ class AgentTurnResponse(ContractModel):
     turn_id: str = Field(min_length=1)
     thread_id: str = Field(min_length=1)
     run_id: str = Field(min_length=1)
+    trace_id: str = Field(default="trace-local", min_length=1, max_length=200)
     status: AgentTurnStatus
     attempt: int = Field(ge=0)
     error_code: str | None
@@ -266,6 +268,7 @@ class AgentMessageRecord(ContractModel):
     message_id: str = Field(min_length=1)
     thread_id: str = Field(min_length=1)
     run_id: str = Field(min_length=1)
+    trace_id: str = Field(default="trace-local", min_length=1, max_length=200)
     user_id: str = Field(min_length=1)
     role: AgentMessageRole
     blocks: list[AgentMessageBlock] = Field(min_length=1, max_length=20)
@@ -275,6 +278,7 @@ class AgentMessageResponse(ContractModel):
     message_id: str = Field(min_length=1)
     thread_id: str = Field(min_length=1)
     run_id: str = Field(min_length=1)
+    trace_id: str = Field(default="trace-local", min_length=1, max_length=200)
     role: AgentMessageRole
     blocks: list[AgentMessageBlock] = Field(min_length=1, max_length=20)
     created_at: datetime

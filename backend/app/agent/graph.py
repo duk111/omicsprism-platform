@@ -110,7 +110,12 @@ class StepBudget(BaseModel):
     max_tokens: int = Field(default=4096, ge=1, le=32768)
     used_model_steps: int = Field(default=0, ge=0)
     used_tool_calls: int = Field(default=0, ge=0)
+    # These counters contain only values explicitly reported by the provider.
+    # Unknown usage remains unknown rather than being estimated.
+    used_prompt_tokens: int = Field(default=0, ge=0)
+    used_completion_tokens: int = Field(default=0, ge=0)
     used_tokens: int = Field(default=0, ge=0)
+    unknown_usage_model_calls: int = Field(default=0, ge=0)
 
     @model_validator(mode="after")
     def _used_counters_within_budget(self) -> "StepBudget":
@@ -502,6 +507,9 @@ class AnalysisExecutionRequest(BaseModel):
 
     user_id: str = Field(min_length=1, max_length=200)
     thread_id: str = Field(min_length=1, max_length=200)
+    trace_id: str = Field(default="trace-local", min_length=1, max_length=200)
+    turn_id: str = Field(default="turn-local", min_length=1, max_length=200)
+    run_id: str = Field(default="run-local", min_length=1, max_length=200)
     dataset_ids: list[str] = Field(min_length=1, max_length=6)
     resolved_params: AnalysisParams
     input_fingerprint: str = Field(pattern=r"^sha256:[0-9a-fA-F]{64}$")
@@ -521,6 +529,9 @@ class GraphState(BaseModel):
 
     thread_id: str = Field(min_length=1, max_length=200)
     user_id: str = Field(min_length=1, max_length=200)
+    trace_id: str = Field(default="trace-local", min_length=1, max_length=200)
+    turn_id: str = Field(default="turn-local", min_length=1, max_length=200)
+    run_id: str = Field(default="run-local", min_length=1, max_length=200)
     user_message: str = Field(min_length=1, max_length=4000)
     focus: RunFocus = Field(default_factory=lambda: RunFocus(
         in_scope_job_ids=[],
@@ -567,6 +578,7 @@ def build_agent_graph(
     *,
     checkpointer: object | None = None,
     tool_executor: ToolExecutor | None = None,
+    trace_recorder: object | None = None,
 ):
     """Compile the v3 graph around injected model and deterministic data boundaries."""
 
@@ -578,7 +590,7 @@ def build_agent_graph(
     from .nodes.result_qa import result_qa_node
 
     builder = StateGraph(GraphState)
-    builder.add_node("main", main_node(model, tool_executor))
+    builder.add_node("main", main_node(model, tool_executor, trace_recorder))
     builder.add_node(
         "analysis",
         analysis_node(dataset_loader, job_submitter),

@@ -9,6 +9,7 @@ from psycopg import OperationalError
 
 from .bootstrap import AgentApiContext
 from .graph import GraphInterrupt, GraphState
+from ..observability import log_context
 from .product_store import AgentResourceNotFound, TurnConflict
 from .queue import AgentTurnQueue, AgentTurnWorkItem
 from .schemas import (
@@ -62,12 +63,27 @@ class AgentRuntime:
             }:
                 self.queue.ack(raw_item)
                 return
+            self._record_turn_event(
+                "turn.started",
+                item,
+                run_id=turn.run_id,
+                retry_count=max(0, turn.attempt - 1),
+            )
             config = {"configurable": {"thread_id": item.thread_id}}
             if item.state is not None:
                 self._run_start(item, config, turn.attempt)
             else:
                 self._run_resume(item, config)
-            self._finalize(item, turn)
+            finalized = self._finalize(item, turn)
+            if finalized:
+                self._record_turn_event(
+                    "turn.completed",
+                    item,
+                    run_id=turn.run_id,
+                    outcome="completed",
+                    latency_ms=round((perf_counter() - started_at) * 1000, 3),
+                    retry_count=max(0, turn.attempt - 1),
+                )
             self.queue.ack(raw_item)
             LOG.info(
                 "agent turn processed",
@@ -133,18 +149,18 @@ class AgentRuntime:
             # Passing the new state is required when a thread already has a
             # completed checkpoint; invoke(None, ...) would observe its empty
             # `next` tuple and skip the graph entirely.
-            self.context.graph.invoke(state_values, config)
+            self._invoke_graph(item, state_values, config)
             return
         snapshot = self.context.graph.get_state(config)
         if _snapshot_interrupts(snapshot):
             return
         if getattr(snapshot, "next", ()):
-            self.context.graph.invoke(None, config)
+            self._invoke_graph(item, None, config)
             return
         if not _checkpoint_matches(snapshot, item.state):
             state_values = item.state.model_dump(mode="json")
             self.context.graph.update_state(config, state_values)
-            self.context.graph.invoke(state_values, config)
+            self._invoke_graph(item, state_values, config)
 
     def _run_resume(self, item: AgentTurnWorkItem, config: dict) -> None:
         if item.resume is None:
@@ -160,9 +176,17 @@ class AgentRuntime:
         value.pop("interrupt_id", None)
         if item.idempotency_key is not None:
             value["idempotency_key"] = item.idempotency_key
-        self.context.graph.invoke(Command(resume=value), config)
+        self._invoke_graph(item, Command(resume=value), config)
 
-    def _finalize(self, item: AgentTurnWorkItem, turn: AgentTurnRecord) -> None:
+    def _invoke_graph(self, item: AgentTurnWorkItem, *args):
+        with log_context(
+            trace_id=item.trace_id,
+            user_id=item.user_id,
+            project_id=item.thread_id,
+        ):
+            return self.context.graph.invoke(*args)
+
+    def _finalize(self, item: AgentTurnWorkItem, turn: AgentTurnRecord) -> bool:
         config = {"configurable": {"thread_id": item.thread_id}}
         snapshot = self.context.graph.get_state(config)
         state = GraphState.model_validate(snapshot.values)
@@ -170,13 +194,14 @@ class AgentRuntime:
             raise ValueError("graph checkpoint ownership mismatch")
         interrupts = _snapshot_interrupts(snapshot)
         if interrupts:
-            return
+            return False
         if not state.response_text:
             raise ValueError("completed graph state is missing response_text")
         message = AgentMessageRecord(
             message_id=f"assistant-{item.turn_id}",
             thread_id=item.thread_id,
             run_id=turn.run_id,
+            trace_id=item.trace_id,
             user_id=item.user_id,
             role=AgentMessageRole.ASSISTANT,
             blocks=[AgentTextBlock(text=state.response_text)],
@@ -198,6 +223,7 @@ class AgentRuntime:
             )
             if current.status is not AgentTurnStatus.COMPLETED:
                 raise
+        return True
 
     def _fail(self, item: AgentTurnWorkItem, error_code: str) -> None:
         try:
@@ -210,6 +236,7 @@ class AgentRuntime:
                     message_id=f"assistant-{item.turn_id}",
                     thread_id=item.thread_id,
                     run_id=current.run_id,
+                    trace_id=item.trace_id,
                     user_id=item.user_id,
                     role=AgentMessageRole.ASSISTANT,
                     blocks=[AgentErrorBlock(
@@ -227,6 +254,14 @@ class AgentRuntime:
                     message=message,
                     error_code=error_code,
                 )
+                self._record_turn_event(
+                    "turn.failed",
+                    item,
+                    run_id=current.run_id,
+                    outcome="failed",
+                    error_code=error_code,
+                    retry_count=max(0, current.attempt - 1),
+                )
         except Exception:
             LOG.exception("unable to mark Agent turn failed", extra={"event": "agent.turn.fail_persist"})
 
@@ -238,6 +273,7 @@ class AgentRuntime:
                 turn_id=item.turn_id,
                 user_id=item.user_id,
             )
+
             if turn.attempt > _MAX_TRANSIENT_RETRIES:
                 return False
             if turn.status is AgentTurnStatus.RUNNING:
@@ -265,6 +301,33 @@ class AgentRuntime:
                 extra={"event": "agent.turn.retry_failed", "turn_id": item.turn_id},
             )
             return False
+
+    def _record_turn_event(
+        self,
+        event_type: str,
+        item: AgentTurnWorkItem,
+        *,
+        run_id: str | None = None,
+        outcome: str | None = None,
+        latency_ms: float | None = None,
+        retry_count: int = 0,
+        error_code: str | None = None,
+    ) -> None:
+        recorder = self.context.trace_recorder
+        if recorder is None:
+            return
+        recorder.turn_event(
+            event_type=event_type,  # type: ignore[arg-type]
+            trace_id=item.trace_id,
+            thread_id=item.thread_id,
+            turn_id=item.turn_id,
+            run_id=run_id,
+            user_id=item.user_id,
+            outcome=outcome,
+            latency_ms=latency_ms,
+            retry_count=retry_count,
+            error_code=error_code,
+        )
 
 
 def _snapshot_interrupts(snapshot: object) -> list[GraphInterrupt]:

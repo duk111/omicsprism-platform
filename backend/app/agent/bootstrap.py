@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from hashlib import sha256
+from time import perf_counter
 from uuid import NAMESPACE_URL, uuid5
 
 from fastapi import HTTPException
@@ -23,6 +24,7 @@ from ..models import (
 from ..settings import AppSettings
 from ..storage_service import CSV_MAX_BYTES, FileStorageService
 from .product_store import AgentProductStore, PostgresAgentProductStore
+from .trace import TraceRecorder
 from .graph import (
     AnalysisExecutionRequest,
     DatasetLoadRequest,
@@ -61,6 +63,7 @@ class AgentApiContext:
     dataset_loader: DatasetLoader | None = None
     stream_poll_seconds: float = 1.0
     turn_queue: AgentTurnQueue | None = None
+    trace_recorder: TraceRecorder | None = None
 
     def close(self) -> None:
         """Release application-owned graph checkpoint resources."""
@@ -106,6 +109,7 @@ def create_agent_api_context(
         return None
     database_url = settings.runtime_database_url
     product_store = PostgresAgentProductStore(database_url)
+    trace_recorder = TraceRecorder(product_store.record_trace_event)
     if not settings.agent_model_url or not settings.agent_model_name:
         raise RuntimeError(
             "OMICS_PRISM_AGENT_MODEL_URL and OMICS_PRISM_AGENT_MODEL_NAME are required "
@@ -119,6 +123,7 @@ def create_agent_api_context(
         model=settings.agent_model_name,
         api_key=settings.agent_model_api_key,
         timeout_seconds=settings.agent_model_request_timeout_seconds,
+        trace_recorder=trace_recorder,
     )
 
     def load_datasets(request: DatasetLoadRequest) -> list[DatasetRef]:
@@ -142,7 +147,7 @@ def create_agent_api_context(
             ))
         return refs
 
-    def submit_job(request: AnalysisExecutionRequest) -> JobRef:
+    def _submit_job(request: AnalysisExecutionRequest) -> JobRef:
         job_id = str(uuid5(
             NAMESPACE_URL,
             f"omicsprism:{request.user_id}:{request.idempotency_key}",
@@ -227,6 +232,31 @@ def create_agent_api_context(
         job_store.save(job)
         job_executor.enqueue(job_id)
         return JobRef(job_id=job_id, owner_id=request.user_id)
+
+    def submit_job(request: AnalysisExecutionRequest) -> JobRef:
+        started = perf_counter()
+        job_id = str(uuid5(
+            NAMESPACE_URL,
+            f"omicsprism:{request.user_id}:{request.idempotency_key}",
+        ))
+        try:
+            result = _submit_job(request)
+        except Exception as exc:
+            trace_recorder.job_submitted(
+                request=request,
+                job_id=job_id,
+                latency_ms=round((perf_counter() - started) * 1000, 3),
+                outcome="failed",
+                error_code=type(exc).__name__,
+            )
+            raise
+        trace_recorder.job_submitted(
+            request=request,
+            job_id=result.job_id,
+            latency_ms=round((perf_counter() - started) * 1000, 3),
+            outcome="deduplicated" if result.job_id != job_id else "submitted",
+        )
+        return result
 
     def read_job(request: JobLookupRequest) -> JobSummary:
         runtime = AgentToolRuntime(
@@ -322,6 +352,7 @@ def create_agent_api_context(
             query_result,
             checkpointer=checkpointer,
             tool_executor=execute_tool,
+            trace_recorder=trace_recorder,
         )
     except Exception:
         checkpointer.conn.close()
@@ -335,4 +366,5 @@ def create_agent_api_context(
         dataset_loader=load_datasets,
         stream_poll_seconds=max(0.1, settings.agent_poll_seconds),
         turn_queue=turn_queue,
+        trace_recorder=trace_recorder,
     )

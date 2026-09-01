@@ -100,3 +100,13 @@ def test_checkpointer_migration_drops_custom_run_state_table() -> None:
     assert "con.confrelid = 'public.agent_runs'::regclass" in sql
     assert "agent_threads" not in sql.split("drop table if exists agent_runs;")[1]
     assert "drop table if exists agent_runs cascade" not in sql
+
+
+def test_trace_id_migration_adds_owned_turn_and_message_columns() -> None:
+    sql = (ROOT / "migrations" / "013_agent_trace_id_columns.sql").read_text(encoding="utf-8").lower()
+    assert "alter table agent_turns" in sql
+    assert "alter table agent_messages" in sql
+    assert "add column if not exists trace_id" in sql
+    assert "alter column trace_id set not null" in sql
+    assert "agent_turns_trace_idx" in sql
+    assert "agent_messages_trace_idx" in sql

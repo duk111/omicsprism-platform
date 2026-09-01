@@ -15,6 +15,7 @@ class AgentTurnWorkItem(BaseModel):
 
     turn_id: str = Field(min_length=1, max_length=200)
     thread_id: str = Field(min_length=1, max_length=200)
+    trace_id: str = Field(default="trace-local", min_length=1, max_length=200)
     user_id: str = Field(min_length=1, max_length=200)
     state: GraphState | None = None
     resume: GraphResumeRequest | None = None
@@ -26,6 +27,8 @@ class AgentTurnWorkItem(BaseModel):
             raise ValueError("work item must contain exactly one graph operation")
         if self.state is not None and (
             self.state.thread_id != self.thread_id
+            or self.state.turn_id not in {"turn-local", self.turn_id}
+            or self.state.trace_id not in {"trace-local", self.trace_id}
             or self.state.user_id != self.user_id
         ):
             raise ValueError("work item state does not match its owner")

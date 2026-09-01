@@ -69,6 +69,13 @@ class MainModelContext(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
+    # Ownership and correlation identifiers are available to tracing code but
+    # must never be serialized into the model prompt.
+    trace_id: str = Field(default="trace-local", min_length=1, max_length=200, exclude=True)
+    thread_id: str = Field(default="thread-local", min_length=1, max_length=200, exclude=True)
+    turn_id: str = Field(default="turn-local", min_length=1, max_length=200, exclude=True)
+    run_id: str = Field(default="run-local", min_length=1, max_length=200, exclude=True)
+    user_id: str = Field(default="user-local", min_length=1, max_length=200, exclude=True)
     user_message: str = Field(min_length=1, max_length=4000)
     conversation_summary: str | None = Field(default=None, max_length=1200)
     fact_index: FactIndex
@@ -93,6 +100,11 @@ class ContextAssembler:
         if summary:
             summary = str(summary)[:1200]
         return MainModelContext(
+            trace_id=str(getattr(state, "trace_id", "") or "trace-local"),
+            thread_id=str(getattr(state, "thread_id", "") or "thread-local"),
+            turn_id=str(getattr(state, "turn_id", "") or "turn-local"),
+            run_id=str(getattr(state, "run_id", "") or "run-local"),
+            user_id=str(getattr(state, "user_id", "") or "user-local"),
             user_message=str(getattr(state, "user_message", "")),
             conversation_summary=summary,
             fact_index=fact_index,

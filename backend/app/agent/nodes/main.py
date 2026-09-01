@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+from time import perf_counter
 from collections.abc import Callable
 from typing import Literal
 
@@ -20,6 +21,7 @@ from ..graph import (
 )
 from ..context import ContextAssembler, MainModelContext
 from ..schemas import GroundedAnswer, ToolName, ToolResult
+from ..trace import TraceRecorder, stable_hash
 
 
 _MODEL_FALLBACK_QUESTION = (
@@ -40,6 +42,7 @@ LOG = logging.getLogger("omicsprism.platform.agent_main")
 def main_node(
     model: MainDecisionModel,
     tool_executor: ToolExecutor | None = None,
+    trace_recorder: TraceRecorder | None = None,
 ) -> Callable[[GraphState], dict[str, object]]:
     def run(state: GraphState) -> dict[str, object]:
         budget = state.step_budget
@@ -85,9 +88,10 @@ def main_node(
                         },
                         exc_info=True,
                     )
-                    budget = _advance_model_budget(budget, 0)
+                    budget = _advance_model_budget(budget, getattr(model, "last_usage", None))
                     continue
-                budget = _advance_model_budget(budget, _estimate_tokens(candidate))
+                usage = getattr(model, "last_usage", None)
+                budget = _advance_model_budget(budget, usage)
                 output = candidate
                 break
             if output is None:
@@ -137,14 +141,28 @@ def main_node(
                 tool=decision.tool,
                 arguments=decision.arguments,
             )
+            tool_started = perf_counter()
+            tool_outcome = "ok"
+            tool_error_code: str | None = None
             try:
                 result = tool_executor(request, working_state)
                 summary = _serialize_tool_result(result)
                 evidence = _as_grounding_evidence(result)
                 if evidence is not None:
                     latest_evidence = evidence
-            except Exception:
+            except Exception as exc:
                 summary = "tool execution failed"
+                tool_outcome = "failed"
+                tool_error_code = type(exc).__name__
+            if trace_recorder is not None:
+                trace_recorder.tool_call(
+                    context=working_state,
+                    tool_name=request.tool.value,
+                    tool_schema_hash=stable_hash(ToolCallRequest.model_json_schema()),
+                    latency_ms=round((perf_counter() - tool_started) * 1000, 3),
+                    outcome=tool_outcome,
+                    error_code=tool_error_code,
+                )
             observations.append(ToolObservation(tool=request.tool, summary=summary))
             observations = observations[-12:]
             budget = _advance_tool_budget(budget)
@@ -226,26 +244,35 @@ def _as_grounding_evidence(result: object) -> ToolResult | None:
     return None
 
 
-def _advance_model_budget(budget: StepBudget, token_count: int) -> StepBudget:
+def _advance_model_budget(budget: StepBudget, usage: object | None) -> StepBudget:
+    prompt_tokens = _reported_token_value(usage, "prompt_tokens")
+    completion_tokens = _reported_token_value(usage, "completion_tokens")
+    total_tokens = _reported_token_value(usage, "total_tokens")
+    usage_unknown = total_tokens is None
     return budget.model_copy(update={
         "used_model_steps": budget.used_model_steps + 1,
+        "used_prompt_tokens": budget.used_prompt_tokens + (prompt_tokens or 0),
+        "used_completion_tokens": budget.used_completion_tokens + (completion_tokens or 0),
         # model_copy(update=...) skips validation, so keep counters bounded here.
         "used_tokens": min(
             budget.max_tokens,
-            budget.used_tokens + max(0, token_count),
+            budget.used_tokens + (total_tokens or 0),
         ),
+        "unknown_usage_model_calls": budget.unknown_usage_model_calls + int(usage_unknown),
     })
+
+
+def _reported_token_value(usage: object | None, field: str) -> int | None:
+    if getattr(usage, "status", None) != "reported":
+        return None
+    value = getattr(usage, field, None)
+    return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else None
 
 
 def _advance_tool_budget(budget: StepBudget) -> StepBudget:
     return budget.model_copy(update={
         "used_tool_calls": budget.used_tool_calls + 1,
     })
-
-
-def _estimate_tokens(output: MainModelOutput) -> int:
-    serialized = output.model_dump_json()
-    return max(1, (len(serialized) + 3) // 4)
 
 
 def _serialize_tool_result(result: object) -> str:

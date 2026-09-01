@@ -254,6 +254,9 @@ def run_analysis(
     request = AnalysisExecutionRequest(
         user_id=state.user_id,
         thread_id=state.thread_id,
+        trace_id=state.trace_id,
+        turn_id=state.turn_id,
+        run_id=state.run_id,
         dataset_ids=[item.dataset_id for item in state.dataset_profiles],
         resolved_params=payload.resolved_params,
         input_fingerprint=payload.input_fingerprint,

@@ -2,10 +2,13 @@ from __future__ import annotations
 
 import json
 import logging
+from time import perf_counter
 from typing import TYPE_CHECKING
 
 import httpx
 from pydantic import ValidationError
+
+from .trace import ModelUsage, TraceRecorder
 
 if TYPE_CHECKING:
     from .context import MainModelContext
@@ -30,6 +33,7 @@ class VllmGraphModel:
         api_key: str | None = None,
         timeout_seconds: float = 60.0,
         client: httpx.Client | None = None,
+        trace_recorder: TraceRecorder | None = None,
     ) -> None:
         if not base_url.strip() or not model.strip():
             raise ValueError("vLLM base_url and model are required")
@@ -37,6 +41,8 @@ class VllmGraphModel:
         self.endpoint = _chat_completions_url(base_url)
         self.api_key = api_key
         self.client = client or httpx.Client(timeout=timeout_seconds)
+        self.trace_recorder = trace_recorder
+        self.last_usage = ModelUsage()
 
     def __call__(self, context: MainModelContext) -> MainModelOutput:
         from .context import MainModelContext
@@ -47,10 +53,13 @@ class VllmGraphModel:
         headers = {"Content-Type": "application/json"}
         if self.api_key:
             headers["Authorization"] = f"Bearer {self.api_key}"
-        response = self.client.post(
-            self.endpoint,
-            headers=headers,
-            json={
+        started = perf_counter()
+        self.last_usage = ModelUsage()
+        try:
+            response = self.client.post(
+                self.endpoint,
+                headers=headers,
+                json={
                 "model": self.model_name,
                 "temperature": 0,
                 "max_tokens": 768,
@@ -72,40 +81,63 @@ class VllmGraphModel:
                         ),
                     },
                 ],
-            },
-        )
-        try:
+                },
+            )
+            self.last_usage = _usage_from_response(response)
             response.raise_for_status()
+            try:
+                content = response.json()["choices"][0]["message"]["content"]
+                payload = json.loads(content)
+                decision = payload.get("decision") if isinstance(payload, dict) else None
+                action = decision.get("action") if isinstance(decision, dict) else None
+                answer_present = isinstance(payload, dict) and "answer" in payload
+                answer = payload.get("answer") if answer_present else None
+                LOG.info(
+                    "vLLM model output: action=%r answer_present=%s answer_is_null=%s answer_length=%s",
+                    action,
+                    answer_present,
+                    answer is None,
+                    len(answer) if isinstance(answer, str) else 0,
+                )
+                _drop_irrelevant_action_fields(payload)
+                result = MainModelOutput.model_validate(payload)
+            except (KeyError, IndexError, TypeError, ValueError, ValidationError) as exc:
+                LOG.warning(
+                    "vLLM graph response rejected",
+                    extra={"event": "agent.model.response_rejected", "error_code": type(exc).__name__},
+                )
+                raise ModelBoundaryError("vLLM graph response is invalid") from exc
+            else:
+                self._record_call(context, started, outcome="accepted")
+                return result
         except httpx.HTTPStatusError as exc:
-            detail = _response_error_detail(response)
-            message = f"{exc}; vllm_error={detail}" if detail else str(exc)
-            raise httpx.HTTPStatusError(
-                message, request=exc.request, response=exc.response
-            ) from exc
-        content: object = None
-        try:
-            content = response.json()["choices"][0]["message"]["content"]
-            payload = json.loads(content)
-            decision = payload.get("decision") if isinstance(payload, dict) else None
-            action = decision.get("action") if isinstance(decision, dict) else None
-            answer_present = isinstance(payload, dict) and "answer" in payload
-            answer = payload.get("answer") if answer_present else None
-            LOG.info(
-                "vLLM model output: action=%r answer_present=%s answer_is_null=%s answer_length=%s",
-                action,
-                answer_present,
-                answer is None,
-                len(answer) if isinstance(answer, str) else 0,
-            )
-            _drop_irrelevant_action_fields(payload)
-            return MainModelOutput.model_validate(payload)
-        except (KeyError, IndexError, TypeError, ValueError, ValidationError) as exc:
-            LOG.warning(
-                "vLLM graph response rejected: raw_content=%s",
-                content[:4000] if isinstance(content, str) else repr(content),
-                exc_info=True,
-            )
-            raise ModelBoundaryError("vLLM graph response is invalid") from exc
+            self._record_call(context, started, outcome="http_error", error_code="HTTPStatusError")
+            raise
+        except Exception as exc:
+            self._record_call(context, started, outcome="rejected", error_code=type(exc).__name__)
+            raise
+
+    def _record_call(
+        self,
+        context: MainModelContext,
+        started: float,
+        *,
+        outcome: str,
+        error_code: str | None = None,
+    ) -> None:
+        if self.trace_recorder is None:
+            return
+        self.trace_recorder.model_call(
+            context=context,
+            model_name=self.model_name,
+            system_prompt=_GRAPH_MAIN_SYSTEM_PROMPT,
+            schema_version="main-model-output.v1",
+            usage=self.last_usage,
+            latency_ms=round((perf_counter() - started) * 1000, 3),
+            retry_count=0,
+            outcome=outcome,
+            error_code=error_code,
+        )
 
 
 def _drop_irrelevant_action_fields(payload: object) -> None:
@@ -149,25 +181,6 @@ def _chat_completions_url(base_url: str) -> str:
     return normalized + "/v1/chat/completions"
 
 
-def _response_error_detail(
-    response: httpx.Response, *, max_chars: int = 1000
-) -> str:
-    try:
-        payload = response.json()
-    except ValueError:
-        payload = None
-    candidates: list[object] = []
-    if isinstance(payload, dict):
-        error = payload.get("error")
-        if isinstance(error, dict):
-            candidates.extend((error.get("message"), error.get("detail")))
-        candidates.extend((payload.get("message"), payload.get("detail")))
-    for candidate in candidates:
-        if candidate:
-            return " ".join(str(candidate).split())[:max_chars]
-    return ""
-
-
 _GRAPH_MAIN_SYSTEM_PROMPT = (
     "You are OmicsPrism Copilot. Return exactly one object matching the supplied "
     "MainModelOutput schema. A tool_call may invoke only the read-only tools "
@@ -186,3 +199,37 @@ _GRAPH_MAIN_SYSTEM_PROMPT = (
     "from the bounded context. Do not decide validation, ownership, ambiguity, or "
     "execution success."
 )
+
+
+def _usage_from_response(response: httpx.Response) -> ModelUsage:
+    try:
+        usage = response.json().get("usage")
+    except (TypeError, ValueError):
+        usage = None
+    if not isinstance(usage, dict):
+        return ModelUsage()
+    prompt = _nonnegative_int(usage.get("prompt_tokens"))
+    completion = _nonnegative_int(usage.get("completion_tokens"))
+    total = _nonnegative_int(usage.get("total_tokens"))
+    cached = _nonnegative_int(
+        usage.get("cached_tokens", usage.get("prompt_tokens_details", {}).get("cached_tokens"))
+        if isinstance(usage.get("prompt_tokens_details", {}), dict)
+        else usage.get("cached_tokens")
+    )
+    return ModelUsage(
+        prompt_tokens=prompt,
+        completion_tokens=completion,
+        total_tokens=total,
+        cached_tokens=cached,
+        status="reported" if any(item is not None for item in (prompt, completion, total, cached)) else "unknown",
+    )
+
+
+def _nonnegative_int(value: object) -> int | None:
+    if isinstance(value, bool):
+        return None
+    try:
+        result = int(value) if value is not None else None
+    except (TypeError, ValueError):
+        return None
+    return result if result is not None and result >= 0 else None

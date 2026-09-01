@@ -17,6 +17,7 @@ _request_id: ContextVar[str | None] = ContextVar("request_id", default=None)
 _job_id: ContextVar[str | None] = ContextVar("job_id", default=None)
 _user_id: ContextVar[str | None] = ContextVar("user_id", default=None)
 _project_id: ContextVar[str | None] = ContextVar("project_id", default=None)
+_trace_id: ContextVar[str | None] = ContextVar("trace_id", default=None)
 
 
 LOG = logging.getLogger("omicsprism.platform")
@@ -34,6 +35,9 @@ class JsonLogFormatter(logging.Formatter):
             "user_id": getattr(record, "user_id", None) or _user_id.get(),
             "project_id": getattr(record, "project_id", None) or _project_id.get(),
         }
+        trace_id = getattr(record, "trace_id", None) or _trace_id.get()
+        if trace_id is not None:
+            payload["trace_id"] = trace_id
         for key in (
             "method",
             "path",
@@ -60,6 +64,7 @@ class ContextFilter(logging.Filter):
         record.job_id = getattr(record, "job_id", None) or _job_id.get()
         record.user_id = getattr(record, "user_id", None) or _user_id.get()
         record.project_id = getattr(record, "project_id", None) or _project_id.get()
+        record.trace_id = getattr(record, "trace_id", None) or _trace_id.get()
         return True
 
 
@@ -88,6 +93,7 @@ def log_context(
     job_id: str | None = None,
     user_id: str | None = None,
     project_id: str | None = None,
+    trace_id: str | None = None,
 ) -> Iterator[None]:
     tokens = []
     if request_id is not None:
@@ -98,6 +104,8 @@ def log_context(
         tokens.append((_user_id, _user_id.set(user_id)))
     if project_id is not None:
         tokens.append((_project_id, _project_id.set(project_id)))
+    if trace_id is not None:
+        tokens.append((_trace_id, _trace_id.set(trace_id)))
     try:
         yield
     finally:
@@ -105,12 +113,20 @@ def log_context(
             var.reset(token)
 
 
-def bind_request_context(request_id: str, *, user_id: str | None = None, project_id: str | None = None) -> None:
+def bind_request_context(
+    request_id: str,
+    *,
+    user_id: str | None = None,
+    project_id: str | None = None,
+    trace_id: str | None = None,
+) -> None:
     _request_id.set(request_id)
     if user_id is not None:
         _user_id.set(user_id)
     if project_id is not None:
         _project_id.set(project_id)
+    if trace_id is not None:
+        _trace_id.set(trace_id)
 
 
 class AuditRepository(Protocol):
