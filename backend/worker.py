@@ -20,7 +20,12 @@ def main() -> None:
         include_executor=False,
     )
     queue = context.redis_queue or RedisJobQueue(settings.redis_url, settings.redis_queue_name)
-    RedisWorker(queue, context.job_runner).run_forever()
+    RedisWorker(
+        queue,
+        context.job_runner,
+        job_store=context.job_store,
+        job_timeout_seconds=settings.job_timeout_seconds,
+    ).run_forever()
 
 
 if __name__ == "__main__":

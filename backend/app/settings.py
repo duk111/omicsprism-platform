@@ -44,6 +44,7 @@ class AppSettings:
     agent_model_api_key: str | None = None
     agent_turn_timeout_seconds: float = 90.0
     agent_model_request_timeout_seconds: float = 30.0
+    job_timeout_seconds: int = 7200
     # 按真实 HTTP 次数计费：3 次 decide × 每次最多 2 次 HTTP（含 schema 修复）。
     agent_max_model_calls: int = 6
     agent_poll_seconds: float = 1.0
@@ -89,6 +90,7 @@ def load_settings() -> AppSettings:
         agent_model_api_key=os.getenv("OMICS_PRISM_AGENT_MODEL_API_KEY") or None,
         agent_turn_timeout_seconds=float(os.getenv("OMICS_PRISM_AGENT_TURN_TIMEOUT_SECONDS", "90")),
         agent_model_request_timeout_seconds=float(os.getenv("OMICS_PRISM_AGENT_MODEL_REQUEST_TIMEOUT_SECONDS", "30")),
+        job_timeout_seconds=int(os.getenv("OMICS_PRISM_JOB_TIMEOUT_SECONDS", "7200")),
         agent_max_model_calls=int(os.getenv("OMICS_PRISM_AGENT_MAX_MODEL_CALLS", "6")),
         agent_poll_seconds=float(os.getenv("OMICS_PRISM_AGENT_POLL_SECONDS", "1")),
         log_level=os.getenv("OMICS_PRISM_LOG_LEVEL", "INFO"),

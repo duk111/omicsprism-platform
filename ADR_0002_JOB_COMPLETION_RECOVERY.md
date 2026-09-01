@@ -78,7 +78,7 @@ prompt is stored in the event payload.
 ## Consequences
 
 The first implementation adds durable contracts and tables before changing
-graph behavior. Later Phase 4 increments will wire terminal Job writes,
-reconciliation, continuation graph input, SSE waiting state, and the timeout
-watchdog against these contracts. Existing clarification and confirmation
-resume APIs remain unchanged.
+graph behavior. The implementation now wires terminal Job writes,
+reconciliation, continuation graph input, SSE waiting state, wait cancellation,
+and a worker-side timeout watchdog against these contracts. Existing
+clarification and confirmation resume APIs remain unchanged.

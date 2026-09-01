@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from hashlib import sha256
 from time import perf_counter
 from uuid import NAMESPACE_URL, uuid4, uuid5
@@ -242,6 +242,7 @@ def create_agent_api_context(
                 run_id=request.run_id,
                 trace_id=request.trace_id,
                 job_id=job_id,
+                expires_at=now + timedelta(seconds=settings.job_timeout_seconds),
                 created_at=now,
                 updated_at=now,
             ))

@@ -289,6 +289,17 @@ class JobStorageService:
         attempt: int | None = None,
     ) -> None:
         with self._job_lock(job.id):
+            try:
+                existing = self.repository.get_internal(job.id)
+            except Exception:
+                existing = None
+            if (
+                existing is not None
+                and existing.status is JobStatus.FAILED
+                and existing.error == "job_timeout"
+                and status is not JobStatus.FAILED
+            ):
+                return
             job.status = status
             job.updated_at = datetime.now(timezone.utc)
             if progress is not None:
@@ -308,6 +319,24 @@ class JobStorageService:
             previous_status = self._previous_status(job.id)
             self.repository.save(job)
         audit_job_status(self.audit, job=job, previous_status=previous_status)
+
+    def timeout_if_active(self, job_id: str, *, now: datetime) -> JobRecord | None:
+        """Mark one queued/running Job timed out, preserving terminal races."""
+
+        with self._job_lock(job_id):
+            current = self.repository.get_internal(job_id)
+            if current.status not in {JobStatus.QUEUED, JobStatus.RUNNING}:
+                return None
+            previous_status = current.status
+            current.status = JobStatus.FAILED
+            current.error = "job_timeout"
+            current.progress_step = "Timed out"
+            current.completed_at = now
+            current.estimated_remaining_seconds = 0
+            current.updated_at = now
+            self.repository.save(current)
+        audit_job_status(self.audit, job=current, previous_status=previous_status)
+        return current
 
     def _previous_status(self, job_id: str) -> JobStatus | None:
         try:

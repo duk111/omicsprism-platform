@@ -19,6 +19,7 @@ queue name in the cloud `.env` and in the compute-server environment:
 
 ```text
 OMICS_PRISM_AGENT_QUEUE=omicsprism:agent-turns
+JOB_TIMEOUT_SECONDS=7200
 ```
 
 Apply migrations before starting the API so the LangGraph checkpoint tables and
@@ -67,6 +68,12 @@ The cloud firewall must allow the compute server to reach Postgres `15432`,
 Redis `16379`, and MinIO `19000`. vLLM remains bound to the compute host and
 is not exposed to browsers.
 
+`JOB_TIMEOUT_SECONDS` is read by the analysis worker. A queued or running Job
+whose age exceeds this limit is atomically marked `failed` with the explicit
+`job_timeout` error, and the normal completion outbox then wakes any Agent wait.
+Set this to a value appropriate for the largest expected analysis; changing it
+requires restarting the analysis worker.
+
 ## Delivery semantics
 
 Agent work delivery is at-least-once. A processing-list entry is recovered
@@ -110,3 +117,8 @@ use the same `OMICS_PRISM_AGENT_QUEUE` and Redis database. If the queue grows,
 check runtime connectivity to PostgreSQL, Redis, MinIO, and local vLLM. A model
 HTTP 200 does not by itself prove a valid Agent response; inspect runtime logs
 for boundary-validation errors and the turn row for its terminal error code.
+
+For a timeout drill, temporarily set `JOB_TIMEOUT_SECONDS` to a small value in
+the compute-server environment, restart `omicsprism-worker-1`, and verify the
+Job row has `status=failed`, `error=job_timeout`; then restore the production
+value and restart the worker again.

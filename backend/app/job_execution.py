@@ -32,6 +32,10 @@ class JobCancelled(RuntimeError):
     pass
 
 
+class JobTimedOut(RuntimeError):
+    pass
+
+
 def _coerce_bool(value: object, default: bool) -> bool:
     if value is None:
         return default
@@ -145,12 +149,55 @@ class RedisJobExecutor:
 
 
 class RedisWorker:
-    def __init__(self, queue: RedisJobQueue, runner: JobRunner, *, idle_sleep_seconds: float = 0.2) -> None:
+    def __init__(
+        self,
+        queue: RedisJobQueue,
+        runner: JobRunner,
+        *,
+        job_store: JobStorageService | None = None,
+        job_timeout_seconds: int = 7200,
+        watchdog_interval_seconds: float = 15.0,
+        idle_sleep_seconds: float = 0.2,
+    ) -> None:
         self.queue = queue
         self.runner = runner
+        self.job_store = job_store
+        self.job_timeout_seconds = max(1, job_timeout_seconds)
+        self.watchdog_interval_seconds = max(1.0, watchdog_interval_seconds)
         self.idle_sleep_seconds = idle_sleep_seconds
 
+    def expire_overdue_once(self, *, now: datetime | None = None) -> int:
+        if self.job_store is None:
+            return 0
+        current_time = now or datetime.now(timezone.utc)
+        expired = 0
+        for job in self.job_store.list_internal(include_deleted=False):
+            if job.status not in {JobStatus.QUEUED, JobStatus.RUNNING}:
+                continue
+            reference = job.started_at if job.status is JobStatus.RUNNING else job.updated_at
+            if (current_time - reference).total_seconds() < self.job_timeout_seconds:
+                continue
+            try:
+                if self.job_store.timeout_if_active(job.id, now=current_time) is not None:
+                    expired += 1
+                    LOG.error(
+                        "job timed out",
+                        extra={"job_id": job.id, "event": "job.timeout"},
+                    )
+            except Exception:
+                LOG.exception(
+                    "failed to apply job timeout",
+                    extra={"job_id": job.id, "event": "job.timeout_failed"},
+                )
+        return expired
+
     def run_forever(self) -> None:  # pragma: no cover - process entrypoint
+        if self.job_store is not None:
+            threading.Thread(
+                target=self._watchdog_loop,
+                name="job-timeout-watchdog",
+                daemon=True,
+            ).start()
         while True:
             job_id = self.queue.dequeue()
             if job_id is None:
@@ -158,6 +205,14 @@ class RedisWorker:
                 continue
             LOG.info("dequeued job", extra={"job_id": job_id, "event": "job.dequeue"})
             self.runner.run(job_id)
+
+    def _watchdog_loop(self) -> None:
+        while True:
+            try:
+                self.expire_overdue_once()
+            except Exception:
+                LOG.exception("job timeout watchdog failed", extra={"event": "job.timeout_watchdog_failed"})
+            time.sleep(self.watchdog_interval_seconds)
 
 
 class OmicsPrismJobRunner:
@@ -190,6 +245,8 @@ class OmicsPrismJobRunner:
             if current.status == JobStatus.CANCELLED:
                 LOG.info("stop cancelled job at checkpoint", extra={"job_id": job_id, "event": "job.stop_cancelled"})
                 raise JobCancelled("Job was cancelled by user")
+            if current.status == JobStatus.FAILED and current.error == "job_timeout":
+                raise JobTimedOut("Job exceeded its timeout")
             self.store.update(
                 current,
                 status=JobStatus.RUNNING if current.status == JobStatus.RUNNING else current.status,
@@ -213,7 +270,7 @@ class OmicsPrismJobRunner:
                     attempt=attempt,
                 )
                 paths_by_field = self.files.resolve_inputs_by_field(job)
-                self._raise_if_cancelled(job_id)
+                self._raise_if_stopped(job_id)
 
                 if job.analysis_type == AnalysisType.DEG:
                     _run_differential_job(job, self.store, input_dir, output_dir, paths_by_field, report)
@@ -222,7 +279,7 @@ class OmicsPrismJobRunner:
                 else:
                     _run_correlation_job(job, self.store, input_dir, output_dir, paths_by_field, report)
 
-                self._raise_if_cancelled(job_id)
+                self._raise_if_stopped(job_id)
                 current = self.store.get_internal(job_id)
                 self.store.update(
                     current,
@@ -234,8 +291,11 @@ class OmicsPrismJobRunner:
                 self.ensure_figure_specs(job_id)
                 artifacts = self.files.sync_workspace_artifacts(job)
                 completed = self.store.get_internal(job_id)
-                if completed.status == JobStatus.CANCELLED:
-                    LOG.info("job cancelled after analysis step", extra={"event": "job.cancelled"})
+                if completed.status != JobStatus.RUNNING:
+                    LOG.info(
+                        "job stopped before completion",
+                        extra={"event": "job.stopped", "job_id": job_id},
+                    )
                     return
                 completed = self.files.update_job_artifacts(completed, artifacts)
                 self.store.update(
@@ -247,7 +307,6 @@ class OmicsPrismJobRunner:
                     estimated_remaining_seconds=0,
                     error=None,
                 )
-                self.store.save(completed)
                 LOG.info("job succeeded", extra={"event": "job.succeeded"})
             except JobCancelled:
                 cancelled = self.store.get_internal(job_id)
@@ -260,9 +319,23 @@ class OmicsPrismJobRunner:
                     estimated_remaining_seconds=0,
                 )
                 LOG.info("job cancelled", extra={"event": "job.cancelled"})
+            except JobTimedOut:
+                timed_out = self.store.get_internal(job_id)
+                if timed_out.status in {JobStatus.QUEUED, JobStatus.RUNNING}:
+                    self.store.update(
+                        timed_out,
+                        status=JobStatus.FAILED,
+                        progress_step="Timed out",
+                        completed_at=datetime.now(timezone.utc),
+                        estimated_remaining_seconds=0,
+                        error="job_timeout",
+                    )
+                LOG.error("job timed out", extra={"job_id": job_id, "event": "job.timeout"})
             except Exception as exc:  # pragma: no cover
                 LOG.exception("job failed", extra={"event": "job.failed"})
                 failed = self.store.get_internal(job_id)
+                if failed.status == JobStatus.FAILED and failed.error == "job_timeout":
+                    return
                 output_dir.mkdir(parents=True, exist_ok=True)
                 self.files.write_error_log(job_id, traceback.format_exc())
                 can_retry = attempt <= failed.max_retries
@@ -276,9 +349,12 @@ class OmicsPrismJobRunner:
                 if can_retry:
                     self.run(job_id)
 
-    def _raise_if_cancelled(self, job_id: str) -> None:
-        if self.store.get_internal(job_id).status == JobStatus.CANCELLED:
+    def _raise_if_stopped(self, job_id: str) -> None:
+        current = self.store.get_internal(job_id)
+        if current.status == JobStatus.CANCELLED:
             raise JobCancelled("Job was cancelled by user")
+        if current.status == JobStatus.FAILED and current.error == "job_timeout":
+            raise JobTimedOut("Job exceeded its timeout")
 
 
 def _run_differential_job(
