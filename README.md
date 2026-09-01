@@ -20,21 +20,31 @@ For a Chinese handoff and integration reference, see
 For a field-level description of DEG, DEM, and GMA result tables, see
 [`docs/OMICS_PRISM_RESULT_TABLES_ZH.md`](docs/OMICS_PRISM_RESULT_TABLES_ZH.md).
 
+The current production split between the cloud API and compute-server Agent
+runtime is recorded in [`AGENT_RUNTIME_DEPLOYMENT.md`](AGENT_RUNTIME_DEPLOYMENT.md)
+and [`ADR_0001_AGENT_RUNTIME_BOUNDARY.md`](ADR_0001_AGENT_RUNTIME_BOUNDARY.md).
+
 ## OmicsPrism Copilot architecture
 
-The copilot runs as a single LangGraph inside the existing backend. The model
-chooses a typed semantic action; deterministic Python services retain ownership,
-validation, job submission, artifact access, and evidence binding.
+The copilot is one LangGraph with a durable Postgres checkpointer. The cloud
+API accepts authenticated requests, persists Agent turns and messages, and
+publishes work to Redis. A single `agent-runtime` process on the compute server
+consumes those turns, invokes the graph, calls the local vLLM service, and uses
+deterministic Python services for ownership, validation, job submission,
+artifact access, and evidence binding.
 
 ```mermaid
 flowchart LR
-    U[User session] --> M[Main node]
-    M --> A[Analysis node]
-    M --> Q[Result QA node]
-    A --> V[Resolver and validation]
-    V --> J[Job submission]
-    Q --> G[Evidence grounding]
-    G --> C[Cited answer]
+    U[Browser] --> API[Cloud API]
+    API --> PS[Postgres product store]
+    API --> AQ[Redis Agent queue]
+    AQ --> AR[Compute agent-runtime]
+    AR --> LG[LangGraph + Postgres checkpointer]
+    AR --> V[vLLM]
+    AR --> JQ[Redis analysis Job queue]
+    JQ --> W[Compute analysis worker]
+    W --> DB[Postgres Job records]
+    W --> O[MinIO artifacts]
 ```
 
 The Analysis node can inspect datasets, resolve and validate requests, and
@@ -230,8 +240,9 @@ Use PostgreSQL, Redis, the worker, and object storage together.
 
 ### Recommended services
 
-- API: `python -m uvicorn backend.app.main:app --host 0.0.0.0 --port 8000`
-- Worker: `python -m backend.worker`
+- Cloud API: `python -m uvicorn backend.app.main:app --host 0.0.0.0 --port 8000`
+- Analysis worker: `python -m backend.worker` (normally on the compute server)
+- Agent runtime: `python -m backend.agent_runtime` (on the compute server)
 - Frontend: build and serve `frontend/dist` from the host nginx site directory
 - PostgreSQL: persistent database
 - Redis: queue backend
@@ -245,7 +256,8 @@ Use PostgreSQL, Redis, the worker, and object storage together.
 4. Set `OMICS_PRISM_FILE_STORAGE_BACKEND=s3`.
 5. Initialize the database schema.
 6. Initialize the object storage bucket.
-7. Start API, worker, and housekeeping.
+7. Start API and housekeeping on the cloud server; start the analysis worker and
+   Agent runtime on the compute server.
 8. Run housekeeping from cron or a scheduler:
 
 ```powershell
