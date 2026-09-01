@@ -312,6 +312,54 @@ def test_production_tool_executor_loads_owned_inputs_and_dispatches_read_only_to
     assert exc_info.value.status_code == 404
 
 
+def test_job_submission_persists_an_ownership_bound_wait(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = _product_store()
+    files = _Files()
+    jobs = _Jobs()
+    executor = _Executor()
+    _patch_stores(monkeypatch, store)
+    monkeypatch.setattr(bootstrap, "VllmGraphModel", lambda **_kwargs: object())
+    monkeypatch.setattr(bootstrap, "_create_postgres_checkpointer", lambda _url: object())
+    captured: list[object] = []
+    monkeypatch.setattr(
+        bootstrap,
+        "build_agent_graph",
+        lambda *args, **_kwargs: captured.append(args[2]) or object(),
+    )
+    context = bootstrap.create_agent_api_context(
+        _settings(
+            agent_model_url="http://model-host:8000",
+            agent_model_name="model",
+        ),
+        files=files,
+        job_store=jobs,
+        job_executor=executor,
+    )
+    submit = captured[0]
+    request = AnalysisExecutionRequest(
+        user_id="user-1",
+        thread_id="thread-1",
+        turn_id="turn-1",
+        run_id="run-1",
+        trace_id="trace-1",
+        dataset_ids=["file-1"],
+        resolved_params=DEGParams(contrast=ContrastSpec(
+            compare_field="condition",
+            tested_level="salt",
+            reference_level="control",
+        )),
+        input_fingerprint="sha256:" + "1" * 64,
+        idempotency_key="wait-once",
+    )
+    job = submit(request)
+    wait = store.get_job_wait(job_id=job.job_id, user_id="user-1")
+    assert (wait.thread_id, wait.turn_id, wait.run_id, wait.trace_id) == (
+        "thread-1", "turn-1", "run-1", "trace-1"
+    )
+
+
 def test_vllm_graph_model_uses_main_output_schema_and_returns_typed_output() -> None:
     captured: dict[str, object] = {}
 

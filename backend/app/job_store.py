@@ -181,6 +181,42 @@ class PostgresJobRepository:
                         Jsonb(payload),
                     ),
                 )
+                if job.status in {
+                    JobStatus.SUCCEEDED,
+                    JobStatus.FAILED,
+                    JobStatus.CANCELLED,
+                }:
+                    # The Job row and its completion event commit together.
+                    # Jobs without an Agent wait simply produce no event.
+                    cur.execute(
+                        """
+                        insert into agent_job_events (
+                            event_id, event_type, job_id, thread_id, user_id,
+                            turn_id, run_id, trace_id, status, error_code,
+                            attempt, occurred_at
+                        )
+                        select
+                            'job-completion:' || j.id || ':' || j.status,
+                            'job.completed', j.id, w.thread_id, w.user_id,
+                            w.turn_id, w.run_id, w.trace_id, j.status,
+                            case j.status
+                                when 'failed' then 'job_failed'
+                                when 'cancelled' then 'job_cancelled'
+                                else null
+                            end,
+                            coalesce((j.payload ->> 'attempt')::integer, 0),
+                            j.updated_at
+                        from jobs j
+                        join agent_job_waits w
+                          on w.job_id = j.id
+                         and w.user_id = j.owner_id
+                        where j.id = %s
+                          and j.status in ('succeeded', 'failed', 'cancelled')
+                          and w.status = 'waiting'
+                        on conflict (event_id) do nothing
+                        """,
+                        (job.id,),
+                    )
 
     def list_for_user(self, user_id: str, include_deleted: bool = False) -> list[JobRecord]:
         deleted_clause = "" if include_deleted else "and deleted_at is null"

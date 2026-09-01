@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from hashlib import sha256
 from time import perf_counter
-from uuid import NAMESPACE_URL, uuid5
+from uuid import NAMESPACE_URL, uuid4, uuid5
 
 from fastapi import HTTPException
 from langgraph.checkpoint.postgres import PostgresSaver
@@ -38,6 +38,7 @@ from .graph import (
     build_agent_graph,
 )
 from .model import VllmGraphModel
+from .job_events import AgentJobWaitRecord
 from .nodes.result_qa import job_reader_from_runtime, result_querier_from_runtime
 from .queue import AgentTurnQueue, RedisAgentTurnQueue
 from .readonly_tools import (
@@ -230,6 +231,20 @@ def create_agent_api_context(
             progress_step="Queued",
         )
         job_store.save(job)
+        # A real graph turn is persisted before submission. The local
+        # ``turn-local`` compatibility path is used by isolated fixtures only.
+        if request.turn_id != "turn-local":
+            product_store.create_job_wait(AgentJobWaitRecord(
+                wait_id=f"wait-{uuid4()}",
+                thread_id=request.thread_id,
+                user_id=request.user_id,
+                turn_id=request.turn_id,
+                run_id=request.run_id,
+                trace_id=request.trace_id,
+                job_id=job_id,
+                created_at=now,
+                updated_at=now,
+            ))
         job_executor.enqueue(job_id)
         return JobRef(job_id=job_id, owner_id=request.user_id)
 

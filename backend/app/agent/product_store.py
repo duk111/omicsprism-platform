@@ -13,6 +13,7 @@ from .schemas import (
     AgentTurnRecord,
     AgentTurnStatus,
 )
+from .job_events import AgentJobWaitRecord
 from .trace import AgentTraceEvent
 
 
@@ -113,6 +114,12 @@ class AgentProductStore(Protocol):
     def get_latest_active_bundle(self, *, thread_id: str, user_id: str, before: datetime) -> AgentInputBundleRecord | None:
         ...
 
+    def create_job_wait(self, wait: AgentJobWaitRecord) -> AgentJobWaitRecord:
+        ...
+
+    def get_job_wait(self, *, job_id: str, user_id: str) -> AgentJobWaitRecord:
+        ...
+
 
 class InMemoryAgentProductStore:
     """普通 CI 使用的精确 repository 契约，不生成业务假数据。"""
@@ -126,6 +133,7 @@ class InMemoryAgentProductStore:
         self._bundles = self._shared.setdefault("bundles", {})
         self._files = self._shared.setdefault("files", {})
         self._trace_events = self._shared.setdefault("trace_events", {})
+        self._job_waits = self._shared.setdefault("job_waits", {})
 
     def record_trace_event(self, event: AgentTraceEvent) -> None:
         if event.event_id in self._trace_events:
@@ -199,6 +207,9 @@ class InMemoryAgentProductStore:
         for event_id, payload in list(self._trace_events.items()):
             if payload["thread_id"] == thread_id and payload["user_id"] == user_id:
                 del self._trace_events[event_id]
+        for wait_id, payload in list(self._job_waits.items()):
+            if payload["thread_id"] == thread_id and payload["user_id"] == user_id:
+                del self._job_waits[wait_id]
         del self._threads[thread_id]
         return files
 
@@ -400,6 +411,27 @@ class InMemoryAgentProductStore:
             return None
         candidates.sort(key=lambda item: item.created_at, reverse=True)
         return candidates[0]
+
+    def create_job_wait(self, wait: AgentJobWaitRecord) -> AgentJobWaitRecord:
+        self.get_thread(thread_id=wait.thread_id, user_id=wait.user_id)
+        for payload in self._job_waits.values():
+            if (
+                payload["job_id"], payload["thread_id"], payload["user_id"]
+            ) == (wait.job_id, wait.thread_id, wait.user_id):
+                existing = AgentJobWaitRecord.model_validate(deepcopy(payload))
+                if existing.model_dump(mode="json") != wait.model_dump(mode="json"):
+                    raise ValueError("job wait already exists with different ownership")
+                return existing
+        if wait.wait_id in self._job_waits:
+            raise ValueError("job wait id already exists")
+        self._job_waits[wait.wait_id] = wait.model_dump(mode="json")
+        return wait.model_copy(deep=True)
+
+    def get_job_wait(self, *, job_id: str, user_id: str) -> AgentJobWaitRecord:
+        for payload in self._job_waits.values():
+            if payload["job_id"] == job_id and payload["user_id"] == user_id:
+                return AgentJobWaitRecord.model_validate(deepcopy(payload))
+        raise AgentResourceNotFound(job_id)
 
 
 class PostgresAgentProductStore:
@@ -982,6 +1014,69 @@ class PostgresAgentProductStore:
             ("bundle_id", "thread_id", "user_id", "status", "expires_at", "created_at"), row,
         )))
 
+    def create_job_wait(self, wait: AgentJobWaitRecord) -> AgentJobWaitRecord:
+        self.get_thread(thread_id=wait.thread_id, user_id=wait.user_id)
+        with self._connect() as conn:
+            owned = conn.execute(
+                "select 1 from jobs where id = %s and owner_id = %s",
+                (wait.job_id, wait.user_id),
+            ).fetchone()
+            if owned is None:
+                raise AgentResourceNotFound(wait.job_id)
+            turn = conn.execute(
+                """
+                select 1 from agent_turns
+                where turn_id = %s and user_id = %s and thread_id = %s and run_id = %s
+                """,
+                (wait.turn_id, wait.user_id, wait.thread_id, wait.run_id),
+            ).fetchone()
+            if turn is None:
+                raise AgentResourceNotFound(wait.turn_id)
+            row = conn.execute(
+                """
+                insert into agent_job_waits (
+                    wait_id, thread_id, user_id, turn_id, run_id, trace_id, job_id,
+                    status, continuation_turn_id, expires_at, created_at, updated_at
+                ) values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                on conflict (job_id, thread_id, user_id) do nothing
+                returning wait_id, thread_id, user_id, turn_id, run_id, trace_id, job_id,
+                          status, continuation_turn_id, expires_at, created_at, updated_at
+                """,
+                (
+                    wait.wait_id, wait.thread_id, wait.user_id, wait.turn_id,
+                    wait.run_id, wait.trace_id, wait.job_id, wait.status.value,
+                    wait.continuation_turn_id, wait.expires_at, wait.created_at,
+                    wait.updated_at,
+                ),
+            ).fetchone()
+            if row is None:
+                row = conn.execute(
+                    """
+                    select wait_id, thread_id, user_id, turn_id, run_id, trace_id, job_id,
+                           status, continuation_turn_id, expires_at, created_at, updated_at
+                    from agent_job_waits
+                    where job_id = %s and thread_id = %s and user_id = %s
+                    """,
+                    (wait.job_id, wait.thread_id, wait.user_id),
+                ).fetchone()
+            if row is None:
+                raise RuntimeError("job wait insert returned no record")
+        return _job_wait_from_row(row)
+
+    def get_job_wait(self, *, job_id: str, user_id: str) -> AgentJobWaitRecord:
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                select wait_id, thread_id, user_id, turn_id, run_id, trace_id, job_id,
+                       status, continuation_turn_id, expires_at, created_at, updated_at
+                from agent_job_waits where job_id = %s and user_id = %s
+                """,
+                (job_id, user_id),
+            ).fetchone()
+        if row is None:
+            raise AgentResourceNotFound(job_id)
+        return _job_wait_from_row(row)
+
     def _connect(self):
         try:
             import psycopg
@@ -1006,6 +1101,15 @@ def _input_file_from_row(row) -> AgentInputFileRecord:
         "checksum", "content_type", "size_bytes", "created_at",
     )
     return AgentInputFileRecord.model_validate(dict(zip(fields, row)))
+
+
+def _job_wait_from_row(row) -> AgentJobWaitRecord:
+    fields = (
+        "wait_id", "thread_id", "user_id", "turn_id", "run_id", "trace_id",
+        "job_id", "status", "continuation_turn_id", "expires_at", "created_at",
+        "updated_at",
+    )
+    return AgentJobWaitRecord.model_validate(dict(zip(fields, row)))
 
 
 def _turn_values(turn: AgentTurnRecord) -> tuple[Any, ...]:
