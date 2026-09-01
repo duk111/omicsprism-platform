@@ -151,7 +151,7 @@ def run_capability_isolation(
         sys.executable,
         "-m",
         "pytest",
-        "backend/tests/test_phase6_capability_isolation.py",
+        "backend/tests/test_agent_eval_capability_isolation.py",
         "-q",
         "--disable-warnings",
         "--maxfail=1",

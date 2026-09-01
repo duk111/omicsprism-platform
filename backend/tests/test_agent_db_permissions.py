@@ -17,7 +17,7 @@ HAS_TEST_DATABASE = bool(ADMIN_DSN and APP_DSN and APP_PASSWORD)
     not HAS_TEST_DATABASE,
     reason="需要专用 PostgreSQL 测试库和 OMICS_PRISM_TEST_* 环境变量",
 )
-def test_phase6_runtime_role_ownership_idempotency_and_append_only_permissions() -> None:
+def test_runtime_role_ownership_idempotency_and_append_only_permissions() -> None:
     import psycopg
     from psycopg.errors import InsufficientPrivilege
 

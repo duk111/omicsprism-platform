@@ -41,7 +41,7 @@ class ScriptedModel:
 
 def _state(**updates: object) -> GraphState:
     values: dict[str, object] = {
-        "thread_id": "phase6-capability",
+        "thread_id": "agent-capability",
         "user_id": "user-1",
         "user_message": "Run a DEG analysis",
     }
@@ -88,7 +88,7 @@ def test_main_route_enters_analysis_validation_before_job_submission() -> None:
 
     result = graph.invoke(
         _state(),
-        {"configurable": {"thread_id": "phase6-capability"}},
+        {"configurable": {"thread_id": "agent-capability"}},
     )
 
     assert result["__interrupt__"][0].value["kind"] == "clarification"
