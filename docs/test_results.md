@@ -230,3 +230,19 @@ Verified with:
 
     .venv\\Scripts\\python.exe -m pytest backend/tests/test_agent_eval_v2.py -q --basetemp=.test-tmp\\phase-6-4-gate
     14 passed
+
+## Phase 7.1 Capability Registry
+
+Phase 7.1 introduced the shared, ownership-bound `CapabilityRegistry`. The
+production Web Agent dispatches its six bounded read operations through this
+registry, which validates strict request/response schemas and uses one
+non-enumerating error for unknown or unauthorized capabilities. No MCP SDK,
+remote transport, analysis preparation, or Job submission capability is
+enabled yet; the boundary and scope are recorded in `ADR_0003_MCP_CAPABILITY_BOUNDARY.md`.
+
+Verified with:
+
+```text
+.venv\Scripts\python.exe -m pytest backend/tests/test_agent_capabilities.py backend/tests/test_agent_production_wiring.py backend/tests/test_agent_readonly_tools.py -q --basetemp=.test-tmp\phase-7-1-registry
+16 passed
+```

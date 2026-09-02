@@ -38,6 +38,10 @@ class DescribeArtifactsRequest(ReadOnlyToolModel):
     job_id: str = Field(min_length=1, max_length=200)
 
 
+class GetJobRequest(ReadOnlyToolModel):
+    job_id: str = Field(min_length=1, max_length=200)
+
+
 class QueryArtifactRequest(ReadOnlyToolModel):
     job_id: str = Field(min_length=1, max_length=200)
     artifact: str = Field(min_length=1, max_length=500)

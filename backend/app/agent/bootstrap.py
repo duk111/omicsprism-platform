@@ -24,6 +24,7 @@ from ..models import (
 from ..settings import AppSettings
 from ..storage_service import CSV_MAX_BYTES, FileStorageService
 from .product_store import AgentProductStore, PostgresAgentProductStore
+from .capabilities import CapabilityPrincipal, build_readonly_capability_registry
 from .trace import TraceRecorder
 from .graph import (
     AnalysisExecutionRequest,
@@ -42,14 +43,7 @@ from .model import VllmGraphModel
 from .job_events import AgentJobWaitRecord
 from .nodes.result_qa import job_reader_from_runtime, result_querier_from_runtime
 from .queue import AgentTurnQueue, RedisAgentTurnQueue
-from .readonly_tools import (
-    DescribeArtifactsRequest,
-    DescribeMetadataRequest,
-    EnumerateContrastsRequest,
-    ListJobsRequest,
-    QueryArtifactRequest,
-)
-from .schemas import ToolName, ToolResult
+from .schemas import ToolResult
 from .tools import AgentInputFile, AgentToolRuntime
 from .validation import DatasetRef
 
@@ -326,37 +320,12 @@ def create_agent_api_context(
             job_store=job_store,
             files=files,
         )
-        if request.tool is ToolName.DESCRIBE_METADATA:
-            args = DescribeMetadataRequest.model_validate(request.arguments)
-            return runtime.describe_metadata(args.fields)
-        if request.tool is ToolName.ENUMERATE_CONTRASTS:
-            args = EnumerateContrastsRequest.model_validate(request.arguments)
-            return runtime.enumerate_contrasts(
-                compare_field=args.compare_field,
-                scope=args.scope,
-                min_replicates=args.min_replicates,
-            )
-        if request.tool is ToolName.LIST_JOBS:
-            args = ListJobsRequest.model_validate(request.arguments)
-            return runtime.list_jobs(
-                analysis_type=args.analysis_type,
-                limit=args.limit,
-            )
-        if request.tool is ToolName.DESCRIBE_ARTIFACTS:
-            args = DescribeArtifactsRequest.model_validate(request.arguments)
-            return runtime.describe_artifacts(args.job_id)
-        if request.tool is ToolName.QUERY_ARTIFACT:
-            args = QueryArtifactRequest.model_validate(request.arguments)
-            return runtime.query_artifact(
-                args.job_id,
-                args.artifact,
-                filters=args.filters,
-                field_path=args.field_path,
-                sort=args.sort,
-                limit=args.limit,
-                resolve_entity=args.resolve_entity,
-            )
-        raise ValueError(f"unsupported Agent tool: {request.tool}")
+        registry = build_readonly_capability_registry(runtime)
+        return registry.invoke(
+            request.tool.value,
+            request.arguments,
+            principal=CapabilityPrincipal(subject=state.user_id, transport="internal"),
+        )
 
     checkpointer = _create_postgres_checkpointer(database_url)
     turn_queue = RedisAgentTurnQueue(
