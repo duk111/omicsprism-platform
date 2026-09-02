@@ -191,3 +191,23 @@ The comparison includes version changes, pass@1 and consistency deltas, P95
 turn/model/tool latency deltas, model/tool call deltas, illegal automatic
 execution deltas, and cost/token deltas. Token and cost deltas remain `null`
 when either report has unknown cost status.
+
+## Phase 6.3 Runtime Reliability
+
+Agent runtime reliability controls are now active in the production entrypoint:
+
+- each turn has a wall-clock deadline (`OMICS_PRISM_AGENT_TURN_TIMEOUT_SECONDS`);
+- cancellation is checked before and after graph execution and prevents finalization;
+- transient database failures use a bounded retry count with exponential backoff,
+  a cap, and jitter;
+- timed-out or exhausted work is acknowledged into a Redis DLQ named
+  `<agent-queue>:dlq` (the in-memory queue exposes the same contract for tests);
+- timeout error blocks are explicitly non-retryable, while ordinary runtime
+  failures retain the existing retryable error projection.
+
+Verified with:
+
+```text
+.venv\\Scripts\\python.exe -m pytest backend/tests/test_agent_runtime.py -q --basetemp=.test-tmp\\phase-6-3-runtime
+.venv\\Scripts\\python.exe -m pytest backend/tests -q --basetemp=.test-tmp\\phase-6-3-full
+```

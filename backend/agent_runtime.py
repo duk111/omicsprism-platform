@@ -32,7 +32,15 @@ def main() -> None:
         raise SystemExit("Agent runtime queue is not configured")
     queue = agent_context.turn_queue
     try:
-        AgentRuntime(agent_context, queue).run_forever()
+        AgentRuntime(
+            agent_context,
+            queue,
+            turn_timeout_seconds=settings.agent_turn_timeout_seconds,
+            max_transient_retries=settings.agent_max_transient_retries,
+            retry_base_seconds=settings.agent_retry_base_seconds,
+            retry_max_seconds=settings.agent_retry_max_seconds,
+            retry_jitter_seconds=settings.agent_retry_jitter_seconds,
+        ).run_forever()
     finally:
         agent_context.close()
 

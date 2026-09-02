@@ -2,7 +2,11 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime, timezone
+from random import random
+from threading import Thread
 from time import perf_counter
+from time import sleep
+from typing import Callable
 
 from langgraph.types import Command
 from psycopg import OperationalError
@@ -29,8 +33,15 @@ from ..models import JobStatus
 
 
 LOG = logging.getLogger("omicsprism.platform.agent_runtime")
-_MAX_TRANSIENT_RETRIES = 1
 _RUNTIME_ERROR_MESSAGE = "The request could not be completed. Please try again."
+
+
+class AgentTurnTimeout(TimeoutError):
+    """The graph exceeded the configured wall-clock budget."""
+
+
+class AgentTurnCancelled(RuntimeError):
+    """The API cancelled the turn before it could be finalized."""
 
 
 class AgentRuntime:
@@ -42,6 +53,13 @@ class AgentRuntime:
         queue: AgentTurnQueue,
         *,
         reconciler: AgentJobEventReconciler | None = None,
+        turn_timeout_seconds: float = 90.0,
+        max_transient_retries: int = 1,
+        retry_base_seconds: float = 0.5,
+        retry_max_seconds: float = 30.0,
+        retry_jitter_seconds: float = 0.25,
+        sleep_fn: Callable[[float], None] = sleep,
+        random_fn: Callable[[], float] = random,
     ) -> None:
         self.context = context
         self.queue = queue
@@ -49,6 +67,14 @@ class AgentRuntime:
             context.product_store,
             queue,
         )
+        self.turn_timeout_seconds = max(0.01, float(turn_timeout_seconds))
+        self.max_transient_retries = max(0, int(max_transient_retries))
+        self.retry_base_seconds = max(0.0, float(retry_base_seconds))
+        self.retry_max_seconds = max(self.retry_base_seconds, float(retry_max_seconds))
+        self.retry_jitter_seconds = max(0.0, float(retry_jitter_seconds))
+        self.sleep_fn = sleep_fn
+        self.random_fn = random_fn
+        self._active_deadline: float | None = None
 
     def run_once(self, raw_item: str) -> None:
         try:
@@ -59,6 +85,7 @@ class AgentRuntime:
             return
 
         started_at = perf_counter()
+        self._active_deadline = started_at + self.turn_timeout_seconds
         try:
             turn = self.context.product_store.get_turn(
                 turn_id=item.turn_id,
@@ -85,6 +112,7 @@ class AgentRuntime:
                 run_id=turn.run_id,
                 retry_count=max(0, turn.attempt - 1),
             )
+            self._ensure_active(item)
             config = {"configurable": {"thread_id": item.thread_id}}
             if item.continuation is not None and self._continuation_cancelled(item):
                 self._cancel_claimed_turn(item, turn)
@@ -96,6 +124,7 @@ class AgentRuntime:
                 self._run_start(item, config, turn.attempt, turn.run_id)
             else:
                 self._run_resume(item, config)
+            self._ensure_active(item)
             if item.continuation is not None and self._continuation_cancelled(item):
                 self._cancel_claimed_turn(item, turn)
                 self.queue.ack(raw_item)
@@ -124,6 +153,24 @@ class AgentRuntime:
             )
         except AgentResourceNotFound:
             self.queue.ack(raw_item)
+        except AgentTurnCancelled:
+            self.queue.ack(raw_item)
+            LOG.info(
+                "agent turn cancelled cooperatively",
+                extra={"event": "agent.turn.cancelled", "turn_id": item.turn_id},
+            )
+        except AgentTurnTimeout:
+            self._fail(item, "agent_turn_timeout", retryable=False)
+            self._dead_letter(raw_item, reason="agent_turn_timeout")
+            LOG.warning(
+                "agent turn exceeded wall-clock timeout",
+                extra={
+                    "event": "agent.turn.timeout",
+                    "thread_id": item.thread_id,
+                    "turn_id": item.turn_id,
+                    "timeout_seconds": self.turn_timeout_seconds,
+                },
+            )
         except OperationalError:
             if self._retry_transient(item, raw_item):
                 LOG.warning(
@@ -136,7 +183,7 @@ class AgentRuntime:
                 )
                 return
             self._fail(item, "agent_runtime_failed")
-            self.queue.ack(raw_item)
+            self._dead_letter(raw_item, reason="agent_runtime_failed")
             LOG.exception(
                 "agent turn failed after transient retry",
                 extra={
@@ -147,7 +194,7 @@ class AgentRuntime:
             )
         except Exception as exc:
             self._fail(item, "agent_runtime_failed")
-            self.queue.ack(raw_item)
+            self._dead_letter(raw_item, reason="agent_runtime_failed")
             LOG.exception(
                 "agent turn failed",
                 extra={
@@ -509,6 +556,62 @@ class AgentRuntime:
             pass
 
     def _invoke_graph(self, item: AgentTurnWorkItem, *args):
+        self._ensure_active(item)
+        result: list[object] = []
+        errors: list[BaseException] = []
+
+        def invoke() -> None:
+            try:
+                result.append(self.context.graph.invoke(*args))
+            except BaseException as exc:  # preserve KeyboardInterrupt in tests/runtime
+                errors.append(exc)
+
+        thread = Thread(target=invoke, name=f"agent-turn-{item.turn_id}", daemon=True)
+        thread.start()
+        deadline = self._active_deadline
+        remaining = self.turn_timeout_seconds if deadline is None else deadline - perf_counter()
+        thread.join(timeout=max(0.0, remaining))
+        if thread.is_alive():
+            raise AgentTurnTimeout(
+                f"Agent turn exceeded {self.turn_timeout_seconds:.3f}s"
+            )
+        if errors:
+            raise errors[0]
+        return result[0] if result else None
+
+    def _ensure_active(self, item: AgentTurnWorkItem) -> None:
+        deadline = self._active_deadline
+        if deadline is not None and perf_counter() >= deadline:
+            raise AgentTurnTimeout(
+                f"Agent turn exceeded {self.turn_timeout_seconds:.3f}s"
+            )
+        try:
+            turn = self.context.product_store.get_turn(
+                turn_id=item.turn_id,
+                user_id=item.user_id,
+            )
+        except AgentResourceNotFound:
+            return
+        if turn.status is AgentTurnStatus.CANCELLED:
+            raise AgentTurnCancelled(item.turn_id)
+
+    def _dead_letter(self, raw_item: str, *, reason: str) -> None:
+        dead_letter = getattr(self.queue, "dead_letter", None)
+        if callable(dead_letter):
+            try:
+                dead_letter(raw_item, reason=reason)
+                return
+            except Exception:
+                LOG.exception(
+                    "unable to move Agent work item to DLQ",
+                    extra={"event": "agent.work.dlq_failed", "reason": reason},
+                )
+        self.queue.ack(raw_item)
+
+    def _retry_delay(self, attempt: int) -> float:
+        exponential = self.retry_base_seconds * (2 ** max(0, attempt - 1))
+        bounded = min(self.retry_max_seconds, exponential)
+        return bounded + self.random_fn() * self.retry_jitter_seconds
         with log_context(
             trace_id=item.trace_id,
             user_id=item.user_id,
@@ -558,7 +661,13 @@ class AgentRuntime:
                 raise
         return True
 
-    def _fail(self, item: AgentTurnWorkItem, error_code: str) -> None:
+    def _fail(
+        self,
+        item: AgentTurnWorkItem,
+        error_code: str,
+        *,
+        retryable: bool = True,
+    ) -> None:
         try:
             current = self.context.product_store.get_turn(
                 turn_id=item.turn_id,
@@ -575,7 +684,7 @@ class AgentRuntime:
                     blocks=[AgentErrorBlock(
                         code=error_code,
                         user_message=_RUNTIME_ERROR_MESSAGE,
-                        retryable=True,
+                        retryable=retryable,
                     )],
                     created_at=datetime.now(timezone.utc),
                 )
@@ -607,7 +716,7 @@ class AgentRuntime:
                 user_id=item.user_id,
             )
 
-            if turn.attempt > _MAX_TRANSIENT_RETRIES:
+            if turn.attempt > self.max_transient_retries:
                 return False
             if turn.status is AgentTurnStatus.RUNNING:
                 self.context.product_store.queue_turn(
@@ -617,6 +726,9 @@ class AgentRuntime:
                 )
             elif turn.status is not AgentTurnStatus.QUEUED:
                 return False
+            delay = self._retry_delay(turn.attempt)
+            if delay > 0:
+                self.sleep_fn(delay)
             self.queue.retry(raw_item)
             return True
         except OperationalError:

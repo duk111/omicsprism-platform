@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+from threading import Event, Thread
+from time import sleep
 from types import SimpleNamespace
 
 import pytest
@@ -92,6 +94,27 @@ class _TransientGraph(_Graph):
 class _BrokenGraph(_Graph):
     def update_state(self, _config: dict, values: dict) -> None:
         raise ValueError("invalid graph state")
+
+
+class _SlowGraph(_Graph):
+    def __init__(self, delay_seconds: float) -> None:
+        super().__init__()
+        self.delay_seconds = delay_seconds
+
+    def invoke(self, input_value: object, config: dict) -> None:
+        sleep(self.delay_seconds)
+        super().invoke(input_value, config)
+
+
+class _CancellableGraph(_Graph):
+    def __init__(self) -> None:
+        super().__init__()
+        self.started = Event()
+
+    def invoke(self, input_value: object, config: dict) -> None:
+        self.started.set()
+        sleep(0.05)
+        super().invoke(input_value, config)
 
 
 def _context(
@@ -969,3 +992,117 @@ def test_duplicate_delivery_after_completion_does_not_rerun_graph() -> None:
 
     assert graph.state is not None and graph.state.response_text == "runtime complete"
     assert len(context.product_store.list_messages(thread_id=turn.thread_id, user_id=turn.user_id)) == 1
+
+
+def test_runtime_timeout_marks_non_retryable_and_moves_item_to_dlq() -> None:
+    context, queue, turn = _context(_SlowGraph(0.05))
+    item = AgentTurnWorkItem(
+        turn_id=turn.turn_id,
+        thread_id=turn.thread_id,
+        user_id=turn.user_id,
+        state=_state(),
+    )
+
+    AgentRuntime(
+        context,
+        queue,
+        turn_timeout_seconds=0.01,
+        sleep_fn=lambda _seconds: None,
+    ).run_once(item.model_dump_json())
+
+    failed = context.product_store.get_turn(turn_id=turn.turn_id, user_id=turn.user_id)
+    assert failed.status is AgentTurnStatus.FAILED
+    assert failed.error_code == "agent_turn_timeout"
+    assert queue.processing == []
+    assert len(queue.dead_letters) == 1
+    message = context.product_store.list_messages(
+        thread_id=turn.thread_id,
+        user_id=turn.user_id,
+    )[0]
+    assert isinstance(message.blocks[0], AgentErrorBlock)
+    assert message.blocks[0].retryable is False
+
+
+def test_runtime_cooperative_cancel_wins_before_finalize() -> None:
+    graph = _CancellableGraph()
+    context, queue, turn = _context(graph)
+    item = AgentTurnWorkItem(
+        turn_id=turn.turn_id,
+        thread_id=turn.thread_id,
+        user_id=turn.user_id,
+        state=_state(),
+    )
+    runtime = AgentRuntime(context, queue, turn_timeout_seconds=1)
+
+    worker = Thread(target=lambda: runtime.run_once(item.model_dump_json()))
+    worker.start()
+    assert graph.started.wait(timeout=1)
+    context.product_store.cancel_turn(
+        turn_id=turn.turn_id,
+        user_id=turn.user_id,
+        now=datetime.now(timezone.utc),
+        error_code="cancelled_by_user",
+    )
+    worker.join(timeout=1)
+
+    cancelled = context.product_store.get_turn(turn_id=turn.turn_id, user_id=turn.user_id)
+    assert cancelled.status is AgentTurnStatus.CANCELLED
+    assert context.product_store.list_messages(
+        thread_id=turn.thread_id,
+        user_id=turn.user_id,
+    ) == []
+
+
+def test_runtime_retry_uses_exponential_backoff_and_jitter() -> None:
+    context, queue, turn = _context(_TransientGraph())
+    item = AgentTurnWorkItem(
+        turn_id=turn.turn_id,
+        thread_id=turn.thread_id,
+        user_id=turn.user_id,
+        state=_state(),
+    )
+    delays: list[float] = []
+    AgentRuntime(
+        context,
+        queue,
+        retry_base_seconds=2,
+        retry_max_seconds=10,
+        retry_jitter_seconds=1,
+        random_fn=lambda: 0.5,
+        sleep_fn=delays.append,
+    ).run_once(item.model_dump_json())
+
+    assert delays == [2.5]
+    assert queue.processing == []
+    assert queue.pending
+
+
+def test_runtime_exhausted_transient_retry_isolated_in_dlq() -> None:
+    class _AlwaysTransient(_Graph):
+        def invoke(self, _input: object, _config: dict) -> None:
+            raise OperationalError("database unavailable")
+
+    context, queue, turn = _context(_AlwaysTransient())
+    item = AgentTurnWorkItem(
+        turn_id=turn.turn_id,
+        thread_id=turn.thread_id,
+        user_id=turn.user_id,
+        state=_state(),
+    )
+    runtime = AgentRuntime(
+        context,
+        queue,
+        max_transient_retries=1,
+        sleep_fn=lambda _seconds: None,
+    )
+    raw = item.model_dump_json()
+    runtime.run_once(raw)
+    retry_raw = queue.reserve()
+    assert retry_raw == raw
+    runtime.run_once(retry_raw)
+
+    failed = context.product_store.get_turn(turn_id=turn.turn_id, user_id=turn.user_id)
+    assert failed.status is AgentTurnStatus.FAILED
+    assert failed.error_code == "agent_runtime_failed"
+    assert queue.processing == []
+    assert len(queue.dead_letters) == 1

@@ -187,6 +187,20 @@ sudo docker exec nginx-all nginx -s reload
 
 如果 API 与 nginx 在同一 Docker 网络或同一宿主机，`API_BIND_HOST` 应按实际网络设置；nginx 必须能访问 API 的 `18086`。重建时必须同时使用 `docker-compose.expose.yml`，否则远程 analysis worker 可能看不到 `15432/16379/19000`。
 
+Agent runtime 的可靠性参数通过算力服务器 `.env` 传入
+`docker-compose.agent-runtime.yml`：
+
+```text
+OMICS_PRISM_AGENT_TURN_TIMEOUT_SECONDS=90
+OMICS_PRISM_AGENT_MAX_TRANSIENT_RETRIES=1
+OMICS_PRISM_AGENT_RETRY_BASE_SECONDS=0.5
+OMICS_PRISM_AGENT_RETRY_MAX_SECONDS=30
+OMICS_PRISM_AGENT_RETRY_JITTER_SECONDS=0.25
+```
+
+超时按单个 turn 的墙钟时间计算；瞬时数据库故障只按上限重试。超时或耗尽重试的消息进入
+`OMICS_PRISM_AGENT_QUEUE:dlq`，应通过 Redis 运维流程人工检查，不得直接重复投递生产队列。
+
 ## 7. 算力服务器部署顺序
 
 ```bash

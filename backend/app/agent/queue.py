@@ -91,6 +91,9 @@ class AgentTurnQueue(Protocol):
     def retry(self, raw_item: str) -> None:
         ...
 
+    def dead_letter(self, raw_item: str, *, reason: str) -> None:
+        ...
+
 
 class InMemoryAgentTurnQueue:
     """Small deterministic queue used by unit tests and local graph fixtures."""
@@ -98,6 +101,7 @@ class InMemoryAgentTurnQueue:
     def __init__(self) -> None:
         self.pending: deque[str] = deque()
         self.processing: list[str] = []
+        self.dead_letters: list[dict[str, str]] = []
 
     def enqueue(self, item: AgentTurnWorkItem) -> None:
         self.pending.append(item.model_dump_json())
@@ -124,6 +128,10 @@ class InMemoryAgentTurnQueue:
         self.ack(raw_item)
         self.pending.append(raw_item)
 
+    def dead_letter(self, raw_item: str, *, reason: str) -> None:
+        self.ack(raw_item)
+        self.dead_letters.append({"reason": reason, "item": raw_item})
+
 
 class RedisAgentTurnQueue:
     """Reliable Redis queue with a recoverable processing list.
@@ -140,6 +148,7 @@ class RedisAgentTurnQueue:
         self.redis_url = redis_url
         self.queue_name = queue_name
         self.processing_queue_name = f"{queue_name}:processing"
+        self.dead_letter_queue_name = f"{queue_name}:dlq"
         self._client = None
 
     @property
@@ -184,6 +193,20 @@ class RedisAgentTurnQueue:
     def retry(self, raw_item: str) -> None:
         pipeline = self.client.pipeline(transaction=True)
         pipeline.rpush(self.queue_name, raw_item)
+        pipeline.lrem(self.processing_queue_name, 1, raw_item)
+        pipeline.execute()
+
+    def dead_letter(self, raw_item: str, *, reason: str) -> None:
+        import json
+        from datetime import datetime, timezone
+
+        payload = json.dumps({
+            "reason": reason,
+            "failed_at": datetime.now(timezone.utc).isoformat(),
+            "item": raw_item,
+        }, ensure_ascii=False)
+        pipeline = self.client.pipeline(transaction=True)
+        pipeline.rpush(self.dead_letter_queue_name, payload)
         pipeline.lrem(self.processing_queue_name, 1, raw_item)
         pipeline.execute()
 
