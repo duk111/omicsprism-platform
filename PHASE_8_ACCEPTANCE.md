@@ -24,3 +24,16 @@ within the script's bounded limits.
 This local probe is not a substitute for a production load test. Production
 capacity depends on Redis, PostgreSQL, vLLM latency, artifact storage, and the
 number of runtime replicas.
+
+## Phase 8.4 Demo And Delivery Boundaries
+
+[`DEMO.md`](DEMO.md) is the five-minute walkthrough for the cloud API,
+multi-turn correction, HITL confirmation, asynchronous Job continuation,
+evidence-backed response, local MCP read-only contract, and trace/Eval evidence.
+The current frontend does not contain a trace/Eval panel, so the walkthrough
+uses the existing REST/stream interfaces, a safe `agent_trace_events` query,
+and the repository evaluation scripts instead of claiming an unavailable UI.
+
+[`LIMITATIONS_AND_ROADMAP.md`](LIMITATIONS_AND_ROADMAP.md) records the current
+single-runtime, local-MCP, deterministic-evaluation, cost, streaming, storage,
+and security boundaries together with the next hardening steps.

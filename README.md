@@ -26,6 +26,9 @@ and [`ADR_0001_AGENT_RUNTIME_BOUNDARY.md`](ADR_0001_AGENT_RUNTIME_BOUNDARY.md).
 The implemented topology and its security assumptions are summarized in
 [`ARCHITECTURE.md`](ARCHITECTURE.md) and [`THREAT_MODEL.md`](THREAT_MODEL.md).
 
+The reproducible delivery walkthrough and explicit follow-up boundaries are in
+[`DEMO.md`](DEMO.md) and [`LIMITATIONS_AND_ROADMAP.md`](LIMITATIONS_AND_ROADMAP.md).
+
 ## OmicsPrism Copilot architecture
 
 The copilot is one LangGraph with a durable Postgres checkpointer. The cloud

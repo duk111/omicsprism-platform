@@ -324,3 +324,36 @@ capacity: concurrency=8, items=64, enqueued=64, pending_after_drain=0, processin
 
 The full backend regression after the Phase 8.3 additions is `267 passed, 2
 skipped, 2 warnings`.
+
+## Phase 8.4 Delivery Demo And Limitations
+
+`DEMO.md` documents a five-minute, reproducible walkthrough covering split
+runtime verification, input upload, multi-turn correction, HITL confirmation,
+asynchronous Job completion recovery, evidence-backed responses, the local
+read-only MCP contract, and trace/Eval evidence. The trace query uses only the
+safe fields persisted by `agent_trace_events`; no raw prompt, CSV row, secret,
+or storage key is required.
+
+`LIMITATIONS_AND_ROADMAP.md` records the current single-runtime scheduling
+assumption, process-local MCP boundary, absence of a frontend trace/Eval panel,
+deterministic-vs-live evaluation distinction, unknown local-vLLM cost, durable
+polling TTFT definition, production storage requirement, and security scope.
+
+Verified after the Phase 8.4 documentation changes with:
+
+```text
+.venv\Scripts\python.exe -m pytest backend/tests/test_agent_eval_v2.py backend/tests/test_agent_mcp_adapter.py backend/tests/test_phase8_acceptance.py -q --basetemp=.pytest-phase8-4-target
+25 passed
+.venv\Scripts\python.exe -m pytest backend/tests -q --basetemp=.pytest-phase8-4-full
+267 passed, 2 skipped, 2 warnings
+.venv\Scripts\python.exe scripts/run_phase8_acceptance.py --json --items 64 --concurrency 8 --basetemp .pytest-phase8-4-drills --output .test-tmp\phase8-4-acceptance.json
+fault_drills: 3 passed; capacity: concurrency=8, items=64, enqueued=64, pending_after_drain=0, processing_after_drain=0
+.venv\Scripts\python.exe scripts/run_agent_eval_v2.py --json --trials 1 --output .test-tmp\phase8-4-eval.json
+release_gate.passed=true, quality.case_count=41, quality.pass_at_1=1.0, evaluator_self_test_passed=true
+```
+
+The Eval v2 command emits existing LangGraph checkpoint serializer warnings
+for registered application types; they do not fail the release gate. A
+recorded-fixture negative model response is also intentionally rejected by the
+model boundary during evaluation, proving invalid tool decisions are not
+executed.
