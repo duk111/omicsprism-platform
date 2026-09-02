@@ -264,3 +264,18 @@ Verified with:
 
 The full backend suite reached 263 passed and 2 skipped (2 existing FastAPI
 deprecation warnings).
+
+## Phase 7.3 MCP Trace Integration
+
+MCP calls now optionally share the existing `TraceRecorder` contract. A trusted
+`MCPTraceContext` binds the call to an existing Agent thread and must match the
+principal subject. Successful, invalid, and not-visible calls emit safe
+`tool.call` events with client transport, schema hash, latency, and normalized
+result code; arguments and raw data are excluded.
+
+Verified with:
+
+```text
+.venv\Scripts\python.exe -m pytest backend/tests/test_agent_mcp_adapter.py -q --basetemp=.test-tmp\phase-7-3-mcp
+9 passed
+```

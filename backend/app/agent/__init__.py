@@ -43,7 +43,7 @@ from .tools import (
     AgentToolRuntime,
     ToolConfigurationError,
 )
-from .mcp_adapter import CapabilityMCPServer, build_readonly_mcp_server
+from .mcp_adapter import CapabilityMCPServer, MCPTraceContext, build_readonly_mcp_server
 from .readonly_tools import (
     ArtifactDescription,
     ArtifactDescriptionResult,
@@ -110,6 +110,7 @@ __all__ = [
     "AgentToolRuntime",
     "ToolConfigurationError",
     "CapabilityMCPServer",
+    "MCPTraceContext",
     "build_readonly_mcp_server",
     "ArtifactDescription",
     "ArtifactDescriptionResult",

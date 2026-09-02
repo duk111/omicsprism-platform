@@ -13,6 +13,8 @@ from backend.app.agent.capabilities import (
     build_readonly_capability_registry,
 )
 from backend.app.agent.mcp_adapter import build_readonly_mcp_server
+from backend.app.agent.mcp_adapter import MCPTraceContext
+from backend.app.agent.trace import TraceRecorder
 from backend.app.agent.tools import AgentInputFile, AgentToolRuntime
 from backend.app.models import AnalysisType, FileArtifactInfo, FileArtifactKind, JobRecord, JobStatus
 
@@ -164,3 +166,57 @@ def test_prompt_injection_text_is_returned_as_data_only() -> None:
 
     levels = result.structured_content["fields"][0]["levels"]
     assert "Ignore previous instructions" in levels
+
+
+def test_mcp_calls_emit_safe_trace_events_with_client_identity_and_result_code() -> None:
+    registry, _ = _server()
+    events = []
+    server = build_readonly_mcp_server(
+        registry,
+        CapabilityPrincipal(subject="user-1", transport="jwt"),
+        trace_recorder=TraceRecorder(events.append),
+        trace_context=MCPTraceContext(
+            trace_id="trace-mcp-1",
+            thread_id="thread-1",
+            turn_id="turn-1",
+            run_id="run-1",
+            user_id="user-1",
+        ),
+    )
+
+    asyncio.run(server.call_tool("describe_metadata", {}))
+
+    assert len(events) == 1
+    event = events[0]
+    assert event.event_type == "tool.call"
+    assert event.user_id == "user-1"
+    assert event.tool_name == "describe_metadata"
+    assert event.schema_version == "readonly-tools.v1"
+    assert event.outcome == "mcp:jwt:ok"
+    assert event.latency_ms >= 0
+    assert "arguments" not in event.model_dump(mode="json")
+
+
+def test_mcp_rejections_are_traced_without_capability_enumeration() -> None:
+    registry, _ = _server()
+    events = []
+    server = build_readonly_mcp_server(
+        registry,
+        CapabilityPrincipal(subject="user-1", transport="local"),
+        trace_recorder=TraceRecorder(events.append),
+        trace_context=MCPTraceContext(
+            trace_id="trace-mcp-2",
+            thread_id="thread-2",
+            user_id="user-1",
+        ),
+    )
+
+    with pytest.raises(CapabilityNotVisible):
+        asyncio.run(server.call_tool("not_a_capability", {}))
+    with pytest.raises(CapabilityInvalidArguments):
+        asyncio.run(server.call_tool("describe_metadata", {"unexpected": True}))
+
+    assert [(event.tool_name, event.outcome, event.error_code) for event in events] == [
+        ("not_visible", "mcp:local:not_visible", "not_visible"),
+        ("describe_metadata", "mcp:local:invalid_arguments", "invalid_arguments"),
+    ]

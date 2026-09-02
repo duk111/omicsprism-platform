@@ -2,8 +2,8 @@
 
 ## Status
 
-Accepted for Phase 7.2. The shared registry and an in-process MCP adapter are
-implemented; remote MCP transport is not enabled.
+Accepted for Phase 7.3. The shared registry, in-process MCP adapter, and trace
+integration are implemented; remote MCP transport is not enabled.
 
 ## Context
 
@@ -39,6 +39,15 @@ principal or user id as a client argument. Remote MCP listening remains
 disabled until authentication, quota, rate-limit, audit, and trace integration
 are reviewed.
 
+When trace integration is enabled, the adapter requires a trusted
+`MCPTraceContext` bound to the same principal. Each call emits the existing
+`tool.call` event with the principal subject as `user_id`, the capability schema
+hash, latency, and a normalized outcome (`mcp:<transport>:<result>`). Rejected
+or unknown names use the same `not_visible` marker and schema hash. Arguments,
+raw rows, and exception details are never added to trace events. The context's
+thread id must refer to an existing Agent thread so the existing trace foreign
+key and ownership queries remain valid.
+
 ## Consequences
 
 - Web Agent and MCP cannot silently diverge in read-only behavior.
@@ -46,6 +55,8 @@ are reviewed.
   existence.
 - The adapter can be exercised in-process without opening a port or changing
   deployment topology.
+- MCP calls can enter the existing trace/telemetry pipeline without recording
+  client arguments or data rows.
 - MCP transport and authorization remain an explicit later change rather than
   an undocumented protocol implementation.
 - `prepare_analysis` and `submit_analysis` are intentionally not registered;
