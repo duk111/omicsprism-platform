@@ -287,3 +287,20 @@ Added auditable final-delivery documents for the implemented v3 topology:
 analysis worker, outbox, and MCP boundaries; `THREAT_MODEL.md` records assets,
 trust boundaries, controls, residual risks, and operational requirements.
 README links both documents from the repository overview.
+
+## Phase 8.2 Evaluation Scenario Coverage
+
+The deterministic Eval v2 fixture now contains 50 unique scenarios: 47 Agent
+quality cases across multi-turn memory, ambiguity, confirmation, grounding,
+and capability isolation, plus 3 evaluator self-tests. The expanded ambiguity
+set includes Chinese, English, and mixed-language omics questions while keeping
+recorded model responses reproducible.
+
+Verified with:
+
+```text
+.venv\Scripts\python.exe -m pytest backend/tests/test_agent_eval_v2.py -q --basetemp=.test-tmp\phase-8-2-eval
+14 passed
+.venv\Scripts\python.exe scripts/run_agent_eval_v2.py --json --trials 1 --output .test-tmp\phase8-2-eval.json
+release_gate.passed=true, quality.case_count=41, quality.pass_at_1=1.0
+```

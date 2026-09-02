@@ -37,12 +37,12 @@ def test_fixture_schema_ids_and_required_phase_two_coverage() -> None:
         }
     }
 
-    assert len(cases) == 33
-    assert len(quality) == 30
+    assert len(cases) == 50
+    assert len(quality) == 47
     assert len({case.case_id for case in cases}) == len(cases)
     assert counts == {
         "multi_turn_memory": 8,
-        "ambiguity": 6,
+        "ambiguity": 23,
         "confirmation": 4,
         "result_grounding": 6,
         "capability_isolation": 6,
@@ -107,8 +107,8 @@ def test_evaluator_self_tests_keep_malformed_evidence_out_of_agent_quality_metri
 
     assert report.evaluator_self_test_passed
     assert report.release_gate.passed
-    assert report.quality.case_count == 24
-    assert report.quality.release_case_count == 24
+    assert report.quality.case_count == 41
+    assert report.quality.release_case_count == 41
     assert report.quality.known_gap_count == 0
     assert report.capability.case_count == 6
     assert report.capability.pass_at_1 == 1
