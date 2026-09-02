@@ -12,6 +12,8 @@ if str(REPO_ROOT) not in sys.path:
 
 from backend.app.agent.eval_v2 import (
     AgentEvalV2Report,
+    AgentPricingTable,
+    load_agent_pricing,
     run_ci_agent_evaluation,
     run_live_model_agent_evaluation,
 )
@@ -21,6 +23,11 @@ def _print_report(report: AgentEvalV2Report) -> None:
     quality = report.quality
     print(f"Runner: {report.runner}")
     print(f"Trials per case: {report.trials_per_case}")
+    print(
+        "Versions: "
+        f"graph={report.graph_version}, prompt={report.prompt_version}, "
+        f"provider={report.model_provider}, model={report.model_name}"
+    )
     print(
         "Agent quality: "
         f"{quality.case_count} cases, pass@1={quality.pass_at_1:.3f}, "
@@ -40,6 +47,20 @@ def _print_report(report: AgentEvalV2Report) -> None:
         f"unknown_usage_calls={quality.unknown_usage_model_calls}, "
         f"mean_latency_ms={quality.mean_latency_ms:.3f}, "
         f"p95_latency_ms={quality.p95_latency_ms:.3f}"
+    )
+    print(
+        "Latency: "
+        f"p50_turn_ms={report.latency.p50_turn_ms:.3f}, "
+        f"p95_turn_ms={report.latency.p95_turn_ms:.3f}, "
+        f"p95_model_ms={report.latency.p95_model_ms:.3f}, "
+        f"p95_tool_ms={report.latency.p95_tool_ms:.3f}, "
+        f"ttft={report.latency.ttft_definition}"
+    )
+    print(
+        "Cost: "
+        f"status={report.cost.status}, prompt_tokens={report.cost.prompt_tokens}, "
+        f"completion_tokens={report.cost.completion_tokens}, "
+        f"total_usd={report.cost.total_cost_usd}"
     )
     capability = report.capability
     print(
@@ -73,10 +94,26 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--base-url", help="OpenAI-compatible API base URL, required with --live-model")
     parser.add_argument("--model", help="served model name, required with --live-model")
     parser.add_argument("--api-key", help="optional model API key; do not place it in shell history")
+    parser.add_argument(
+        "--pricing-file",
+        type=Path,
+        help="optional JSON price card; without a matching entry cost remains unknown",
+    )
+    parser.add_argument(
+        "--output",
+        type=Path,
+        help="optional path for the JSON report (requires --json semantics)",
+    )
     args = parser.parse_args(argv)
     trials = args.trials if args.trials is not None else (3 if args.live_model else 1)
     if not 1 <= trials <= 10:
         parser.error("--trials must be between 1 and 10")
+    pricing: AgentPricingTable | None = None
+    if args.pricing_file:
+        try:
+            pricing = load_agent_pricing(args.pricing_file)
+        except (OSError, ValueError) as exc:
+            parser.error(f"invalid --pricing-file: {exc}")
     if args.live_model:
         if not args.base_url or not args.model:
             parser.error("--live-model requires both --base-url and --model")
@@ -85,11 +122,18 @@ def main(argv: list[str] | None = None) -> int:
             model_name=args.model,
             api_key=args.api_key,
             trials_per_case=trials,
+            pricing=pricing,
         )
     else:
-        report = run_ci_agent_evaluation(trials_per_case=trials)
+        report = run_ci_agent_evaluation(trials_per_case=trials, pricing=pricing)
     if args.json:
-        print(json.dumps(report.model_dump(mode="json"), ensure_ascii=False, indent=2))
+        rendered = json.dumps(report.model_dump(mode="json"), ensure_ascii=False, indent=2)
+        if args.output:
+            args.output.write_text(rendered + "\n", encoding="utf-8")
+        else:
+            print(rendered)
+    elif args.output:
+        parser.error("--output requires --json")
     else:
         _print_report(report)
     return 0 if report.release_gate.passed else 1

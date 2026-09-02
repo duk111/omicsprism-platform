@@ -6,8 +6,11 @@ import pytest
 
 from backend.app.agent.eval_v2 import (
     AgentEvalV2Case,
+    AgentPricingTable,
+    AgentModelPricing,
     DEFAULT_EVAL_V2_CASES_PATH,
     EvalExpectation,
+    compare_agent_eval_reports,
     load_agent_eval_v2_cases,
     run_ci_agent_evaluation,
 )
@@ -143,3 +146,48 @@ def test_cli_json_defaults_to_recorded_ci_runner_without_external_model(capsys) 
 def test_live_runner_requires_explicit_endpoint_and_model() -> None:
     with pytest.raises(SystemExit):
         main(["--live-model"])
+
+
+def test_report_contains_versions_usage_latency_and_unknown_local_cost() -> None:
+    report = run_ci_agent_evaluation(trials_per_case=1)
+
+    assert report.graph_version == "agent-graph.v3"
+    assert report.prompt_version == "main-system.v1"
+    assert report.model_provider == "recorded-fixture"
+    assert report.model_name == "recorded-ci-model"
+    assert report.model_call_count > 0
+    assert report.tool_call_count >= 0
+    assert report.latency.p50_turn_ms >= 0
+    assert report.latency.p95_turn_ms >= report.latency.p50_turn_ms
+    assert report.latency.ttft_definition == "first_visible_event"
+    assert report.cost.status == "unknown"
+    assert report.cost.prompt_tokens > 0
+    assert report.cost.completion_tokens > 0
+    assert report.cost.total_cost_usd is None
+    diff = compare_agent_eval_reports(report, report.model_copy(deep=True))
+    assert diff.token_delta == 0
+    assert diff.cost_status == "unknown"
+
+
+def test_configured_price_card_calculates_cost_and_diff_reports_versions() -> None:
+    pricing = AgentPricingTable(entries=[AgentModelPricing(
+        provider="recorded-fixture",
+        model="recorded-ci-model",
+        input_usd_per_million=1,
+        output_usd_per_million=2,
+        source="test-price-card.v1",
+    )])
+    baseline = run_ci_agent_evaluation(cases=[_quality_cases()[0]], pricing=pricing)
+    candidate = baseline.model_copy(deep=True, update={
+        "graph_version": "agent-graph.v4",
+        "run_id": "candidate-run",
+    })
+
+    assert baseline.cost.status == "calculated"
+    assert baseline.cost.total_cost_usd is not None
+    assert baseline.cost.total_cost_usd > 0
+    diff = compare_agent_eval_reports(baseline, candidate)
+    assert diff.versions_changed is True
+    assert diff.cost_status == "calculated"
+    assert diff.cost_delta_usd == 0
+    assert diff.token_delta == 0

@@ -10,10 +10,12 @@ from __future__ import annotations
 import json
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from hashlib import sha256
 from pathlib import Path
 from time import perf_counter
 from typing import Any, Literal
+from uuid import uuid4
 
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.types import Command
@@ -33,7 +35,14 @@ from .graph import (
 )
 from .model import VllmGraphModel
 from .schemas import GroundedAnswer, GroundedClaim, ToolName, ToolResult
-from .trace import AgentTraceEvent, ModelUsage, TraceRecorder
+from .trace import (
+    GRAPH_VERSION,
+    MODEL_PROVIDER,
+    PROMPT_VERSION,
+    AgentTraceEvent,
+    ModelUsage,
+    TraceRecorder,
+)
 from .validation import DatasetRef
 from .verifier import AnswerVerifier
 
@@ -182,6 +191,59 @@ class AgentEvalV2Case(EvalV2Model):
         return self
 
 
+class AgentModelPricing(EvalV2Model):
+    """Explicit provider price card; values are USD per one million tokens."""
+
+    provider: str = Field(min_length=1, max_length=100)
+    model: str = Field(min_length=1, max_length=200)
+    input_usd_per_million: float = Field(ge=0)
+    output_usd_per_million: float = Field(ge=0)
+    cached_input_usd_per_million: float | None = Field(default=None, ge=0)
+    source: str = Field(default="configured", min_length=1, max_length=200)
+
+
+class AgentPricingTable(EvalV2Model):
+    entries: list[AgentModelPricing] = Field(default_factory=list, max_length=100)
+
+    def find(self, *, provider: str, model: str) -> AgentModelPricing | None:
+        return next(
+            (
+                entry
+                for entry in self.entries
+                if entry.provider == provider and entry.model == model
+            ),
+            None,
+        )
+
+
+class EvalCostSummary(EvalV2Model):
+    """Cost is calculated only when a matching explicit price card exists."""
+
+    status: Literal["calculated", "unknown"] = "unknown"
+    currency: Literal["USD"] = "USD"
+    pricing_source: str | None = Field(default=None, max_length=200)
+    prompt_tokens: int = Field(ge=0)
+    completion_tokens: int = Field(ge=0)
+    cached_tokens: int = Field(ge=0)
+    input_cost_usd: float | None = Field(default=None, ge=0)
+    output_cost_usd: float | None = Field(default=None, ge=0)
+    total_cost_usd: float | None = Field(default=None, ge=0)
+
+
+class EvalLatencySummary(EvalV2Model):
+    """Wall-clock timings; without streaming, turn latency is first visibility."""
+
+    mean_turn_ms: float = Field(ge=0)
+    p50_turn_ms: float = Field(ge=0)
+    p95_turn_ms: float = Field(ge=0)
+    mean_model_ms: float = Field(ge=0)
+    p95_model_ms: float = Field(ge=0)
+    mean_tool_ms: float = Field(ge=0)
+    p95_tool_ms: float = Field(ge=0)
+    streaming: bool = False
+    ttft_definition: Literal["first_visible_event"] = "first_visible_event"
+
+
 class EvalTrialResult(EvalV2Model):
     case_id: str
     suite: EvalSuite
@@ -205,6 +267,18 @@ class EvalTrialResult(EvalV2Model):
     reported_total_tokens: int | None = Field(default=None, ge=0)
     unknown_usage_model_calls: int = Field(ge=0)
     failure_code: str | None = Field(default=None, max_length=100)
+    graph_version: str = Field(default=GRAPH_VERSION, min_length=1, max_length=80)
+    prompt_version: str = Field(default=PROMPT_VERSION, min_length=1, max_length=80)
+    prompt_hash: str | None = Field(default=None, pattern=r"^sha256:[0-9a-fA-F]{64}$")
+    model_provider: str = Field(default=MODEL_PROVIDER, min_length=1, max_length=100)
+    model_name: str = Field(default="recorded-ci-model", min_length=1, max_length=200)
+    model_call_count: int = Field(default=0, ge=0)
+    model_latency_ms: float = Field(default=0, ge=0)
+    tool_call_count: int = Field(default=0, ge=0)
+    tool_latency_ms: float = Field(default=0, ge=0)
+    cached_tokens: int = Field(default=0, ge=0)
+    prompt_tokens: int = Field(default=0, ge=0)
+    completion_tokens: int = Field(default=0, ge=0)
 
 
 class EvalCaseResult(EvalV2Model):
@@ -259,13 +333,54 @@ class EvalReleaseGate(EvalV2Model):
 
 
 class AgentEvalV2Report(EvalV2Model):
+    run_id: str = Field(default_factory=lambda: f"eval-run-{uuid4()}", min_length=1, max_length=200)
+    generated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     runner: Literal["ci", "live_model"]
     trials_per_case: int = Field(ge=1, le=10)
+    graph_version: str = Field(default=GRAPH_VERSION, min_length=1, max_length=80)
+    prompt_version: str = Field(default=PROMPT_VERSION, min_length=1, max_length=80)
+    prompt_hash: str | None = Field(default=None, pattern=r"^sha256:[0-9a-fA-F]{64}$")
+    model_provider: str = Field(default=MODEL_PROVIDER, min_length=1, max_length=100)
+    model_name: str = Field(default="recorded-ci-model", min_length=1, max_length=200)
     quality: AgentQualityMetrics
     capability: CapabilityIsolationMetrics
     evaluator_self_test_passed: bool
     release_gate: EvalReleaseGate
+    latency: EvalLatencySummary = Field(default_factory=lambda: EvalLatencySummary(
+        mean_turn_ms=0, p50_turn_ms=0, p95_turn_ms=0,
+        mean_model_ms=0, p95_model_ms=0, mean_tool_ms=0, p95_tool_ms=0,
+    ))
+    cost: EvalCostSummary = Field(default_factory=lambda: EvalCostSummary(
+        prompt_tokens=0, completion_tokens=0, cached_tokens=0,
+    ))
+    model_call_count: int = Field(default=0, ge=0)
+    tool_call_count: int = Field(default=0, ge=0)
+    illegal_auto_execution_count: int = Field(default=0, ge=0)
     cases: list[EvalCaseResult] = Field(default_factory=list, max_length=100)
+
+
+class EvalV2VersionDiff(EvalV2Model):
+    """Typed comparison of two reports; unavailable cost remains unknown."""
+
+    baseline_run_id: str = Field(min_length=1, max_length=200)
+    candidate_run_id: str = Field(min_length=1, max_length=200)
+    baseline_versions: dict[str, str] = Field(max_length=5)
+    candidate_versions: dict[str, str] = Field(max_length=5)
+    versions_changed: bool
+    pass_at_1_delta: float
+    consistency_delta: float
+    p95_turn_ms_delta: float
+    p95_model_ms_delta: float
+    p95_tool_ms_delta: float
+    model_calls_delta: int
+    tool_calls_delta: int
+    illegal_auto_execution_delta: int
+    token_delta: int | None = None
+    cost_delta_usd: float | None = Field(default=None, ge=-1_000_000)
+    cost_status: Literal["calculated", "unknown"]
+    newly_failed: list[str] = Field(default_factory=list, max_length=100)
+    newly_passed: list[str] = Field(default_factory=list, max_length=100)
+    release_gate_changed: bool
 
 
 def load_agent_eval_v2_cases(
@@ -281,6 +396,17 @@ def load_agent_eval_v2_cases(
     return cases
 
 
+def load_agent_pricing(path: Path) -> AgentPricingTable:
+    """Load an explicit JSON price card; no provider default is inferred."""
+
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    if isinstance(payload, dict) and "entries" in payload:
+        return AgentPricingTable.model_validate(payload)
+    if isinstance(payload, list):
+        return AgentPricingTable(entries=payload)
+    raise ValueError("pricing file must contain an entries object or JSON array")
+
+
 ModelFactory = Callable[[TraceRecorder], object]
 
 
@@ -288,6 +414,7 @@ def run_ci_agent_evaluation(
     *,
     cases: list[AgentEvalV2Case] | None = None,
     trials_per_case: int = 1,
+    pricing: AgentPricingTable | None = None,
 ) -> AgentEvalV2Report:
     """Run recorded responses through real graph nodes without external services."""
 
@@ -296,6 +423,7 @@ def run_ci_agent_evaluation(
         trials_per_case=trials_per_case,
         runner="ci",
         model_factory=None,
+        pricing=pricing,
     )
 
 
@@ -307,6 +435,7 @@ def run_live_model_agent_evaluation(
     timeout_seconds: float = 60.0,
     trials_per_case: int = 3,
     cases: list[AgentEvalV2Case] | None = None,
+    pricing: AgentPricingTable | None = None,
 ) -> AgentEvalV2Report:
     """Run the same isolated cases through a real vLLM model, explicitly opt-in."""
 
@@ -324,6 +453,7 @@ def run_live_model_agent_evaluation(
         trials_per_case=trials_per_case,
         runner="live_model",
         model_factory=factory,
+        pricing=pricing,
     )
 
 
@@ -333,6 +463,7 @@ def _run_evaluation(
     trials_per_case: int,
     runner: Literal["ci", "live_model"],
     model_factory: ModelFactory | None,
+    pricing: AgentPricingTable | None,
 ) -> AgentEvalV2Report:
     if not 1 <= trials_per_case <= 10:
         raise ValueError("trials_per_case must be between 1 and 10")
@@ -357,6 +488,18 @@ def _run_evaluation(
     self_tests_passed = bool(self_test_cases) and all(
         item.status == "passed" for item in self_test_cases
     )
+    trials = [trial for result in results for trial in result.trials]
+    graph_version = _first_value(trials, "graph_version", GRAPH_VERSION)
+    prompt_version = _first_value(trials, "prompt_version", PROMPT_VERSION)
+    prompt_hash = _first_optional_value(trials, "prompt_hash")
+    model_provider = _first_value(trials, "model_provider", MODEL_PROVIDER)
+    model_name = _first_value(
+        trials,
+        "model_name",
+        "recorded-ci-model" if runner == "ci" else "unknown-model",
+    )
+    latency = _latency_summary(trials)
+    cost = _cost_summary(trials, pricing=pricing, provider=model_provider, model=model_name)
     return AgentEvalV2Report(
         runner=runner,
         trials_per_case=trials_per_case,
@@ -364,6 +507,18 @@ def _run_evaluation(
         capability=_capability_metrics(capability_cases),
         evaluator_self_test_passed=self_tests_passed,
         release_gate=_release_gate(quality, self_tests_passed),
+        graph_version=graph_version,
+        prompt_version=prompt_version,
+        prompt_hash=prompt_hash,
+        model_provider=model_provider,
+        model_name=model_name,
+        latency=latency,
+        cost=cost,
+        model_call_count=sum(trial.model_call_count for trial in trials),
+        tool_call_count=sum(trial.tool_call_count for trial in trials),
+        illegal_auto_execution_count=sum(
+            trial.illegal_auto_execution for trial in trials
+        ),
         cases=results,
     )
 
@@ -579,6 +734,7 @@ def _run_graph_trial(
     else:
         outcome = "known_gap"
     model_events = [event for event in events if event.event_type == "model.call"]
+    tool_events = [event for event in events if event.event_type == "tool.call"]
     reported_tokens = [event.total_tokens for event in model_events if event.total_tokens is not None]
     illegal_auto_execution = bool(environment.submitted) and (
         not case.tool_policy.writes_allowed or case.expected.expected_job_count == 0
@@ -610,6 +766,18 @@ def _run_graph_trial(
             event.usage_status == "unknown" for event in model_events
         ),
         failure_code=failure_code,
+        graph_version=(model_events[0].graph_version if model_events else GRAPH_VERSION),
+        prompt_version=(model_events[0].prompt_version or PROMPT_VERSION if model_events else PROMPT_VERSION),
+        prompt_hash=(model_events[0].prompt_hash if model_events else None),
+        model_provider=(model_events[0].model_provider or MODEL_PROVIDER if model_events else MODEL_PROVIDER),
+        model_name=(model_events[0].model_name or "recorded-ci-model" if model_events else "recorded-ci-model"),
+        model_call_count=len(model_events),
+        model_latency_ms=round(sum(event.latency_ms or 0 for event in model_events), 3),
+        tool_call_count=len(tool_events),
+        tool_latency_ms=round(sum(event.latency_ms or 0 for event in tool_events), 3),
+        cached_tokens=sum(event.cached_tokens or 0 for event in model_events),
+        prompt_tokens=sum(event.prompt_tokens or 0 for event in model_events),
+        completion_tokens=sum(event.completion_tokens or 0 for event in model_events),
     )
 
 
@@ -838,6 +1006,7 @@ class _RecordedEvalModel:
         self.recorder.model_call(
             context=context,
             model_name="recorded-ci-model",
+            model_provider="recorded-fixture",
             system_prompt="eval-v2-recorded-boundary",
             schema_version="main-model-output.v1",
             usage=self.last_usage,
@@ -1122,3 +1291,173 @@ def _percentile(values: list[float], percentile: float) -> float:
     ordered = sorted(values)
     index = min(len(ordered) - 1, max(0, int((len(ordered) - 1) * percentile + 0.999999)))
     return ordered[index]
+
+
+def _first_value(values: list[EvalTrialResult], field: str, default: str) -> str:
+    for value in values:
+        result = getattr(value, field, None)
+        if isinstance(result, str) and result:
+            return result
+    return default
+
+
+def _first_optional_value(values: list[EvalTrialResult], field: str) -> str | None:
+    for value in values:
+        result = getattr(value, field, None)
+        if isinstance(result, str) and result:
+            return result
+    return None
+
+
+def _latency_summary(trials: list[EvalTrialResult]) -> EvalLatencySummary:
+    turn = [trial.latency_ms for trial in trials]
+    model = [trial.model_latency_ms for trial in trials]
+    tool = [trial.tool_latency_ms for trial in trials]
+    return EvalLatencySummary(
+        mean_turn_ms=round(_mean(turn), 3),
+        p50_turn_ms=round(_percentile(turn, 0.50), 3),
+        p95_turn_ms=round(_percentile(turn, 0.95), 3),
+        mean_model_ms=round(_mean(model), 3),
+        p95_model_ms=round(_percentile(model, 0.95), 3),
+        mean_tool_ms=round(_mean(tool), 3),
+        p95_tool_ms=round(_percentile(tool, 0.95), 3),
+    )
+
+
+def _cost_summary(
+    trials: list[EvalTrialResult],
+    *,
+    pricing: AgentPricingTable | None,
+    provider: str,
+    model: str,
+) -> EvalCostSummary:
+    # Trial usage intentionally retains counts only, never raw prompts.
+    prompt_tokens = sum(trial.prompt_tokens for trial in trials)
+    completion_tokens = sum(trial.completion_tokens for trial in trials)
+    cached_tokens = sum(trial.cached_tokens for trial in trials)
+    if pricing is None:
+        return EvalCostSummary(
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
+            cached_tokens=cached_tokens,
+        )
+    entry = pricing.find(provider=provider, model=model)
+    if entry is None:
+        return EvalCostSummary(
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
+            cached_tokens=cached_tokens,
+        )
+    billable_prompt = max(0, prompt_tokens - cached_tokens)
+    cached_rate = (
+        entry.cached_input_usd_per_million
+        if entry.cached_input_usd_per_million is not None
+        else entry.input_usd_per_million
+    )
+    input_cost = (
+        billable_prompt / 1_000_000 * entry.input_usd_per_million
+        + cached_tokens / 1_000_000 * cached_rate
+    )
+    output_cost = completion_tokens / 1_000_000 * entry.output_usd_per_million
+    return EvalCostSummary(
+        status="calculated",
+        pricing_source=entry.source,
+        prompt_tokens=prompt_tokens,
+        completion_tokens=completion_tokens,
+        cached_tokens=cached_tokens,
+        input_cost_usd=round(input_cost, 8),
+        output_cost_usd=round(output_cost, 8),
+        total_cost_usd=round(input_cost + output_cost, 8),
+    )
+
+
+def compare_agent_eval_reports(
+    baseline: AgentEvalV2Report,
+    candidate: AgentEvalV2Report,
+) -> EvalV2VersionDiff:
+    """Produce a deterministic version/quality/latency/usage comparison."""
+
+    baseline_cases = {case.case_id: case for case in baseline.cases}
+    candidate_cases = {case.case_id: case for case in candidate.cases}
+    newly_failed = sorted(
+        case_id
+        for case_id, case in candidate_cases.items()
+        if case.status == "failed"
+        and (baseline_cases.get(case_id) is None or baseline_cases[case_id].status != "failed")
+    )
+    newly_passed = sorted(
+        case_id
+        for case_id, case in candidate_cases.items()
+        if case.status == "passed" and baseline_cases.get(case_id, case).status == "failed"
+    )
+    token_delta = (
+        candidate.cost.prompt_tokens
+        + candidate.cost.completion_tokens
+        - baseline.cost.prompt_tokens
+        - baseline.cost.completion_tokens
+    )
+    cost_delta = None
+    if (
+        baseline.cost.status == "calculated"
+        and candidate.cost.status == "calculated"
+        and baseline.cost.total_cost_usd is not None
+        and candidate.cost.total_cost_usd is not None
+    ):
+        cost_delta = round(candidate.cost.total_cost_usd - baseline.cost.total_cost_usd, 8)
+    return EvalV2VersionDiff(
+        baseline_run_id=baseline.run_id,
+        candidate_run_id=candidate.run_id,
+        baseline_versions={
+            "graph": baseline.graph_version,
+            "prompt": baseline.prompt_version,
+            "prompt_hash": baseline.prompt_hash or "unknown",
+            "provider": baseline.model_provider,
+            "model": baseline.model_name,
+        },
+        candidate_versions={
+            "graph": candidate.graph_version,
+            "prompt": candidate.prompt_version,
+            "prompt_hash": candidate.prompt_hash or "unknown",
+            "provider": candidate.model_provider,
+            "model": candidate.model_name,
+        },
+        versions_changed=(
+            baseline.graph_version != candidate.graph_version
+            or baseline.prompt_version != candidate.prompt_version
+            or baseline.prompt_hash != candidate.prompt_hash
+            or baseline.model_provider != candidate.model_provider
+            or baseline.model_name != candidate.model_name
+        ),
+        pass_at_1_delta=round(candidate.quality.pass_at_1 - baseline.quality.pass_at_1, 6),
+        consistency_delta=round(
+            candidate.quality.multi_trial_consistency
+            - baseline.quality.multi_trial_consistency,
+            6,
+        ),
+        p95_turn_ms_delta=round(
+            candidate.latency.p95_turn_ms - baseline.latency.p95_turn_ms, 3
+        ),
+        p95_model_ms_delta=round(
+            candidate.latency.p95_model_ms - baseline.latency.p95_model_ms, 3
+        ),
+        p95_tool_ms_delta=round(
+            candidate.latency.p95_tool_ms - baseline.latency.p95_tool_ms, 3
+        ),
+        model_calls_delta=candidate.model_call_count - baseline.model_call_count,
+        tool_calls_delta=candidate.tool_call_count - baseline.tool_call_count,
+        illegal_auto_execution_delta=(
+            candidate.illegal_auto_execution_count - baseline.illegal_auto_execution_count
+        ),
+        token_delta=token_delta,
+        cost_delta_usd=cost_delta,
+        cost_status=(
+            "calculated"
+            if cost_delta is not None
+            else "unknown"
+        ),
+        newly_failed=newly_failed,
+        newly_passed=newly_passed,
+        release_gate_changed=(
+            baseline.release_gate.passed != candidate.release_gate.passed
+        ),
+    )

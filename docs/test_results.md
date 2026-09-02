@@ -162,3 +162,32 @@ an artificially perfect score. See `eval_baseline.md` for the metric meaning.
 npm --prefix frontend run test
 npm --prefix frontend run build
 ```
+
+## Phase 6.2 Version, Cost, and Latency Reporting
+
+Eval v2 reports now carry the graph, prompt, provider, and model identity used
+for each run. They also aggregate model/tool call counts, P50/P95 wall-clock
+latency, and token usage. Since the current vLLM path does not provide a cloud
+price card, its cost is reported as `unknown`; no unrelated provider pricing is
+applied. A matching explicit JSON price card enables USD input/output cost
+calculation, including cached-input pricing when configured.
+
+The deterministic CI runner identifies its fixture model as `recorded-fixture`,
+so a real vLLM price card cannot be accidentally applied to recorded tests.
+
+Generate and persist a report:
+
+```text
+.venv\\Scripts\\python.exe scripts/run_agent_eval_v2.py --json --output eval-baseline.json
+```
+
+Compare two persisted reports without manual spreadsheets:
+
+```text
+.venv\\Scripts\\python.exe scripts/compare_agent_eval_v2.py eval-baseline.json eval-candidate.json
+```
+
+The comparison includes version changes, pass@1 and consistency deltas, P95
+turn/model/tool latency deltas, model/tool call deltas, illegal automatic
+execution deltas, and cost/token deltas. Token and cost deltas remain `null`
+when either report has unknown cost status.
