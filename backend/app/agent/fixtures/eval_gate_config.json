@@ -1,0 +1,11 @@
+{
+  "version": "eval-v2-release-gate.v1",
+  "baseline_source": "recorded-ci baseline 2026-09-02; production-risk guardrails",
+  "min_multi_turn_memory_accuracy": 0.875,
+  "max_unsupported_claim_rate": 0.0,
+  "max_p95_turn_ms": 1000.0,
+  "max_p95_model_ms": 750.0,
+  "max_p95_tool_ms": 250.0,
+  "max_cost_usd": null,
+  "require_cost_known": false
+}

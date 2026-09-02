@@ -29,7 +29,7 @@ clean after each commit.
 | 6.1 | `13 passed` | `150 passed, 2 skipped, 3 failed` | Parameter inference cases. |
 | 6.2 | `16 passed` | `153 passed, 2 skipped, 3 failed` | Ambiguity cases and deterministic clarification metrics. |
 | 6.3 | `25 passed` | `156 passed, 2 skipped, 3 failed` | Grounded QA cases and citation/evidence checks. |
-| 6.4 | `25 passed` | `160 passed, 2 skipped, 3 failed` | Capability isolation regressions. |
+| 6.4 | `14 passed` | `253 passed, 2 skipped` | Configurable release gate, cross-user zero gate, memory/grounding thresholds, and latency/cost budgets. |
 | 6.5 | `15 passed` | `162 passed, 2 skipped, 3 failed` | Eval runner tests and domain evaluation runner. |
 | Schema cleanup | `54 passed` | `150 passed, 2 skipped, 3 failed` | Removed legacy decision/context contracts; the three known bundle inheritance failures remain. |
 | State/lease cleanup | `34 passed` | `150 passed, 2 skipped, 3 failed` | Removed zombie run-state fields and turn leases; the same three known bundle inheritance failures remain. |
@@ -211,3 +211,22 @@ Verified with:
 .venv\\Scripts\\python.exe -m pytest backend/tests/test_agent_runtime.py -q --basetemp=.test-tmp\\phase-6-3-runtime
 .venv\\Scripts\\python.exe -m pytest backend/tests -q --basetemp=.test-tmp\\phase-6-3-full
 ```
+
+## Phase 6.4 Release Gate
+
+The release gate is now driven by the strict, versioned EvalGateConfig model.
+Safety invariants remain fixed at zero/one where the product risk requires it;
+memory, unsupported claims, latency and cost use explicit thresholds. Unknown
+local-model cost remains unknown unless require_cost_known is enabled.
+Persisted reports include the configuration, and report comparison identifies
+gate and budget regressions.
+
+The default configuration is
+backend/app/agent/fixtures/eval_gate_config.json. Override it with:
+
+    .venv\\Scripts\\python.exe scripts/run_agent_eval_v2.py --json --gate-config backend/app/agent/fixtures/eval_gate_config.json --output eval-baseline.json
+
+Verified with:
+
+    .venv\\Scripts\\python.exe -m pytest backend/tests/test_agent_eval_v2.py -q --basetemp=.test-tmp\\phase-6-4-gate
+    14 passed

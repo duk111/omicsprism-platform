@@ -13,7 +13,9 @@ if str(REPO_ROOT) not in sys.path:
 from backend.app.agent.eval_v2 import (
     AgentEvalV2Report,
     AgentPricingTable,
+    EvalGateConfig,
     load_agent_pricing,
+    load_eval_gate_config,
     run_ci_agent_evaluation,
     run_live_model_agent_evaluation,
 )
@@ -55,6 +57,17 @@ def _print_report(report: AgentEvalV2Report) -> None:
         f"p95_model_ms={report.latency.p95_model_ms:.3f}, "
         f"p95_tool_ms={report.latency.p95_tool_ms:.3f}, "
         f"ttft={report.latency.ttft_definition}"
+    )
+    gate = report.gate_config
+    print(
+        "Release budgets: "
+        f"memory>={gate.min_multi_turn_memory_accuracy:.3f}, "
+        f"unsupported<={gate.max_unsupported_claim_rate:.3f}, "
+        f"p95_turn<={gate.max_p95_turn_ms}, "
+        f"p95_model<={gate.max_p95_model_ms}, "
+        f"p95_tool<={gate.max_p95_tool_ms}, "
+        f"cost<={gate.max_cost_usd}, "
+        f"cost_known={gate.require_cost_known}"
     )
     print(
         "Cost: "
@@ -100,6 +113,11 @@ def main(argv: list[str] | None = None) -> int:
         help="optional JSON price card; without a matching entry cost remains unknown",
     )
     parser.add_argument(
+        "--gate-config",
+        type=Path,
+        help="optional JSON release-gate thresholds; defaults to the recorded baseline config",
+    )
+    parser.add_argument(
         "--output",
         type=Path,
         help="optional path for the JSON report (requires --json semantics)",
@@ -114,6 +132,12 @@ def main(argv: list[str] | None = None) -> int:
             pricing = load_agent_pricing(args.pricing_file)
         except (OSError, ValueError) as exc:
             parser.error(f"invalid --pricing-file: {exc}")
+    gate_config: EvalGateConfig | None = None
+    if args.gate_config:
+        try:
+            gate_config = load_eval_gate_config(args.gate_config)
+        except (OSError, ValueError) as exc:
+            parser.error(f"invalid --gate-config: {exc}")
     if args.live_model:
         if not args.base_url or not args.model:
             parser.error("--live-model requires both --base-url and --model")
@@ -123,9 +147,14 @@ def main(argv: list[str] | None = None) -> int:
             api_key=args.api_key,
             trials_per_case=trials,
             pricing=pricing,
+            gate_config=gate_config,
         )
     else:
-        report = run_ci_agent_evaluation(trials_per_case=trials, pricing=pricing)
+        report = run_ci_agent_evaluation(
+            trials_per_case=trials,
+            pricing=pricing,
+            gate_config=gate_config,
+        )
     if args.json:
         rendered = json.dumps(report.model_dump(mode="json"), ensure_ascii=False, indent=2)
         if args.output:

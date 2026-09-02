@@ -9,8 +9,10 @@ from backend.app.agent.eval_v2 import (
     AgentPricingTable,
     AgentModelPricing,
     DEFAULT_EVAL_V2_CASES_PATH,
+    EvalGateConfig,
     EvalExpectation,
     compare_agent_eval_reports,
+    evaluate_report_release_gate,
     load_agent_eval_v2_cases,
     run_ci_agent_evaluation,
 )
@@ -191,3 +193,87 @@ def test_configured_price_card_calculates_cost_and_diff_reports_versions() -> No
     assert diff.cost_status == "calculated"
     assert diff.cost_delta_usd == 0
     assert diff.token_delta == 0
+
+
+def test_release_gate_uses_configured_memory_and_unsupported_claim_thresholds() -> None:
+    report = run_ci_agent_evaluation(trials_per_case=1)
+    degraded = report.model_copy(update={
+        "quality": report.quality.model_copy(update={
+            "multi_turn_memory_accuracy": 0.75,
+            "unsupported_claim_rate": 0.1,
+        }),
+    })
+    gate = evaluate_report_release_gate(
+        degraded,
+        EvalGateConfig(
+            min_multi_turn_memory_accuracy=0.875,
+            max_unsupported_claim_rate=0.05,
+            max_p95_turn_ms=None,
+            max_p95_model_ms=None,
+            max_p95_tool_ms=None,
+        ),
+    )
+
+    assert not gate.passed
+    assert any("multi-turn memory" in failure for failure in gate.failures)
+    assert any("unsupported claim" in failure for failure in gate.failures)
+
+
+def test_release_gate_enforces_latency_budget_and_cross_user_zero() -> None:
+    report = run_ci_agent_evaluation(trials_per_case=1)
+    degraded = report.model_copy(update={
+        "latency": report.latency.model_copy(update={"p95_turn_ms": 1001}),
+        "capability": report.capability.model_copy(update={"cross_user_access_count": 1}),
+    })
+    gate = evaluate_report_release_gate(
+        degraded,
+        EvalGateConfig(
+            max_p95_turn_ms=1000,
+            max_p95_model_ms=None,
+            max_p95_tool_ms=None,
+        ),
+    )
+
+    assert not gate.passed
+    assert "cross-user access is non-zero" in gate.failures
+    assert any("p95 turn latency" in failure for failure in gate.failures)
+
+
+def test_unknown_cost_is_allowed_or_rejected_only_by_explicit_policy() -> None:
+    report = run_ci_agent_evaluation(trials_per_case=1)
+    allowed = evaluate_report_release_gate(
+        report,
+        EvalGateConfig(
+            max_cost_usd=0,
+            max_p95_turn_ms=None,
+            max_p95_model_ms=None,
+            max_p95_tool_ms=None,
+            require_cost_known=False,
+        ),
+    )
+    required = evaluate_report_release_gate(
+        report,
+        EvalGateConfig(
+            max_p95_turn_ms=None,
+            max_p95_model_ms=None,
+            max_p95_tool_ms=None,
+            require_cost_known=True,
+        ),
+    )
+
+    assert allowed.passed
+    assert not required.passed
+    assert "cost is unknown but a known cost is required" in required.failures
+
+
+def test_compare_reports_surfaces_gate_and_budget_regressions() -> None:
+    baseline = run_ci_agent_evaluation(trials_per_case=1)
+    candidate = baseline.model_copy(update={
+        "run_id": "candidate-run",
+        "latency": baseline.latency.model_copy(update={"p95_turn_ms": 1001}),
+    })
+    diff = compare_agent_eval_reports(baseline, candidate)
+
+    assert diff.release_gate_changed is True
+    assert diff.budget_regression is True
+    assert any("p95 turn latency" in failure for failure in diff.new_gate_failures)
