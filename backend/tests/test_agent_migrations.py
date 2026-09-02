@@ -122,6 +122,9 @@ def test_job_completion_migration_defines_wait_and_outbox_contract() -> None:
     assert "status in ('succeeded', 'failed', 'cancelled')" in sql
     assert "grant select, insert, update on agent_job_waits to omics_app" in sql
     assert "grant select, insert, update on agent_job_events to omics_app" in sql
+    assert "foreign key (turn_id)" in sql
+    assert "references agent_turns (turn_id) on delete cascade" in sql
+    assert "references agent_turns (turn_id, user_id)" not in sql
 
 
 def test_feedback_candidate_migration_is_owned_and_review_gated() -> None:

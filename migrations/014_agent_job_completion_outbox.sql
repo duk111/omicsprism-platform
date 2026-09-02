@@ -16,8 +16,8 @@ CREATE TABLE agent_job_waits (
     UNIQUE (job_id, thread_id, user_id),
     FOREIGN KEY (thread_id, user_id)
         REFERENCES agent_threads (thread_id, user_id) ON DELETE CASCADE,
-    FOREIGN KEY (turn_id, user_id)
-        REFERENCES agent_turns (turn_id, user_id) ON DELETE CASCADE
+    FOREIGN KEY (turn_id)
+        REFERENCES agent_turns (turn_id) ON DELETE CASCADE
 );
 
 CREATE INDEX agent_job_waits_status_idx
@@ -45,8 +45,8 @@ CREATE TABLE agent_job_events (
     UNIQUE (job_id, status),
     FOREIGN KEY (thread_id, user_id)
         REFERENCES agent_threads (thread_id, user_id) ON DELETE CASCADE,
-    FOREIGN KEY (turn_id, user_id)
-        REFERENCES agent_turns (turn_id, user_id) ON DELETE CASCADE
+    FOREIGN KEY (turn_id)
+        REFERENCES agent_turns (turn_id) ON DELETE CASCADE
 );
 
 CREATE INDEX agent_job_events_pending_idx
