@@ -279,3 +279,11 @@ Verified with:
 .venv\Scripts\python.exe -m pytest backend/tests/test_agent_mcp_adapter.py -q --basetemp=.test-tmp\phase-7-3-mcp
 9 passed
 ```
+
+## Phase 8.1 Architecture And Threat Model
+
+Added auditable final-delivery documents for the implemented v3 topology:
+`ARCHITECTURE.md` records cloud/API, compute runtime, LangGraph checkpoint,
+analysis worker, outbox, and MCP boundaries; `THREAT_MODEL.md` records assets,
+trust boundaries, controls, residual risks, and operational requirements.
+README links both documents from the repository overview.

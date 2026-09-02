@@ -14,15 +14,17 @@ omicsprism-platform/
   .env.example
 ```
 
-For a Chinese handoff and integration reference, see
-[`docs/OMICS_PRISM_INTEGRATION_GUIDE_ZH.md`](docs/OMICS_PRISM_INTEGRATION_GUIDE_ZH.md).
+For the current cloud/compute handoff and deployment contract, see
+[`AGENT_RUNTIME_DEPLOYMENT.md`](AGENT_RUNTIME_DEPLOYMENT.md).
 
-For a field-level description of DEG, DEM, and GMA result tables, see
-[`docs/OMICS_PRISM_RESULT_TABLES_ZH.md`](docs/OMICS_PRISM_RESULT_TABLES_ZH.md).
+For the field-level inventory of structured figure artifacts, see
+[`docs/figure_json_inventory.md`](docs/figure_json_inventory.md).
 
 The current production split between the cloud API and compute-server Agent
 runtime is recorded in [`AGENT_RUNTIME_DEPLOYMENT.md`](AGENT_RUNTIME_DEPLOYMENT.md)
 and [`ADR_0001_AGENT_RUNTIME_BOUNDARY.md`](ADR_0001_AGENT_RUNTIME_BOUNDARY.md).
+The implemented topology and its security assumptions are summarized in
+[`ARCHITECTURE.md`](ARCHITECTURE.md) and [`THREAT_MODEL.md`](THREAT_MODEL.md).
 
 ## OmicsPrism Copilot architecture
 
@@ -159,9 +161,9 @@ To remove volumes as well:
 docker compose down -v
 ```
 
-Gate E deployment, rollback, cross-user 404, and model-off verification steps
-are recorded in [`PHASE_6E_REPORT.md`](PHASE_6E_REPORT.md) and
-[`docs/OMICS_PRISM_SERVER_UPDATE_ZH.md`](docs/OMICS_PRISM_SERVER_UPDATE_ZH.md).
+Deployment, rollback, cross-user isolation, and model-off verification steps
+are recorded in [`AGENT_RUNTIME_DEPLOYMENT.md`](AGENT_RUNTIME_DEPLOYMENT.md)
+and [`docs/test_results.md`](docs/test_results.md).
 
 ## Database migration
 
