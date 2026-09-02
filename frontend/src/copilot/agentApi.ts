@@ -11,6 +11,7 @@ import type {
   AgentThreadDetailResponse,
   AgentThreadListResponse,
   AgentThreadResponse,
+  AgentTraceEventListResponse,
   AgentTurnListResponse,
   AgentTurnResponse,
   GraphClarificationResumeRequest,
@@ -41,6 +42,8 @@ export const agentApi = {
     apiFetchJson(`${root}/${encodeURIComponent(threadId)}/job-waits/${encodeURIComponent(waitId)}/cancel`, { method: "POST" }) as Promise<AgentJobWaitResponse>,
   listMessages: (threadId: string, after?: string) =>
     apiFetchJson(`${root}/${encodeURIComponent(threadId)}/messages${after ? `?after=${encodeURIComponent(after)}` : ""}`) as Promise<AgentMessageListResponse>,
+  listTrace: (threadId: string, limit = 100) =>
+    apiFetchJson(`${root}/${encodeURIComponent(threadId)}/trace?limit=${limit}`) as Promise<AgentTraceEventListResponse>,
   listFeedback: (threadId: string) =>
     apiFetchJson(`${root}/${encodeURIComponent(threadId)}/feedback`) as Promise<AgentFeedbackListResponse>,
   saveFeedback: (threadId: string, messageId: string, payload: AgentFeedbackCreateRequest) =>

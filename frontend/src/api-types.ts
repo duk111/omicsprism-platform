@@ -175,6 +175,39 @@ export interface AgentThreadResponse {
 
 export type AgentThreadStatus = "active" | "archived";
 
+export interface AgentTraceEventListResponse {
+  events: AgentTraceEventResponse[];
+  next_cursor?: string | null;
+}
+
+export interface AgentTraceEventResponse {
+  event_id: string;
+  trace_id: string;
+  thread_id: string;
+  turn_id?: string | null;
+  run_id?: string | null;
+  event_type: "turn.queued" | "turn.started" | "turn.completed" | "turn.failed" | "model.call" | "tool.call" | "job.submitted";
+  component: "api" | "runtime" | "graph" | "model" | "tool" | "job";
+  name: string;
+  schema_version: string;
+  graph_version: string;
+  prompt_version?: string | null;
+  model_provider?: string | null;
+  model_name?: string | null;
+  tool_name?: string | null;
+  job_id?: string | null;
+  outcome?: string | null;
+  latency_ms?: number | null;
+  prompt_tokens?: number | null;
+  completion_tokens?: number | null;
+  total_tokens?: number | null;
+  cached_tokens?: number | null;
+  usage_status?: "reported" | "unknown" | null;
+  retry_count?: number;
+  error_code?: string | null;
+  created_at: string;
+}
+
 export interface AgentTurnCreateRequest {
   message: string;
   input_bundle_id?: string | null;

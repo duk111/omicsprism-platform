@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AlertCircle, Bot, CheckCircle2, ChevronDown, CircleAlert, Clock3, FilePlus2, LoaderCircle, Menu, MessageSquarePlus, Paperclip, Send, Square, Trash2, Wifi, WifiOff, X } from "lucide-react";
 import { useSearchParams } from "react-router-dom";
-import type { AgentFeedbackCreateRequest, AgentFeedbackResponse, AgentJobWaitResponse, AgentMessageResponse, AgentRunResponse, AgentStreamEvent, AgentThreadResponse, AgentTurnResponse, GraphInterrupt, GraphPendingInterrupt, GraphTurnResult } from "../api-types";
+import type { AgentFeedbackCreateRequest, AgentFeedbackResponse, AgentJobWaitResponse, AgentMessageResponse, AgentRunResponse, AgentStreamEvent, AgentThreadResponse, AgentTraceEventResponse, AgentTurnResponse, GraphInterrupt, GraphPendingInterrupt, GraphTurnResult } from "../api-types";
 import { ApiRequestError } from "../api";
 import { createClientId } from "../clientId";
 import { agentApi, isGraphTurnResult } from "./agentApi";
@@ -9,6 +9,7 @@ import type { GraphResumeRequest } from "./agentApi";
 import { GraphInterruptPanel } from "./GraphInterruptPanel";
 import { FeedbackControls } from "./FeedbackControls";
 import { MessageBlocks } from "./MessageBlocks";
+import { TracePanel } from "./TracePanel";
 import "./copilot.css";
 
 const INPUT_FIELDS = ["counts", "metadata", "metabs", "transcriptome", "metabolome", "group"];
@@ -25,6 +26,8 @@ export default function CopilotPage() {
   const [turns, setTurns] = useState<AgentTurnResponse[]>([]);
   const [jobWaits, setJobWaits] = useState<AgentJobWaitResponse[]>([]);
   const [feedbackByMessage, setFeedbackByMessage] = useState<Record<string, AgentFeedbackResponse>>({});
+  const [traceEvents, setTraceEvents] = useState<AgentTraceEventResponse[]>([]);
+  const [traceLoading, setTraceLoading] = useState(false);
   const [savingFeedbackFor, setSavingFeedbackFor] = useState<string | null>(null);
   const [draft, setDraft] = useState("");
   const [attachments, setAttachments] = useState<Attachment[]>([]);
@@ -41,24 +44,38 @@ export default function CopilotPage() {
   const fileInput = useRef<HTMLInputElement>(null);
   const messageEnd = useRef<HTMLDivElement>(null);
 
+  const refreshTrace = useCallback(async (threadId: string) => {
+    setTraceLoading(true);
+    try {
+      const result = await agentApi.listTrace(threadId);
+      setTraceEvents(result.events);
+    } catch {
+      // Trace is an operator aid; a transient read failure must not interrupt chat recovery.
+    } finally {
+      setTraceLoading(false);
+    }
+  }, []);
+
   const recover = useCallback(async (threadId: string) => {
-    const [detail, messageList, turnList, interrupt, waitList, feedbackList] = await Promise.all([
+    const [detail, messageList, turnList, interrupt, waitList, feedbackList, traceList] = await Promise.all([
       agentApi.getThread(threadId),
       agentApi.listMessages(threadId),
       agentApi.listTurns(threadId),
       agentApi.getPendingInterrupt(threadId),
       agentApi.listJobWaits(threadId),
       agentApi.listFeedback(threadId),
+      agentApi.listTrace(threadId),
     ]);
     setRun(detail.run); setMessages(messageList.messages); setTurns(turnList.turns);
     setPendingGraph(interrupt); setJobWaits(waitList.waits);
     setFeedbackByMessage(Object.fromEntries(feedbackList.feedback.map(item => [item.message_id, item])));
+    setTraceEvents(traceList.events);
   }, []);
 
   const createThread = useCallback(async (focusIds: string[] = []) => {
     const created = await agentApi.createThread(focusIds);
     setThreads(current => [created, ...current.filter(item => item.thread_id !== created.thread_id)]);
-    setPendingGraph(null); setGraphBusy(false); setJobWaits([]);
+    setPendingGraph(null); setGraphBusy(false); setJobWaits([]); setTraceEvents([]);
     setActiveId(created.thread_id); setRailOpen(false); setNotice(null);
     if (focusIds.length) setSearchParams({}, { replace: true });
     return created.thread_id;
@@ -100,6 +117,7 @@ export default function CopilotPage() {
         if (turn.status === "queued" || turn.status === "completed" || turn.status === "failed" || turn.status === "cancelled") {
           setPendingGraph(current => current?.checkpoint_turn_id === turn.turn_id ? null : current);
         }
+        void refreshTrace(activeId);
       } else {
         setPendingGraph(payload.data as GraphPendingInterrupt | null);
       }
@@ -114,7 +132,7 @@ export default function CopilotPage() {
       if (!fallback) fallback = window.setInterval(() => recover(activeId).catch(() => setConnection("offline")), 3000);
     };
     return () => { source.close(); if (fallback) window.clearInterval(fallback); };
-  }, [activeId, recover]);
+  }, [activeId, recover, refreshTrace]);
 
   useEffect(() => { messageEnd.current?.scrollIntoView({ behavior: "smooth", block: "end" }); }, [messages, pendingGraph, jobWaits]);
 
@@ -236,7 +254,7 @@ export default function CopilotPage() {
       </div>
     </section>
 
-    <aside className="copilot-context" aria-label="Conversation context"><section><span className="context-label">Checkpoint</span><strong>{checkpointLabel}</strong><p>Graph checkpoint</p></section><section><span className="context-label">Focused jobs</span>{focusIds.length ? <ul>{focusIds.map(id => <li key={id}><a href={`/jobs/${encodeURIComponent(id)}`}>{id.slice(0, 8)}...</a></li>)}</ul> : <p>No job selected</p>}</section><section><span className="context-label">Input roles</span><p>Assign each CSV its role before sending. Copilot validates the files before confirmation.</p></section></aside>
+    <aside className="copilot-context" aria-label="Conversation context"><section><span className="context-label">Checkpoint</span><strong>{checkpointLabel}</strong><p>Graph checkpoint</p></section><section><span className="context-label">Focused jobs</span>{focusIds.length ? <ul>{focusIds.map(id => <li key={id}><a href={`/jobs/${encodeURIComponent(id)}`}>{id.slice(0, 8)}...</a></li>)}</ul> : <p>No job selected</p>}</section><section><span className="context-label">Input roles</span><p>Assign each CSV its role before sending. Copilot validates the files before confirmation.</p></section><TracePanel events={traceEvents} loading={traceLoading} onRefresh={() => { if (activeId) void refreshTrace(activeId); }} /></aside>
     {railOpen && <button className="rail-backdrop" type="button" aria-label="Close conversations" onClick={() => setRailOpen(false)} />}
   </main>;
 }

@@ -30,9 +30,10 @@ number of runtime replicas.
 [`DEMO.md`](DEMO.md) is the five-minute walkthrough for the cloud API,
 multi-turn correction, HITL confirmation, asynchronous Job continuation,
 evidence-backed response, local MCP read-only contract, and trace/Eval evidence.
-The current frontend does not contain a trace/Eval panel, so the walkthrough
-uses the existing REST/stream interfaces, a safe `agent_trace_events` query,
-and the repository evaluation scripts instead of claiming an unavailable UI.
+The frontend now contains a session-owned read-only Trace evidence panel; the
+walkthrough also shows the existing REST/stream interfaces, safe
+`agent_trace_events` query, and repository evaluation scripts. Eval v2 remains
+a deterministic CLI report rather than a fabricated live dashboard.
 
 [`LIMITATIONS_AND_ROADMAP.md`](LIMITATIONS_AND_ROADMAP.md) records the current
 single-runtime, local-MCP, deterministic-evaluation, cost, streaming, storage,

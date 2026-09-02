@@ -319,6 +319,49 @@ class AgentMessageListResponse(ContractModel):
     next_cursor: str | None = None
 
 
+class AgentTraceEventResponse(ContractModel):
+    """Safe, ownership-scoped projection of one persisted trace event."""
+
+    event_id: str = Field(min_length=1, max_length=200)
+    trace_id: str = Field(min_length=1, max_length=200)
+    thread_id: str = Field(min_length=1, max_length=200)
+    turn_id: str | None = Field(default=None, max_length=200)
+    run_id: str | None = Field(default=None, max_length=200)
+    event_type: Literal[
+        "turn.queued",
+        "turn.started",
+        "turn.completed",
+        "turn.failed",
+        "model.call",
+        "tool.call",
+        "job.submitted",
+    ]
+    component: Literal["api", "runtime", "graph", "model", "tool", "job"]
+    name: str = Field(min_length=1, max_length=200)
+    schema_version: str = Field(min_length=1, max_length=80)
+    graph_version: str = Field(min_length=1, max_length=80)
+    prompt_version: str | None = Field(default=None, max_length=80)
+    model_provider: str | None = Field(default=None, max_length=100)
+    model_name: str | None = Field(default=None, max_length=200)
+    tool_name: str | None = Field(default=None, max_length=200)
+    job_id: str | None = Field(default=None, max_length=200)
+    outcome: str | None = Field(default=None, max_length=100)
+    latency_ms: float | None = Field(default=None, ge=0)
+    prompt_tokens: int | None = Field(default=None, ge=0)
+    completion_tokens: int | None = Field(default=None, ge=0)
+    total_tokens: int | None = Field(default=None, ge=0)
+    cached_tokens: int | None = Field(default=None, ge=0)
+    usage_status: Literal["reported", "unknown"] | None = None
+    retry_count: int = Field(default=0, ge=0)
+    error_code: str | None = Field(default=None, max_length=100)
+    created_at: datetime
+
+
+class AgentTraceEventListResponse(ContractModel):
+    events: list[AgentTraceEventResponse]
+    next_cursor: str | None = None
+
+
 class AgentFeedbackRating(str, Enum):
     HELPFUL = "helpful"
     UNHELPFUL = "unhelpful"

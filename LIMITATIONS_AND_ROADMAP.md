@@ -10,7 +10,7 @@ it must not yet be described as a complete multi-tenant production platform.
 | --- | --- | --- |
 | Agent scheduling | Redis Agent delivery/recovery is designed for one active runtime consumer | Do not scale `agent-runtime` horizontally without replacing the claim/recovery protocol and re-running duplicate-delivery tests. |
 | MCP transport | The official SDK is used through an in-process, read-only adapter; no HTTP listener is enabled | A remote MCP client cannot connect until authentication, quota, rate limiting, audit, and trace propagation are implemented. |
-| Trace and Eval UI | Trace summaries and Eval v2 reports are available through Postgres and CLI; there is no frontend trace/eval panel | Operators use the SQL/CLI steps in `DEMO.md`; the UI gap is explicit rather than hidden behind a simulated panel. |
+| Trace and Eval UI | The frontend exposes a session-owned read-only trace panel; Eval v2 reports remain CLI/Postgres evidence rather than a live dashboard | The panel is useful for turn-level inspection, while aggregate release comparisons still use the SQL/CLI steps in `DEMO.md`. |
 | Live-model evaluation | The 50-case fixture and Phase 8 acceptance runner are deterministic local checks | They prove contract and recovery behavior, not live vLLM quality, GPU capacity, or production SLOs. |
 | Token cost | Provider usage is recorded when reported; local vLLM has no configured price card | Cost remains `unknown` unless an explicit matching price card is supplied. Unknown is never treated as zero. |
 | Streaming latency | The API stream is durable polling/SSE; there is no token streaming | TTFT means the first visible durable event, not the first generated token. |
@@ -22,7 +22,7 @@ it must not yet be described as a complete multi-tenant production platform.
 
 ### 1. Operations surface
 
-Add a role-protected trace/evaluation view that renders safe event summaries,
+Extend the session-owned trace panel with role-protected aggregate metrics,
 turn latency, queue age, model usage, release-gate failures, and links to the
 existing feedback/eval-candidate workflow. Keep raw prompts, CSV rows, secrets,
 and storage keys out of the view.

@@ -124,8 +124,9 @@ strict argument validation. The full adapter contract is covered by
 
 ## 4:40 - Trace and Eval evidence
 
-There is no frontend trace/eval panel in this release. For an operator review,
-use the trace id from the turn response and query only the safe summaries:
+The right-hand `Trace evidence` panel shows safe summaries for the active
+thread and can be refreshed after a turn. For an operator review, the same
+data can be queried directly with the trace id from the turn response:
 
 ```sql
 select event_type, component, name, outcome, latency_ms,
@@ -135,7 +136,8 @@ where trace_id = '<TRACE_ID>' and user_id = '<SESSION_ID>'
 order by created_at;
 ```
 
-Run the reproducible deterministic evaluation from the repository root:
+The panel deliberately does not pretend to be a live Eval dashboard. Run the
+reproducible deterministic evaluation from the repository root:
 
 ```powershell
 .venv\Scripts\python.exe scripts/run_agent_eval_v2.py `

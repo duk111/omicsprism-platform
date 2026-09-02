@@ -335,9 +335,30 @@ safe fields persisted by `agent_trace_events`; no raw prompt, CSV row, secret,
 or storage key is required.
 
 `LIMITATIONS_AND_ROADMAP.md` records the current single-runtime scheduling
-assumption, process-local MCP boundary, absence of a frontend trace/Eval panel,
-deterministic-vs-live evaluation distinction, unknown local-vLLM cost, durable
-polling TTFT definition, production storage requirement, and security scope.
+assumption, process-local MCP boundary, session-owned trace panel versus
+CLI-based Eval v2 reporting, deterministic-vs-live evaluation distinction,
+unknown local-vLLM cost, durable polling TTFT definition, production storage
+requirement, and security scope.
+
+## Phase 8.5 Trace Evidence Panel
+
+The Agent API now exposes a read-only `/api/agent/threads/{thread_id}/trace`
+projection. It aggregates the caller's own turn traces and excludes user ids,
+prompt hashes, tool schema hashes, raw arguments, and data rows. The frontend
+renders this projection in the Copilot context panel with manual refresh and
+automatic refresh on streamed turn updates. Eval v2 remains a repository CLI
+report because no live report store exists.
+
+Verified with:
+
+```text
+.venv\Scripts\python.exe -m pytest backend/tests/test_agent_api.py -q --basetemp=.pytest-phase8-5-api-final
+13 passed, 2 warnings
+npm test --prefix frontend -- --run
+6 test files passed, 18 tests passed
+npm run build --prefix frontend
+vite build succeeded; existing large-chunk warning only
+```
 
 Verified after the Phase 8.4 documentation changes with:
 

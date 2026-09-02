@@ -54,6 +54,8 @@ from .schemas import (
     AgentThreadListResponse,
     AgentThreadRecord,
     AgentThreadResponse,
+    AgentTraceEventListResponse,
+    AgentTraceEventResponse,
     AgentTurnCreateRequest,
     AgentTurnListResponse,
     AgentTurnRecord,
@@ -61,6 +63,7 @@ from .schemas import (
     AgentTurnStatus,
     RunFocus,
 )
+from .trace import AgentTraceEvent
 
 
 ALLOWED_INPUT_FIELDS = {"counts", "metadata", "metabs", "transcriptome", "metabolome", "group"}
@@ -263,6 +266,40 @@ def create_agent_router(
         return AgentMessageListResponse(
             messages=[_message_response(item) for item in page],
             next_cursor=page[-1].message_id if len(records) > limit and page else None,
+        )
+
+    @router.get(
+        "/threads/{thread_id}/trace",
+        response_model=AgentTraceEventListResponse,
+    )
+    def list_trace(
+        thread_id: str,
+        limit: Annotated[int, Query(ge=1, le=200)] = 100,
+        user_id: str = Depends(session_dependency),
+        ctx: AgentApiContext = Depends(current_context),
+    ) -> AgentTraceEventListResponse:
+        """Return safe trace summaries for the caller's own thread only."""
+        _owned_thread(ctx, thread_id, user_id)
+        turns = ctx.product_store.list_turns(
+            thread_id=thread_id,
+            user_id=user_id,
+            limit=100,
+        )
+        events_by_id = {}
+        for turn in turns:
+            for event in ctx.product_store.list_trace_events(
+                trace_id=turn.trace_id,
+                user_id=user_id,
+                limit=min(500, limit),
+            ):
+                events_by_id[event.event_id] = event
+        events = sorted(
+            events_by_id.values(),
+            key=lambda item: (item.created_at, item.event_id),
+        )[-limit:]
+        return AgentTraceEventListResponse(
+            events=[_trace_event_response(item) for item in events],
+            next_cursor=None,
         )
 
     @router.get("/threads/{thread_id}/feedback", response_model=AgentFeedbackListResponse)
@@ -1048,6 +1085,12 @@ def _turn_response(record: AgentTurnRecord) -> AgentTurnResponse:
 
 def _message_response(record: AgentMessageRecord) -> AgentMessageResponse:
     return AgentMessageResponse.model_validate(record.model_dump(exclude={"user_id"}))
+
+
+def _trace_event_response(record: AgentTraceEvent) -> AgentTraceEventResponse:
+    return AgentTraceEventResponse.model_validate(record.model_dump(exclude={
+        "user_id", "prompt_hash", "tool_schema_hash",
+    }))
 
 
 def _feedback_response(record: AgentFeedbackRecord) -> AgentFeedbackResponse:

@@ -29,6 +29,7 @@ from backend.app.agent.schemas import (
     AgentThreadRecord,
     AgentTurnRecord,
 )
+from backend.app.agent.trace import AgentTraceEvent
 from backend.app.models import AnalysisType, JobRecord, JobStatus
 from backend.app.settings import AppSettings
 from backend.app.storage_service import FileStorageService
@@ -351,6 +352,54 @@ def test_stream_projection_contains_only_public_turn_and_message_dtos() -> None:
     assert '"row_ids":[7]' in payload
     for secret in ("secret-user", "secret-key", "request_hash", "storage_key"):
         assert secret not in payload
+
+
+def test_trace_endpoint_returns_owned_safe_event_projection() -> None:
+    context = _context()
+    client = _client(context)
+    thread = _create_thread(client, "user-a")
+    thread_id = thread["thread_id"]
+    turn_response = client.post(
+        f"/api/agent/threads/{thread_id}/turns",
+        headers={"Idempotency-Key": "trace-turn"},
+        json={"message": "trace this"},
+    )
+    assert turn_response.status_code == 202
+    turn_payload = turn_response.json()["turn"]
+    now = datetime.now(timezone.utc)
+    context.product_store.record_trace_event(AgentTraceEvent(
+        event_id="trace-event-1",
+        trace_id=turn_payload["trace_id"],
+        thread_id=thread_id,
+        turn_id=turn_payload["turn_id"],
+        run_id=turn_payload["run_id"],
+        user_id="user-a",
+        event_type="model.call",
+        component="model",
+        name="chat.completions",
+        schema_version="main-output.v1",
+        prompt_hash="sha256:" + "a" * 64,
+        model_provider="recorded-fixture",
+        model_name="fixture-model",
+        outcome="ok",
+        latency_ms=12.5,
+        prompt_tokens=10,
+        completion_tokens=4,
+        total_tokens=14,
+        usage_status="reported",
+        created_at=now,
+    ))
+
+    response = client.get(f"/api/agent/threads/{thread_id}/trace")
+    assert response.status_code == 200
+    body = response.json()
+    assert body["events"][0]["event_id"] == "trace-event-1"
+    assert body["events"][0]["model_name"] == "fixture-model"
+    assert "user_id" not in response.text
+    assert "prompt_hash" not in response.text
+
+    _as_user(client, "user-b")
+    assert client.get(f"/api/agent/threads/{thread_id}/trace").status_code == 404
 
 
 def test_stream_projection_includes_public_pending_interrupt() -> None:

@@ -60,6 +60,17 @@ describe("agentApi.saveFeedback", () => {
   });
 });
 
+describe("agentApi.listTrace", () => {
+  it("requests the bounded trace projection for one thread", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse());
+    vi.stubGlobal("fetch", fetchMock);
+
+    await agentApi.listTrace("thread/1", 25);
+
+    expect(fetchMock.mock.calls[0][0]).toBe("/api/agent/threads/thread%2F1/trace?limit=25");
+  });
+});
+
 function jsonResponse() {
   return new Response(JSON.stringify({}), { status: 200, headers: { "Content-Type": "application/json" } });
 }
