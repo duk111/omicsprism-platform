@@ -115,6 +115,13 @@ class CapabilityRegistry:
             raise CapabilityNotVisible("capability is not available")
         return definition.spec
 
+    def model_types(self, name: str) -> tuple[type[BaseModel], type[BaseModel]]:
+        """Return the typed request/response models for an adapter."""
+        definition = self._definitions.get(name)
+        if definition is None:
+            raise CapabilityNotVisible("capability is not available")
+        return definition.request_model, definition.response_model
+
     def invoke(
         self,
         name: str,
@@ -127,15 +134,35 @@ class CapabilityRegistry:
             self._owner_subject is not None and principal.subject != self._owner_subject
         ):
             raise CapabilityNotVisible("capability is not available")
-        try:
-            request = definition.request_model.model_validate(dict(arguments or {}))
-        except Exception as exc:
-            raise CapabilityInvalidArguments("capability arguments are invalid") from exc
+        request = self.validate(name, arguments, principal=principal)
         result = definition.handler(request)
         try:
             return definition.response_model.model_validate(result)
         except Exception as exc:
             raise CapabilityError("capability response is invalid") from exc
+
+    def validate(
+        self,
+        name: str,
+        arguments: Mapping[str, Any] | None,
+        *,
+        principal: CapabilityPrincipal,
+    ) -> BaseModel:
+        """Validate a call without executing its handler.
+
+        Adapters use this before a protocol framework validates arguments. Some
+        frameworks intentionally ignore unknown object keys, while capability
+        contracts require ``extra=forbid`` to remain effective at the boundary.
+        """
+        definition = self._definitions.get(name)
+        if definition is None or (
+            self._owner_subject is not None and principal.subject != self._owner_subject
+        ):
+            raise CapabilityNotVisible("capability is not available")
+        try:
+            return definition.request_model.model_validate(dict(arguments or {}))
+        except Exception as exc:
+            raise CapabilityInvalidArguments("capability arguments are invalid") from exc
 
 
 def build_readonly_capability_registry(runtime: AgentToolRuntime) -> CapabilityRegistry:

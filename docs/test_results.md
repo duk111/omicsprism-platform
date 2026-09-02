@@ -246,3 +246,21 @@ Verified with:
 .venv\Scripts\python.exe -m pytest backend/tests/test_agent_capabilities.py backend/tests/test_agent_production_wiring.py backend/tests/test_agent_readonly_tools.py -q --basetemp=.test-tmp\phase-7-1-registry
 16 passed
 ```
+
+## Phase 7.2 In-Process MCP Adapter
+
+Phase 7.2 adds the official `mcp==2.1.1` SDK as a backend dependency and an
+in-process `CapabilityMCPServer`. The adapter registers the same six read-only
+capabilities as the Web Agent, publishes the registry's strict request and
+response schemas, binds an explicit trusted principal, and performs strict
+validation before SDK dispatch. No MCP network transport is started.
+
+Verified with:
+
+```text
+.venv\Scripts\python.exe -m pytest backend/tests/test_agent_capabilities.py backend/tests/test_agent_mcp_adapter.py -q --basetemp=.test-tmp\phase-7-2-mcp
+10 passed
+```
+
+The full backend suite reached 263 passed and 2 skipped (2 existing FastAPI
+deprecation warnings).
