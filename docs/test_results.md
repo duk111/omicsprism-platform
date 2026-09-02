@@ -304,3 +304,23 @@ Verified with:
 .venv\Scripts\python.exe scripts/run_agent_eval_v2.py --json --trials 1 --output .test-tmp\phase8-2-eval.json
 release_gate.passed=true, quality.case_count=41, quality.pass_at_1=1.0
 ```
+
+## Phase 8.3 Fault And Capacity Acceptance
+
+`PHASE_8_ACCEPTANCE.md` and `scripts/run_phase8_acceptance.py` provide one
+repeatable local acceptance command. It executes runtime interruption recovery,
+transient database-style retry, and duplicate Job completion drills, then runs a
+bounded concurrent in-memory queue probe with enqueue and reserve P95 metrics.
+
+Verified with:
+
+```text
+.venv\Scripts\python.exe scripts/run_phase8_acceptance.py --json --items 64 --concurrency 8 --basetemp .pytest-phase8-3-drills --output .test-tmp/phase8-3-acceptance.json
+fault_drills: 3 passed
+capacity: concurrency=8, items=64, enqueued=64, pending_after_drain=0, processing_after_drain=0
+.venv\Scripts\python.exe -m pytest backend/tests/test_phase8_acceptance.py -q --basetemp=.test-tmp\phase-8-3-script
+2 passed
+```
+
+The full backend regression after the Phase 8.3 additions is `267 passed, 2
+skipped, 2 warnings`.
