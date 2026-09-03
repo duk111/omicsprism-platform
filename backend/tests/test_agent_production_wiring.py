@@ -401,6 +401,7 @@ def test_vllm_graph_model_uses_main_output_schema_and_returns_typed_output() -> 
     assert json.loads(body["messages"][1]["content"]) == context.model_dump(
         mode="json"
     )
+    assert model.contexts == [context]
 
 
 def test_main_output_schema_requires_answer_for_answer_action() -> None:

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 from time import perf_counter
 from typing import TYPE_CHECKING
 
@@ -43,6 +44,12 @@ class VllmGraphModel:
         self.client = client or httpx.Client(timeout=timeout_seconds)
         self.trace_recorder = trace_recorder
         self.last_usage = ModelUsage()
+        # Keep the same bounded context observation available to live eval as
+        # the recorded fixture model. Contexts contain no raw dataset rows.
+        self.contexts: list[MainModelContext] = []
+        self._debug_raw_output = os.getenv("OMICS_PRISM_AGENT_DEBUG_RAW_OUTPUT", "").lower() in {
+            "1", "true", "yes", "on"
+        }
 
     def __call__(self, context: MainModelContext) -> MainModelOutput:
         from .context import MainModelContext
@@ -50,12 +57,14 @@ class VllmGraphModel:
 
         if not isinstance(context, MainModelContext):
             raise ModelBoundaryError("graph model context has an invalid type")
+        self.contexts.append(context)
         headers = {"Content-Type": "application/json"}
         if self.api_key:
             headers["Authorization"] = f"Bearer {self.api_key}"
         started = perf_counter()
         self.last_usage = ModelUsage()
         try:
+            raw_content: str | None = None
             response = self.client.post(
                 self.endpoint,
                 headers=headers,
@@ -87,6 +96,7 @@ class VllmGraphModel:
             response.raise_for_status()
             try:
                 content = response.json()["choices"][0]["message"]["content"]
+                raw_content = content if isinstance(content, str) else None
                 payload = json.loads(content)
                 decision = payload.get("decision") if isinstance(payload, dict) else None
                 action = decision.get("action") if isinstance(decision, dict) else None
@@ -99,9 +109,26 @@ class VllmGraphModel:
                     answer is None,
                     len(answer) if isinstance(answer, str) else 0,
                 )
+                if self._debug_raw_output:
+                    # Opt-in diagnostics only. Keep this bounded and out of
+                    # trace/report persistence because it may contain user text.
+                    raw = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+                    LOG.warning(
+                        "vLLM raw model output (debug only): %s",
+                        raw[:4000],
+                        extra={"event": "agent.model.raw_output_debug"},
+                    )
                 _drop_irrelevant_action_fields(payload)
                 result = MainModelOutput.model_validate(payload)
             except (KeyError, IndexError, TypeError, ValueError, ValidationError) as exc:
+                if self._debug_raw_output:
+                    LOG.warning(
+                        "vLLM response validation details (debug only): error_type=%s error=%s raw_content=%s",
+                        type(exc).__name__,
+                        str(exc)[:1000],
+                        (raw_content or "")[:4000],
+                        extra={"event": "agent.model.validation_debug"},
+                    )
                 LOG.warning(
                     "vLLM graph response rejected",
                     extra={"event": "agent.model.response_rejected", "error_code": type(exc).__name__},

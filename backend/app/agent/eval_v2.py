@@ -752,7 +752,11 @@ def _run_graph_trial(
         final_state = None
         interrupt_kind = None
         failure_code = type(exc).__name__
-    contexts = model.contexts if isinstance(model, _RecordedEvalModel) else []
+    # Both recorded and live model adapters expose the bounded contexts they
+    # receive. This keeps the memory metric about graph context assembly,
+    # rather than coupling it to the fixture adapter type.
+    candidate_contexts = getattr(model, "contexts", [])
+    contexts = candidate_contexts if isinstance(candidate_contexts, list) else []
     prior_context_available = None
     if len(contexts) > 1:
         prior_context_available = any(
