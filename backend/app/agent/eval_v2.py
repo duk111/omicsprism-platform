@@ -21,7 +21,7 @@ from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.types import Command
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from .context import MainModelContext
+from .context import MainModelContext, RecentMessage, RecentMessages
 from .dataset_profile import build_dataset_profiles
 from .graph import (
     DatasetProfileRef,
@@ -721,6 +721,7 @@ def _run_graph_trial(
     interrupt_kind: str | None = None
     final_state: GraphState | None = None
     failure_code: str | None = None
+    conversation_history: list[RecentMessage] = []
     try:
         for index, turn in enumerate(case.turns, start=1):
             if turn.kind == "message":
@@ -732,6 +733,7 @@ def _run_graph_trial(
                         turn_number=index,
                         message=turn.message or "",
                         focus_ids=turn.focus_job_ids or case.environment.focus_job_ids,
+                        recent_messages=_eval_recent_messages(conversation_history),
                     ),
                     config,
                 )
@@ -747,6 +749,18 @@ def _run_graph_trial(
             else:
                 terminal = "completed"
                 final_state = GraphState.model_validate(result)
+            if turn.kind == "message":
+                conversation_history.append(RecentMessage(
+                    role="user",
+                    turn_id=f"eval-user-{case.case_id}-{index}",
+                    text=(turn.message or "")[:800],
+                ))
+                if final_state is not None and final_state.response_text:
+                    conversation_history.append(RecentMessage(
+                        role="assistant",
+                        turn_id=f"eval-assistant-{case.case_id}-{index}",
+                        text=final_state.response_text[:800],
+                    ))
     except Exception as exc:
         terminal = "failed"
         final_state = None
@@ -886,6 +900,7 @@ def _graph_state(
     turn_number: int,
     message: str,
     focus_ids: list[str],
+    recent_messages: RecentMessages | None = None,
 ) -> GraphState:
     profile_refs = [
         DatasetProfileRef(
@@ -911,6 +926,7 @@ def _graph_state(
         "turn_id": f"eval-turn-{case.case_id}-{turn_number}",
         "run_id": f"eval-run-{case.case_id}",
         "user_message": message,
+        "recent_messages": recent_messages or _eval_recent_messages([]),
         "dataset_profiles": profile_refs,
         "recent_jobs": recent_jobs,
         "current_job": current_job,
@@ -920,6 +936,15 @@ def _graph_state(
             "last_citation": None,
         },
     })
+
+
+def _eval_recent_messages(messages: list[RecentMessage]) -> RecentMessages:
+    bounded = messages[-8:]
+    return RecentMessages(
+        context_version="messages.v1:eval",
+        messages=bounded,
+        truncated=len(messages) > len(bounded),
+    )
 
 
 def _dataset_loader(environment: _GraphEnvironment):

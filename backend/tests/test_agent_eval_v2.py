@@ -16,6 +16,7 @@ from backend.app.agent.eval_v2 import (
     load_agent_eval_v2_cases,
     run_ci_agent_evaluation,
 )
+from backend.app.agent.graph import MainModelOutput
 from scripts.run_agent_eval_v2 import main
 
 
@@ -86,6 +87,42 @@ def test_ci_recordings_are_reproducible_and_trials_are_environment_isolated() ->
     assert all(case.consistency == 1 for case in first.cases)
     assert all(case.trials[0].trace_event_count > 0 for case in quality_cases)
     assert all(case.trials[0].reported_total_tokens is not None for case in quality_cases)
+
+
+def test_eval_multiturn_live_adapter_receives_recent_user_and_assistant_messages() -> None:
+    case = next(
+        case for case in _quality_cases() if case.case_id == "memory-correction-001"
+    )
+    class SpyModel:
+        last_usage = None
+
+        def __init__(self) -> None:
+            self.contexts = []
+
+        def __call__(self, context):
+            self.contexts.append(context)
+            return MainModelOutput.model_validate({
+                "decision": {"action": "answer"},
+                "answer": "A concise answer.",
+            })
+
+    model: SpyModel | None = None
+
+    def factory(_recorder):
+        nonlocal model
+        model = SpyModel()
+        return model
+
+    from backend.app.agent import eval_v2
+
+    result = eval_v2._run_graph_trial(case, 1, factory)
+    assert result.matched
+    assert model is not None
+    assert len(model.contexts) == 2
+    assert [(item.role, item.text) for item in model.contexts[1].recent_messages.messages] == [
+        ("user", "I am exploring differential expression."),
+        ("assistant", "A concise answer."),
+    ]
 
 
 def test_confirmation_uses_checkpoint_plan_values_and_detects_fingerprint_change() -> None:
