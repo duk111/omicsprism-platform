@@ -381,6 +381,13 @@ def _normalize_explicit_business_actions(payload: object, context: MainModelCont
         decision["tool"] = None
         decision["arguments"] = {}
         return
+    if tool == "list_jobs" and _is_explicit_job_status_request(context.user_message):
+        if len(context.conversation_memory.recent_job_ids) > 1:
+            decision["action"] = "get_job"
+            decision["job_id"] = None
+            decision["tool"] = None
+            decision["arguments"] = {}
+            return
     if tool not in {"describe_metadata", "enumerate_contrasts", "list_jobs"}:
         return
     message = context.user_message.casefold()
@@ -388,6 +395,11 @@ def _normalize_explicit_business_actions(payload: object, context: MainModelCont
         (name for name in ("DEG", "DEM", "GMA") if name.casefold() in message),
         None,
     )
+    if analysis_type is None:
+        if "metabol" in message:
+            analysis_type = "DEM"
+        elif "gene" in message or "expression" in message:
+            analysis_type = "DEG"
     if analysis_type is None or not _is_explicit_analysis_request(message):
         return
     proposal_values: dict[str, object] = {"analysis_type": analysis_type}

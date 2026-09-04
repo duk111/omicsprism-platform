@@ -164,6 +164,21 @@ def main_node(
                         "step_budget": budget,
                         "tool_observations": observations,
                     }
+                if decision.tool in {
+                    ToolName.DESCRIBE_METADATA,
+                    ToolName.ENUMERATE_CONTRASTS,
+                }:
+                    response_text = _read_only_observation_response(
+                        decision.tool, observations[-1].summary
+                    )
+                    return {
+                        "decision": AgentDecision(action="answer"),
+                        "response_text": response_text,
+                        "response_blocks": [text_block(response_text)],
+                        "grounded_answer": None,
+                        "step_budget": budget,
+                        "tool_observations": observations,
+                    }
                 return _ask_user_update(
                     "I received a repeated data request without a new result. "
                     "Please clarify the operation you want to perform.",
@@ -393,6 +408,37 @@ def _list_jobs_response(summary: str) -> str:
         if job_id:
             items.append(f"{job_id} ({status})")
     return "Available jobs: " + ", ".join(items) if items else "No available jobs."
+
+
+def _read_only_observation_response(tool: ToolName, summary: str) -> str:
+    try:
+        payload = json.loads(summary)
+    except (TypeError, ValueError):
+        return "I could not read the requested metadata."
+    if not isinstance(payload, dict):
+        return "I could not read the requested metadata."
+    rows = payload.get("rows") or payload.get("fields") or payload.get("candidates") or []
+    if tool is ToolName.DESCRIBE_METADATA:
+        if isinstance(rows, list) and rows and isinstance(rows[0], dict):
+            fields = rows[0].get("fields")
+        else:
+            fields = rows
+        if isinstance(fields, list) and fields:
+            return "Metadata fields: " + ", ".join(str(item) for item in fields)
+        return "No metadata fields were available."
+    if isinstance(rows, list) and rows:
+        parts: list[str] = []
+        for row in rows[:20]:
+            if not isinstance(row, dict):
+                continue
+            field = row.get("compare_field")
+            tested = row.get("tested_level")
+            reference = row.get("reference_level")
+            if field and tested and reference:
+                parts.append(f"{tested} versus {reference} in {field}")
+        if parts:
+            return "Valid contrasts: " + "; ".join(parts)
+    return "No valid contrasts were available."
 
 
 def _should_retry_followup(context: MainModelContext) -> bool:
