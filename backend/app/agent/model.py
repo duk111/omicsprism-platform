@@ -282,11 +282,11 @@ def _normalize_result_query_artifact(payload: object, context: MainModelContext)
     if not isinstance(query, dict):
         return
     job_id = decision.get("job_id")
-    artifacts = (
-        context.fact_index.job_artifacts.get(job_id, [])
-        if isinstance(job_id, str)
-        else []
-    )
+    artifact_map = context.fact_index.job_artifacts
+    if not isinstance(job_id, str) and len(artifact_map) == 1:
+        job_id = next(iter(artifact_map))
+        decision["job_id"] = job_id
+    artifacts = artifact_map.get(job_id, []) if isinstance(job_id, str) else []
     if len(artifacts) != 1:
         return
     artifact = query.get("artifact")
@@ -326,6 +326,8 @@ _GRAPH_MAIN_SYSTEM_PROMPT = (
     "as 'Show GeneA result' or 'What is the GeneB fold change?' must use query_result "
     "directly; do not ask for clarification. For a follow-up such as 'make it shorter' "
     "or 'correct that', use recent_messages and answer the follow-up directly. "
+    "If several Jobs are in context and the user asks for status without naming one, "
+    "choose get_job with job_id null so the result node can ask which Job. "
     "A grounded_answer must cite the artifact, checksum, and row IDs from the latest "
     "successful query observation; never invent citations or numeric values. Never "
     "When action is answer, answer is required and must be a concise non-empty response. "

@@ -601,3 +601,38 @@ def test_vllm_graph_model_normalizes_entity_in_result_query_artifact() -> None:
     assert result.decision.result_query is not None
     assert result.decision.result_query.artifact == "differential_gene_counts.csv"
     assert result.decision.result_query.resolve_entity == "GeneC"
+
+
+def test_vllm_graph_model_infers_single_job_for_result_query() -> None:
+    def handle(_request: httpx.Request) -> httpx.Response:
+        output = {
+            "decision": {
+                "action": "query_result",
+                "result_query": {"artifact": "GeneC", "resolve_entity": "GeneC"},
+            },
+            "answer": None,
+        }
+        return httpx.Response(200, json={
+            "choices": [{"message": {"content": json.dumps(output)}}]
+        })
+
+    model = VllmGraphModel(
+        base_url="http://model-host:8000/v1",
+        model="Qwen3",
+        client=httpx.Client(transport=httpx.MockTransport(handle)),
+    )
+    context = MainModelContext(
+        user_message="retrieve GeneC evidence",
+        fact_index=FactIndex(
+            context_version="facts.v1:test",
+            job_artifacts={"job-1": ["differential_gene_counts.csv"]},
+        ),
+        decision_ledger=DecisionLedger(context_version="ledger.v1:test"),
+        working_set=WorkingSet(context_version="working.v1:test"),
+    )
+
+    result = model(context)
+
+    assert result.decision.job_id == "job-1"
+    assert result.decision.result_query is not None
+    assert result.decision.result_query.artifact == "differential_gene_counts.csv"

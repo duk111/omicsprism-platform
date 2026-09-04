@@ -919,6 +919,31 @@ def _graph_state(
         if (job.owner_id or environment.user_id) == environment.user_id
     ]
     current_job = next((item for item in recent_jobs if item.job_id in focus_ids), None)
+    job_summary = None
+    if current_job is None and len(recent_jobs) == 1:
+        fixture = next(iter(environment.jobs.values()))
+        current_job = recent_jobs[0]
+        job_summary = JobSummary(
+            job_id=fixture.job_id,
+            owner_id=fixture.owner_id or environment.user_id,
+            status=fixture.status,
+            progress=100 if fixture.status == "succeeded" else 50,
+            progress_step=None,
+            error=None,
+            artifacts=fixture.artifacts,
+        )
+    elif current_job is not None:
+        fixture = environment.jobs.get(current_job.job_id)
+        if fixture is not None:
+            job_summary = JobSummary(
+                job_id=fixture.job_id,
+                owner_id=fixture.owner_id or environment.user_id,
+                status=fixture.status,
+                progress=100 if fixture.status == "succeeded" else 50,
+                progress_step=None,
+                error=None,
+                artifacts=fixture.artifacts,
+            )
     return GraphState.model_validate({
         "thread_id": f"eval-thread-{case.case_id}-{trace_id.rsplit('-', 1)[-1]}",
         "user_id": environment.user_id,
@@ -930,6 +955,7 @@ def _graph_state(
         "dataset_profiles": profile_refs,
         "recent_jobs": recent_jobs,
         "current_job": current_job,
+        "job_summary": job_summary,
         "focus": {
             "in_scope_job_ids": focus_ids,
             "resolved_entities": {},
