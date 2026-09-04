@@ -230,6 +230,34 @@ def test_list_jobs_request_forces_read_only_tool_before_answer() -> None:
     assert len(model.contexts) == 2
 
 
+def test_repeated_list_jobs_request_converges_from_tool_observation() -> None:
+    model = _Model([
+        MainModelOutput(decision=AgentDecision(action="answer"), answer="wrong"),
+        MainModelOutput(decision=AgentDecision(
+            action="tool_call", tool=ToolName.LIST_JOBS
+        )),
+    ])
+    requests: list[ToolCallRequest] = []
+
+    def execute(request: ToolCallRequest, _state: GraphState) -> dict[str, object]:
+        requests.append(request)
+        return {"rows": [{"job_id": "job-list", "status": "succeeded"}]}
+
+    result = build_agent_graph(
+        model,
+        lambda _request: [],
+        lambda _request: None,
+        lambda _request: None,
+        lambda _request: None,
+        tool_executor=execute,
+    ).invoke(_state(user_message="List available jobs."), _config())
+    state = GraphState.model_validate(result)
+
+    assert len(requests) == 1
+    assert state.decision is not None and state.decision.action == "answer"
+    assert state.response_text == "Available jobs: job-list (succeeded)"
+
+
 def test_step_budget_uses_separate_dimensions() -> None:
     budget = StepBudget(
         max_model_steps=3,

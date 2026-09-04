@@ -135,6 +135,41 @@ def main_node(
                     tool=ToolName.LIST_JOBS,
                     arguments={},
                 )
+            if (
+                decision.action == "tool_call"
+                and observations
+                and observations[-1].tool is decision.tool
+            ):
+                if decision.tool is ToolName.LIST_JOBS and _is_explicit_jobs_listing(context.user_message):
+                    response_text = _list_jobs_response(observations[-1].summary)
+                    return {
+                        "decision": AgentDecision(action="answer"),
+                        "response_text": response_text,
+                        "response_blocks": [text_block(response_text)],
+                        "grounded_answer": None,
+                        "step_budget": budget,
+                        "tool_observations": observations,
+                    }
+                if decision.tool is ToolName.QUERY_ARTIFACT and latest_evidence is not None:
+                    answer = pipeline.answer(latest_evidence, draft=None, repair=None)
+                    response_text = _grounded_answer_text(answer)
+                    return {
+                        "decision": AgentDecision(action="grounded_answer"),
+                        "grounded_answer": answer,
+                        "response_text": response_text,
+                        "response_blocks": [
+                            text_block(response_text),
+                            AgentEvidenceBlock(claims=answer.claims),
+                        ],
+                        "step_budget": budget,
+                        "tool_observations": observations,
+                    }
+                return _ask_user_update(
+                    "I received a repeated data request without a new result. "
+                    "Please clarify the operation you want to perform.",
+                    budget,
+                    observations,
+                )
             if decision.action == "grounded_answer":
                 if latest_evidence is None:
                     return _ask_user_update(
@@ -339,6 +374,27 @@ def _budget_question(observations: list[ToolObservation]) -> str:
     return _STEP_BUDGET_QUESTION
 
 
+def _list_jobs_response(summary: str) -> str:
+    try:
+        payload = json.loads(summary)
+    except (TypeError, ValueError):
+        return "I could not read the available job list."
+    if not isinstance(payload, dict):
+        return "I could not read the available job list."
+    rows = payload.get("rows") or payload.get("jobs") or []
+    if not isinstance(rows, list) or not rows:
+        return "No available jobs."
+    items: list[str] = []
+    for row in rows[:20]:
+        if not isinstance(row, dict):
+            continue
+        job_id = str(row.get("job_id") or "").strip()
+        status = str(row.get("status") or "unknown").strip()
+        if job_id:
+            items.append(f"{job_id} ({status})")
+    return "Available jobs: " + ", ".join(items) if items else "No available jobs."
+
+
 def _should_retry_followup(context: MainModelContext) -> bool:
     """Identify an explicit rewrite/correction of an existing answer."""
 
@@ -375,7 +431,11 @@ def _should_force_list_jobs(
         return False
     if decision.action == "tool_call" and decision.tool is ToolName.LIST_JOBS:
         return False
-    text = context.user_message.casefold().strip()
+    return _is_explicit_jobs_listing(context.user_message)
+
+
+def _is_explicit_jobs_listing(message: str) -> bool:
+    text = message.casefold().strip()
     markers = (
         "list available jobs",
         "list jobs",

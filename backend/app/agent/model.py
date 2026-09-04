@@ -121,6 +121,7 @@ class VllmGraphModel:
                 _normalize_legacy_action_fields(payload, context)
                 _normalize_result_query_artifact(payload, context)
                 _normalize_explicit_jobs_tool(payload, context)
+                _normalize_result_evidence_tool(payload)
                 _drop_irrelevant_action_fields(payload)
                 result = MainModelOutput.model_validate(payload)
             except (KeyError, IndexError, TypeError, ValueError, ValidationError) as exc:
@@ -317,6 +318,18 @@ def _normalize_explicit_jobs_tool(payload: object, context: MainModelContext) ->
     if decision.get("tool") != "list_jobs":
         decision["tool"] = "list_jobs"
         decision["arguments"] = {}
+
+
+def _normalize_result_evidence_tool(payload: object) -> None:
+    """Map the internal evidence tool alias to the graph-visible tool."""
+
+    if not isinstance(payload, dict):
+        return
+    decision = payload.get("decision")
+    if not isinstance(decision, dict) or decision.get("action") != "tool_call":
+        return
+    if decision.get("tool") == "query_result_evidence":
+        decision["tool"] = "query_artifact"
 
 
 def _is_explicit_jobs_listing(message: str) -> bool:
