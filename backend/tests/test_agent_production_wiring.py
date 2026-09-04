@@ -459,14 +459,20 @@ def test_vllm_graph_model_maps_internal_evidence_tool_alias() -> None:
     )
     context = MainModelContext(
         user_message="Show the result.",
-        fact_index=FactIndex(context_version="facts.v1:test"),
+        fact_index=FactIndex(
+            context_version="facts.v1:test",
+            job_artifacts={"job-1": ["results.csv"]},
+        ),
         decision_ledger=DecisionLedger(context_version="ledger.v1:test"),
         working_set=WorkingSet(context_version="working.v1:test"),
     )
 
     result = model(context)
 
-    assert result.decision.tool.value == "query_artifact"
+    assert result.decision.action == "query_result"
+    assert result.decision.job_id == "job-1"
+    assert result.decision.result_query is not None
+    assert result.decision.result_query.artifact == "results.csv"
 
 
 def test_main_output_schema_requires_answer_for_answer_action() -> None:

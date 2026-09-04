@@ -121,7 +121,8 @@ class VllmGraphModel:
                 _normalize_legacy_action_fields(payload, context)
                 _normalize_result_query_artifact(payload, context)
                 _normalize_explicit_jobs_tool(payload, context)
-                _normalize_result_evidence_tool(payload)
+                _normalize_result_evidence_tool(payload, context)
+                _normalize_explicit_business_actions(payload, context)
                 _drop_irrelevant_action_fields(payload)
                 result = MainModelOutput.model_validate(payload)
             except (KeyError, IndexError, TypeError, ValueError, ValidationError) as exc:
@@ -320,16 +321,115 @@ def _normalize_explicit_jobs_tool(payload: object, context: MainModelContext) ->
         decision["arguments"] = {}
 
 
-def _normalize_result_evidence_tool(payload: object) -> None:
-    """Map the internal evidence tool alias to the graph-visible tool."""
+def _normalize_result_evidence_tool(payload: object, context: MainModelContext) -> None:
+    """Map internal result tools back to the graph's result business action."""
 
     if not isinstance(payload, dict):
         return
     decision = payload.get("decision")
     if not isinstance(decision, dict) or decision.get("action") != "tool_call":
         return
-    if decision.get("tool") == "query_result_evidence":
-        decision["tool"] = "query_artifact"
+    if decision.get("tool") not in {"query_result_evidence", "query_artifact"}:
+        return
+    arguments = decision.get("arguments")
+    if not isinstance(arguments, dict):
+        arguments = {}
+    job_id = decision.get("job_id") or arguments.get("job_id")
+    if not isinstance(job_id, str) or not job_id.strip():
+        if len(context.fact_index.job_artifacts) == 1:
+            job_id = next(iter(context.fact_index.job_artifacts))
+    artifact = arguments.get("artifact")
+    if not isinstance(artifact, str) or not artifact.strip():
+        artifacts = context.fact_index.job_artifacts.get(job_id, []) if isinstance(job_id, str) else []
+        if len(artifacts) == 1:
+            artifact = artifacts[0]
+    if not isinstance(job_id, str) or not job_id.strip() or not isinstance(artifact, str) or not artifact.strip():
+        return
+    query: dict[str, object] = {"artifact": artifact.strip()}
+    for key in ("field_path", "filters", "sort", "limit", "resolve_entity"):
+        if key in arguments:
+            query[key] = arguments[key]
+    if "resolve_entity" not in query:
+        raw_query = arguments.get("query")
+        if isinstance(raw_query, str) and raw_query.strip():
+            query["resolve_entity"] = raw_query.strip()
+    decision["action"] = "query_result"
+    decision["job_id"] = job_id.strip()
+    decision["result_query"] = query
+    decision["tool"] = None
+    decision["arguments"] = {}
+
+
+def _normalize_explicit_business_actions(payload: object, context: MainModelContext) -> None:
+    """Recover obvious status/analysis actions that models emit as tools."""
+
+    if not isinstance(payload, dict):
+        return
+    decision = payload.get("decision")
+    if not isinstance(decision, dict) or decision.get("action") != "tool_call":
+        return
+    arguments = decision.get("arguments")
+    if not isinstance(arguments, dict):
+        arguments = {}
+    tool = decision.get("tool")
+    if tool == "get_jobs_status":
+        if not _is_explicit_job_status_request(context.user_message):
+            return
+        job_id = decision.get("job_id") or arguments.get("job_id")
+        decision["action"] = "get_job"
+        decision["job_id"] = job_id if isinstance(job_id, str) and job_id.strip() else None
+        decision["tool"] = None
+        decision["arguments"] = {}
+        return
+    if tool not in {"describe_metadata", "enumerate_contrasts", "list_jobs"}:
+        return
+    message = context.user_message.casefold()
+    analysis_type = next(
+        (name for name in ("DEG", "DEM", "GMA") if name.casefold() in message),
+        None,
+    )
+    if analysis_type is None or not _is_explicit_analysis_request(message):
+        return
+    proposal_values: dict[str, object] = {"analysis_type": analysis_type}
+    fields = context.fact_index.metadata_fields
+    levels = context.fact_index.metadata_levels
+    compare_field = next(
+        (field for field in fields if field in levels and field != "sample_id"),
+        None,
+    )
+    if compare_field:
+        proposal_values["compare_field"] = compare_field
+        known_levels = list(levels.get(compare_field, {}))
+        mentioned = [
+            level for level in known_levels
+            if level.casefold() in message
+        ]
+        if len(mentioned) >= 2:
+            proposal_values["tested_level"] = mentioned[0]
+            proposal_values["reference_level"] = mentioned[1]
+        proposal_values["scope"] = {"mode": "all"}
+    decision["action"] = "propose_plan" if "plan" in message else "run_analysis"
+    decision["analysis_type"] = analysis_type
+    decision["proposal"] = proposal_values
+    decision["tool"] = None
+    decision["arguments"] = {}
+
+
+def _is_explicit_analysis_request(message: str) -> bool:
+    return any(
+        marker in message
+        for marker in (
+            "run ", "analyze", "compare ", "plan ",
+            "execute", "perform ", "start ", "分析", "运行", "比较", "计划",
+        )
+    )
+
+
+def _is_explicit_job_status_request(message: str) -> bool:
+    text = message.casefold()
+    if any(marker in text for marker in ("unavailable", "internal", "attempt")):
+        return False
+    return any(marker in text for marker in ("status", "progress", "running", "queued", "job"))
 
 
 def _is_explicit_jobs_listing(message: str) -> bool:
