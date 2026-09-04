@@ -119,6 +119,7 @@ class VllmGraphModel:
                         extra={"event": "agent.model.raw_output_debug"},
                     )
                 _normalize_legacy_action_fields(payload, context)
+                _normalize_result_query_artifact(payload, context)
                 _drop_irrelevant_action_fields(payload)
                 result = MainModelOutput.model_validate(payload)
             except (KeyError, IndexError, TypeError, ValueError, ValidationError) as exc:
@@ -264,6 +265,38 @@ def _normalize_legacy_action_fields(payload: object, context: MainModelContext) 
             decision["result_query"] = query
 
 
+def _normalize_result_query_artifact(payload: object, context: MainModelContext) -> None:
+    """Correct an entity accidentally placed in ``result_query.artifact``.
+
+    This is limited to a Job with exactly one known artifact. Unknown names
+    containing an extension remain untouched so genuine artifact errors remain
+    visible to the result boundary.
+    """
+
+    if not isinstance(payload, dict):
+        return
+    decision = payload.get("decision")
+    if not isinstance(decision, dict) or decision.get("action") != "query_result":
+        return
+    query = decision.get("result_query")
+    if not isinstance(query, dict):
+        return
+    job_id = decision.get("job_id")
+    artifacts = (
+        context.fact_index.job_artifacts.get(job_id, [])
+        if isinstance(job_id, str)
+        else []
+    )
+    if len(artifacts) != 1:
+        return
+    artifact = query.get("artifact")
+    if not isinstance(artifact, str) or not artifact.strip() or artifact in artifacts:
+        return
+    if query.get("resolve_entity") is not None or "." not in artifact:
+        query["resolve_entity"] = query.get("resolve_entity") or artifact.strip()
+        query["artifact"] = artifacts[0]
+
+
 def _chat_completions_url(base_url: str) -> str:
     normalized = base_url.strip().rstrip("/")
     if normalized.endswith("/chat/completions"):
@@ -289,6 +322,10 @@ _GRAPH_MAIN_SYSTEM_PROMPT = (
     "decision.job_id. For query_result put job_id and a complete decision.result_query "
     "with artifact and, when applicable, resolve_entity. AnalysisProposal values are "
     "candidates only and must use observed dataset roles and explicit user language. "
+    "When the context has exactly one in-scope Job and one artifact, a request such "
+    "as 'Show GeneA result' or 'What is the GeneB fold change?' must use query_result "
+    "directly; do not ask for clarification. For a follow-up such as 'make it shorter' "
+    "or 'correct that', use recent_messages and answer the follow-up directly. "
     "A grounded_answer must cite the artifact, checksum, and row IDs from the latest "
     "successful query observation; never invent citations or numeric values. Never "
     "When action is answer, answer is required and must be a concise non-empty response. "
