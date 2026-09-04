@@ -120,6 +120,7 @@ class VllmGraphModel:
                     )
                 _normalize_legacy_action_fields(payload, context)
                 _normalize_result_query_artifact(payload, context)
+                _normalize_explicit_jobs_tool(payload, context)
                 _drop_irrelevant_action_fields(payload)
                 result = MainModelOutput.model_validate(payload)
             except (KeyError, IndexError, TypeError, ValueError, ValidationError) as exc:
@@ -295,6 +296,42 @@ def _normalize_result_query_artifact(payload: object, context: MainModelContext)
     if query.get("resolve_entity") is not None or "." not in artifact:
         query["resolve_entity"] = query.get("resolve_entity") or artifact.strip()
         query["artifact"] = artifacts[0]
+
+
+def _normalize_explicit_jobs_tool(payload: object, context: MainModelContext) -> None:
+    """Repair a malformed tool branch for an explicit jobs-list request.
+
+    Some instruct models emit ``action=tool_call`` with a null or invented
+    tool name despite the constrained schema. For this one unambiguous,
+    read-only intent, selecting ``list_jobs`` is deterministic and preserves
+    the capability boundary. Other malformed tool calls remain rejected.
+    """
+
+    if not isinstance(payload, dict):
+        return
+    decision = payload.get("decision")
+    if not isinstance(decision, dict) or decision.get("action") != "tool_call":
+        return
+    if not _is_explicit_jobs_listing(context.user_message):
+        return
+    if decision.get("tool") != "list_jobs":
+        decision["tool"] = "list_jobs"
+        decision["arguments"] = {}
+
+
+def _is_explicit_jobs_listing(message: str) -> bool:
+    text = message.casefold().strip()
+    markers = (
+        "list available jobs",
+        "list jobs",
+        "show available jobs",
+        "show jobs",
+        "available jobs",
+        "\u5217\u51fa\u4efb\u52a1",
+        "\u53ef\u7528\u4efb\u52a1",
+        "\u6709\u54ea\u4e9b\u4efb\u52a1",
+    )
+    return any(marker in text for marker in markers)
 
 
 def _chat_completions_url(base_url: str) -> str:

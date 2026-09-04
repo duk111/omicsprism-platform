@@ -404,6 +404,40 @@ def test_vllm_graph_model_uses_main_output_schema_and_returns_typed_output() -> 
     assert model.contexts == [context]
 
 
+@pytest.mark.parametrize("tool", [None, "get_jobs_status"])
+def test_vllm_graph_model_repairs_malformed_jobs_tool_for_explicit_listing(tool: str | None) -> None:
+    def handle(_request: httpx.Request) -> httpx.Response:
+        output = {
+            "decision": {
+                "action": "tool_call",
+                "tool": tool,
+                "arguments": {"unexpected": True},
+            },
+            "answer": None,
+        }
+        return httpx.Response(200, json={
+            "choices": [{"message": {"content": json.dumps(output)}}]
+        })
+
+    model = VllmGraphModel(
+        base_url="http://model-host:8000/v1",
+        model="Qwen3",
+        client=httpx.Client(transport=httpx.MockTransport(handle)),
+    )
+    context = MainModelContext(
+        user_message="List available jobs.",
+        fact_index=FactIndex(context_version="facts.v1:test"),
+        decision_ledger=DecisionLedger(context_version="ledger.v1:test"),
+        working_set=WorkingSet(context_version="working.v1:test"),
+    )
+
+    result = model(context)
+
+    assert result.decision.action == "tool_call"
+    assert result.decision.tool.value == "list_jobs"
+    assert result.decision.arguments == {}
+
+
 def test_main_output_schema_requires_answer_for_answer_action() -> None:
     schema = MainModelOutput.model_json_schema()
 
