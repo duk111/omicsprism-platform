@@ -9,6 +9,7 @@ from backend.app.agent.graph import (
     build_agent_graph,
 )
 from backend.app.agent.grounding import FALLBACK_TEXT
+from backend.app.agent.context import RecentMessage, RecentMessages
 from backend.app.agent.readonly_tools import MetadataDescription
 from backend.app.agent.schemas import (
     Citation,
@@ -129,6 +130,104 @@ def test_model_failure_retry_consumes_model_steps_and_then_continues() -> None:
     assert len(model.contexts) == 2
     assert state.response_text == "recovered"
     assert state.step_budget.used_model_steps == 2
+
+
+def test_explicit_followup_retries_an_initial_clarification() -> None:
+    model = _Model([
+        MainModelOutput(decision=AgentDecision(
+            action="ask_user", question="Which dataset do you mean?"
+        )),
+        MainModelOutput(
+            decision=AgentDecision(action="answer"),
+            answer="It compares abundance between groups.",
+        ),
+    ])
+    result = build_agent_graph(
+        model,
+        lambda _request: [],
+        lambda _request: None,
+        lambda _request: None,
+        lambda _request: None,
+    ).invoke(
+        _state(
+            user_message="Use a concise explanation instead.",
+            recent_messages=RecentMessages(
+                context_version="messages.v1:test",
+                messages=[RecentMessage(
+                    role="assistant", turn_id="previous", text="Differential expression compares feature abundance."
+                )],
+            ),
+        ),
+        _config(),
+    )
+    state = GraphState.model_validate(result)
+
+    assert state.decision is not None and state.decision.action == "answer"
+    assert state.response_text == "It compares abundance between groups."
+    assert len(model.contexts) == 2
+    assert "revise the previous assistant answer" in (model.contexts[1].conversation_summary or "")
+
+
+def test_genuine_clarification_with_history_is_not_retried() -> None:
+    model = _Model([
+        MainModelOutput(decision=AgentDecision(
+            action="ask_user", question="Which dataset do you mean?"
+        )),
+    ])
+    result = build_agent_graph(
+        model,
+        lambda _request: [],
+        lambda _request: None,
+        lambda _request: None,
+        lambda _request: None,
+    ).invoke(
+        _state(
+            user_message="Which dataset should I use?",
+            recent_messages=RecentMessages(
+                context_version="messages.v1:test",
+                messages=[RecentMessage(
+                    role="assistant", turn_id="previous", text="I can help with an analysis."
+                )],
+            ),
+        ),
+        _config(),
+    )
+    state = GraphState.model_validate(result)
+
+    assert state.decision is not None and state.decision.action == "ask_user"
+    assert len(model.contexts) == 1
+
+
+def test_list_jobs_request_forces_read_only_tool_before_answer() -> None:
+    model = _Model([
+        MainModelOutput(
+            decision=AgentDecision(action="answer"),
+            answer="There are no available jobs.",
+        ),
+        MainModelOutput(
+            decision=AgentDecision(action="answer"),
+            answer="One job is available.",
+        ),
+    ])
+    requests: list[ToolCallRequest] = []
+
+    def execute(request: ToolCallRequest, _state: GraphState) -> dict[str, object]:
+        requests.append(request)
+        return {"jobs": [{"job_id": "job-list", "status": "succeeded"}]}
+
+    result = build_agent_graph(
+        model,
+        lambda _request: [],
+        lambda _request: None,
+        lambda _request: None,
+        lambda _request: None,
+        tool_executor=execute,
+    ).invoke(_state(user_message="List available jobs."), _config())
+    state = GraphState.model_validate(result)
+
+    assert requests and requests[0].tool.value == "list_jobs"
+    assert state.response_text == "One job is available."
+    assert len(model.contexts) == 2
 
 
 def test_step_budget_uses_separate_dimensions() -> None:

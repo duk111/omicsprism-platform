@@ -35,6 +35,11 @@ _MODEL_RETRY_INSTRUCTION = (
     "必须填写非空 answer；如果 action=ask_user，必须填写非空 question；"
     "其他 action 的 answer 必须为 null。"
 )
+_FOLLOWUP_RETRY_INSTRUCTION = (
+    "The user is explicitly asking to revise the previous assistant answer. "
+    "Use recent_messages, answer the requested revision directly, and do not ask "
+    "for dataset details unless the user introduced a genuinely new missing fact."
+)
 
 
 LOG = logging.getLogger("omicsprism.platform.agent_main")
@@ -73,10 +78,15 @@ def main_node(
                     attempt_context = context
                     if _attempt:
                         summary = context.conversation_summary or ""
+                        retry_instruction = (
+                            _FOLLOWUP_RETRY_INSTRUCTION
+                            if _should_retry_followup(context)
+                            else _MODEL_RETRY_INSTRUCTION
+                        )
                         attempt_context = context.model_copy(update={
                             "conversation_summary": (
-                                f"{summary}\n{_MODEL_RETRY_INSTRUCTION}"
-                                if summary else _MODEL_RETRY_INSTRUCTION
+                                f"{summary}\n{retry_instruction}"
+                                if summary else retry_instruction
                             )[:1200],
                         })
                     candidate = MainModelOutput.model_validate(model(attempt_context))
@@ -93,12 +103,38 @@ def main_node(
                     continue
                 usage = getattr(model, "last_usage", None)
                 budget = _advance_model_budget(budget, usage)
+                if (
+                    _attempt == 0
+                    and candidate.decision.action == "ask_user"
+                    and _should_retry_followup(context)
+                ):
+                    # A clarification is a valid schema response, but is a
+                    # semantic mismatch for an explicit rewrite of the prior
+                    # answer. Give the model one bounded correction attempt.
+                    LOG.info(
+                        "retrying explicit answer follow-up after model clarification",
+                        extra={"event": "agent.model.followup_retry"},
+                    )
+                    continue
                 output = candidate
                 break
             if output is None:
                 return _ask_user_update(_MODEL_FALLBACK_QUESTION, budget, observations)
 
             decision = output.decision
+            if (
+                not any(observation.tool is ToolName.LIST_JOBS for observation in observations)
+                and _should_force_list_jobs(context, decision, tool_executor)
+            ):
+                LOG.info(
+                    "forcing list_jobs tool for explicit jobs listing request",
+                    extra={"event": "agent.routing.list_jobs_guard"},
+                )
+                decision = AgentDecision(
+                    action="tool_call",
+                    tool=ToolName.LIST_JOBS,
+                    arguments={},
+                )
             if decision.action == "grounded_answer":
                 if latest_evidence is None:
                     return _ask_user_update(
@@ -301,3 +337,53 @@ def _budget_question(observations: list[ToolObservation]) -> str:
             "execution budget. Please confirm the remaining operation or narrow the request."
         )
     return _STEP_BUDGET_QUESTION
+
+
+def _should_retry_followup(context: MainModelContext) -> bool:
+    """Identify an explicit rewrite/correction of an existing answer."""
+
+    if not any(message.role == "assistant" for message in context.recent_messages.messages):
+        return False
+    text = context.user_message.casefold().strip()
+    markers = (
+        "concise",
+        "shorter",
+        "plain language",
+        "correct that",
+        "clarify that",
+        "use plain",
+        "instead",
+        "mention ",
+        "caveat",
+        "mitigation",
+        "paired groups",
+        "\u6539\u6b63",
+        "\u7b80\u77ed",
+        "\u901a\u4fd7",
+    )
+    return any(marker in text for marker in markers)
+
+
+def _should_force_list_jobs(
+    context: MainModelContext,
+    decision: AgentDecision,
+    tool_executor: ToolExecutor | None,
+) -> bool:
+    """Require the read-only jobs tool for an explicit list-jobs request."""
+
+    if tool_executor is None:
+        return False
+    if decision.action == "tool_call" and decision.tool is ToolName.LIST_JOBS:
+        return False
+    text = context.user_message.casefold().strip()
+    markers = (
+        "list available jobs",
+        "list jobs",
+        "show available jobs",
+        "show jobs",
+        "available jobs",
+        "\u5217\u51fa\u4efb\u52a1",
+        "\u53ef\u7528\u4efb\u52a1",
+        "\u6709\u54ea\u4e9b\u4efb\u52a1",
+    )
+    return any(marker in text for marker in markers)
