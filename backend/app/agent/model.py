@@ -118,6 +118,7 @@ class VllmGraphModel:
                         raw[:4000],
                         extra={"event": "agent.model.raw_output_debug"},
                     )
+                _normalize_legacy_action_fields(payload, context)
                 _drop_irrelevant_action_fields(payload)
                 result = MainModelOutput.model_validate(payload)
             except (KeyError, IndexError, TypeError, ValueError, ValidationError) as exc:
@@ -199,6 +200,70 @@ def _drop_irrelevant_action_fields(payload: object) -> None:
         payload["answer"] = None
 
 
+def _normalize_legacy_action_fields(payload: object, context: MainModelContext) -> None:
+    """Translate bounded legacy argument shapes into the typed action fields.
+
+    Some instruct models follow the generic ``arguments`` object even when an
+    action has a dedicated typed field. Only known scalar keys are copied, and
+    the normal Pydantic/domain validation still runs afterwards.
+    """
+
+    if not isinstance(payload, dict):
+        return
+    decision = payload.get("decision")
+    if not isinstance(decision, dict):
+        return
+    arguments = decision.get("arguments")
+    if not isinstance(arguments, dict):
+        return
+    action = decision.get("action")
+
+    if action in {"inspect_dataset", "run_analysis", "propose_plan"}:
+        proposal = decision.get("proposal")
+        if proposal is None:
+            proposal_values: dict[str, object] = {}
+            for key in (
+                "analysis_type",
+                "compare_field",
+                "tested_level",
+                "reference_level",
+                "scope",
+                "requested_params",
+            ):
+                if key in arguments:
+                    proposal_values[key] = arguments[key]
+            if proposal_values:
+                decision["proposal"] = proposal_values
+
+    if action in {"get_job", "query_result"} and not decision.get("job_id"):
+        job_id = arguments.get("job_id")
+        if isinstance(job_id, str) and job_id.strip():
+            decision["job_id"] = job_id.strip()
+
+    if action == "query_result" and decision.get("result_query") is None:
+        artifact = arguments.get("artifact")
+        job_id = decision.get("job_id")
+        if not isinstance(artifact, str) or not artifact.strip():
+            artifacts = context.fact_index.job_artifacts.get(job_id, []) if isinstance(job_id, str) else []
+            if len(artifacts) == 1:
+                artifact = artifacts[0]
+        if isinstance(artifact, str) and artifact.strip():
+            query: dict[str, object] = {"artifact": artifact.strip()}
+            for source, target in (
+                ("field_path", "field_path"),
+                ("filters", "filters"),
+                ("sort", "sort"),
+                ("limit", "limit"),
+                ("resolve_entity", "resolve_entity"),
+            ):
+                if source in arguments:
+                    query[target] = arguments[source]
+            raw_query = arguments.get("query")
+            if isinstance(raw_query, str) and raw_query.strip() and "resolve_entity" not in query:
+                query["resolve_entity"] = raw_query.strip()
+            decision["result_query"] = query
+
+
 def _chat_completions_url(base_url: str) -> str:
     normalized = base_url.strip().rstrip("/")
     if normalized.endswith("/chat/completions"):
@@ -216,7 +281,13 @@ _GRAPH_MAIN_SYSTEM_PROMPT = (
     "deciding. Use answer, grounded_answer, or ask_user as terminal LoopExit actions. "
     "Route general knowledge to answer; dataset inspection or DEG/DEM/GMA requests "
     "to inspect_dataset, run_analysis, or propose_plan; existing Job status "
-    "or evidence questions to get_job or query_result. AnalysisProposal values are "
+    "or evidence questions to get_job or query_result. Do not put action-specific "
+    "fields in decision.arguments: arguments is only for tool_call. For analysis "
+    "actions put candidates in decision.proposal, for example run_analysis uses "
+    "{analysis_type: 'DEG', compare_field: 'treatment', tested_level: 'salt', "
+    "reference_level: 'control', scope: {mode: 'all'}}. For get_job put the id in "
+    "decision.job_id. For query_result put job_id and a complete decision.result_query "
+    "with artifact and, when applicable, resolve_entity. AnalysisProposal values are "
     "candidates only and must use observed dataset roles and explicit user language. "
     "A grounded_answer must cite the artifact, checksum, and row IDs from the latest "
     "successful query observation; never invent citations or numeric values. Never "

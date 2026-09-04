@@ -490,3 +490,78 @@ def test_vllm_graph_model_ignores_spurious_action_fields() -> None:
     assert result.decision.job_id is None
     assert result.decision.question is None
     assert result.decision.proposal is None
+
+
+def test_vllm_graph_model_normalizes_bounded_legacy_analysis_arguments() -> None:
+    def handle(_request: httpx.Request) -> httpx.Response:
+        output = {
+            "decision": {
+                "action": "run_analysis",
+                "analysis_type": "DEG",
+                "arguments": {
+                    "compare_field": "treatment",
+                    "tested_level": "salt",
+                    "reference_level": "control",
+                    "scope": {"mode": "all"},
+                },
+            },
+            "answer": None,
+        }
+        return httpx.Response(200, json={
+            "choices": [{"message": {"content": json.dumps(output)}}]
+        })
+
+    model = VllmGraphModel(
+        base_url="http://model-host:8000/v1",
+        model="Qwen3",
+        client=httpx.Client(transport=httpx.MockTransport(handle)),
+    )
+    context = MainModelContext(
+        user_message="run DEG",
+        fact_index=FactIndex(context_version="facts.v1:test"),
+        decision_ledger=DecisionLedger(context_version="ledger.v1:test"),
+        working_set=WorkingSet(context_version="working.v1:test"),
+    )
+
+    result = model(context)
+
+    assert result.decision.proposal is not None
+    assert result.decision.proposal.compare_field == "treatment"
+    assert result.decision.proposal.scope.mode == "all"
+    assert result.decision.arguments == {}
+
+
+def test_vllm_graph_model_normalizes_query_result_arguments_from_single_artifact() -> None:
+    def handle(_request: httpx.Request) -> httpx.Response:
+        output = {
+            "decision": {
+                "action": "query_result",
+                "arguments": {"job_id": "job-1", "query": "GeneA"},
+            },
+            "answer": None,
+        }
+        return httpx.Response(200, json={
+            "choices": [{"message": {"content": json.dumps(output)}}]
+        })
+
+    model = VllmGraphModel(
+        base_url="http://model-host:8000/v1",
+        model="Qwen3",
+        client=httpx.Client(transport=httpx.MockTransport(handle)),
+    )
+    context = MainModelContext(
+        user_message="show GeneA",
+        fact_index=FactIndex(
+            context_version="facts.v1:test",
+            job_artifacts={"job-1": ["differential_gene_counts.csv"]},
+        ),
+        decision_ledger=DecisionLedger(context_version="ledger.v1:test"),
+        working_set=WorkingSet(context_version="working.v1:test"),
+    )
+
+    result = model(context)
+
+    assert result.decision.job_id == "job-1"
+    assert result.decision.result_query is not None
+    assert result.decision.result_query.artifact == "differential_gene_counts.csv"
+    assert result.decision.result_query.resolve_entity == "GeneA"
