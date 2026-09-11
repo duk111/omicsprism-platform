@@ -17,9 +17,6 @@ omicsprism-platform/
 For the current cloud/compute handoff and deployment contract, see
 [`AGENT_RUNTIME_DEPLOYMENT.md`](AGENT_RUNTIME_DEPLOYMENT.md).
 
-For the field-level inventory of structured figure artifacts, see
-[`docs/figure_json_inventory.md`](docs/figure_json_inventory.md).
-
 The current production split between the cloud API and compute-server Agent
 runtime is recorded in [`AGENT_RUNTIME_DEPLOYMENT.md`](AGENT_RUNTIME_DEPLOYMENT.md)
 and [`ADR_0001_AGENT_RUNTIME_BOUNDARY.md`](ADR_0001_AGENT_RUNTIME_BOUNDARY.md).
@@ -166,7 +163,7 @@ docker compose down -v
 
 Deployment, rollback, cross-user isolation, and model-off verification steps
 are recorded in [`AGENT_RUNTIME_DEPLOYMENT.md`](AGENT_RUNTIME_DEPLOYMENT.md)
-and [`docs/test_results.md`](docs/test_results.md).
+and [`THREAT_MODEL.md`](THREAT_MODEL.md).
 
 ## Database migration
 

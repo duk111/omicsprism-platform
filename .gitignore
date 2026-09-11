@@ -22,6 +22,7 @@ frontend/vite.config.js
 frontend/vite-dev.log
 frontend/vite-dev.err.log
 runs/
+reports/*.json
 auth_data/
 storage/
 *-server.log
