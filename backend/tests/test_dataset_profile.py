@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from backend.app.agent.dataset_profile import MatrixProfile, MetadataProfile
+from backend.app.agent.dataset_profile import GroupProfile, MatrixProfile, MetadataProfile
 from backend.app.agent.tools import AgentInputFile, AgentToolRuntime
 
 
@@ -72,6 +72,20 @@ def test_metadata_profile_keeps_multiple_factors_and_levels() -> None:
         ["s3", "salt", "b1"],
         ["s4", "salt", "b2"],
     ]
+
+
+def test_group_profile_keeps_fixed_group_levels_separate_from_metadata() -> None:
+    profile = _runtime((
+        "group",
+        "group.csv",
+        b"sample_id,group1,group2\ns1,control,young\ns2,control,old\ns3,salt,young\n",
+    )).inspect_dataset()[0]
+
+    assert isinstance(profile, GroupProfile)
+    assert profile.role == "group"
+    assert profile.group1_levels == {"control": 2, "salt": 1}
+    assert profile.group2_levels == {"young": 2, "old": 1}
+    assert not isinstance(profile, MetadataProfile)
 
 
 def test_exact_alignment_is_reported_between_matrix_and_metadata() -> None:

@@ -136,6 +136,10 @@ def test_step_budget_is_bounded() -> None:
         StepBudget(max_model_steps=2, used_model_steps=3)
 
 
+def test_step_budget_defaults_to_a_loop_safety_valve() -> None:
+    assert StepBudget().max_tokens == 16384
+
+
 def test_pending_interrupt_is_discriminated_and_typed() -> None:
     clarification = ClarificationPayload(
         missing=[{"field": "compare_field", "options": ["condition"], "reason": "Choose a factor"}],

@@ -1,7 +1,7 @@
 """OmicsPrism Copilot 的受控 agent 运行时契约。"""
 
 from .schemas import GroundedAnswer, RunState, ToolResult, VerifierVerdict
-from .dataset_profile import DatasetProfile, MatrixProfile, MetadataProfile, build_dataset_profiles
+from .dataset_profile import DatasetProfile, GroupProfile, MatrixProfile, MetadataProfile, build_dataset_profiles
 from .fingerprint import compute_input_fingerprint
 from .param_resolver import (
     AnalysisParams,
@@ -69,6 +69,7 @@ __all__ = [
     "DatasetProfile",
     "MatrixProfile",
     "MetadataProfile",
+    "GroupProfile",
     "build_dataset_profiles",
     "AnalysisParams",
     "AnalysisProposal",

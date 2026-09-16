@@ -9,7 +9,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 
 MatrixRole = Literal["counts", "metabs", "transcriptome", "metabolome"]
-MetadataRole = Literal["metadata", "group"]
+MetadataRole = Literal["metadata"]
 NumericType = Literal["integer_counts", "continuous_abundance", "mixed"]
 AlignmentStatus = Literal["exact", "subset", "mismatch"]
 
@@ -30,7 +30,7 @@ class MatrixProfile(BaseModel):
 
 
 class MetadataProfile(BaseModel):
-    """Bounded facts about metadata/group rows and their sample alignment."""
+    """Bounded facts about dynamic metadata rows and sample alignment."""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -42,7 +42,24 @@ class MetadataProfile(BaseModel):
     alignment: dict[str, AlignmentStatus]
 
 
-DatasetProfile = Annotated[Union[MatrixProfile, MetadataProfile], Field(discriminator="role")]
+class GroupProfile(BaseModel):
+    """Bounded facts about the fixed sample_id/group1/group2 table."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    role: Literal["group"]
+    columns: list[str]
+    group1_levels: dict[str, int]
+    group2_levels: dict[str, int]
+    sample_ids: list[str]
+    rows: list[list[str]] | None
+    alignment: dict[str, AlignmentStatus]
+
+
+DatasetProfile = Annotated[
+    Union[MatrixProfile, MetadataProfile, GroupProfile],
+    Field(discriminator="role"),
+]
 
 
 def build_dataset_profiles(
@@ -75,8 +92,10 @@ def build_dataset_profiles(
     for field, row, headers, sample_ids in inspected:
         if field in matrix_ids:
             profiles.append(_matrix_profile(field, row, headers, sample_ids))
-        elif field in {"metadata", "group"}:
+        elif field == "metadata":
             profiles.append(_metadata_profile(field, row, sample_ids, matrix_ids))
+        elif field == "group":
+            profiles.append(_group_profile(field, row, sample_ids, matrix_ids))
     return profiles
 
 
@@ -135,9 +154,43 @@ def _metadata_profile(
         for matrix_field, other_ids in matrix_ids.items()
     }
     return MetadataProfile(
-        role=field,  # type: ignore[arg-type]
+        role="metadata",
         columns=[str(column) for column in list(row.get("columns") or [])],
         levels=levels,
+        sample_ids=sample_ids,
+        rows=rows,
+        alignment=alignment,
+    )
+
+
+def _group_profile(
+    field: str,
+    row: Mapping[str, object],
+    sample_ids: list[str],
+    matrix_ids: Mapping[str, list[str]],
+) -> GroupProfile:
+    def _levels(name: str) -> dict[str, int]:
+        raw_values = row.get(name)
+        if not isinstance(raw_values, Mapping):
+            return {}
+        return {
+            str(value): max(0, int(count)) for value, count in raw_values.items()
+        }
+    raw_rows = row.get("raw_rows")
+    rows = (
+        [[str(cell) for cell in raw_row] for raw_row in raw_rows]
+        if isinstance(raw_rows, list)
+        else None
+    )
+    alignment = {
+        matrix_field: _alignment_status(sample_ids, other_ids)
+        for matrix_field, other_ids in matrix_ids.items()
+    }
+    return GroupProfile(
+        role="group",
+        columns=[str(column) for column in list(row.get("columns") or [])],
+        group1_levels=_levels("group1_levels"),
+        group2_levels=_levels("group2_levels"),
         sample_ids=sample_ids,
         rows=rows,
         alignment=alignment,

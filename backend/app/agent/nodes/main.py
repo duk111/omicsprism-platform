@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+from copy import deepcopy
 from time import perf_counter
 from collections.abc import Callable
 from typing import Literal
@@ -43,6 +44,7 @@ _FOLLOWUP_RETRY_INSTRUCTION = (
 
 
 LOG = logging.getLogger("omicsprism.platform.agent_main")
+_TOOL_SUMMARY_MAX_CHARS = 3900
 
 
 def main_node(
@@ -54,6 +56,8 @@ def main_node(
         budget = state.step_budget
         observations = list(state.tool_observations)
         working_state = state
+        repetition_guidance: str | None = None
+        terminal_only = False
         pipeline = GroundedAnswerPipeline()
         latest_evidence: ToolResult | None = None
         while True:
@@ -67,6 +71,10 @@ def main_node(
                     observations,
                 )
             context = _main_context(working_state)
+            if repetition_guidance is not None:
+                context = context.model_copy(update={
+                    "tool_repetition_guidance": repetition_guidance,
+                })
             output = None
             for _attempt in range(2):
                 if (
@@ -103,6 +111,18 @@ def main_node(
                     continue
                 usage = getattr(model, "last_usage", None)
                 budget = _advance_model_budget(budget, usage)
+                if terminal_only and candidate.decision.action not in {
+                    "answer",
+                    "ask_user",
+                    "grounded_answer",
+                }:
+                    LOG.warning(
+                        "model selected a non-terminal action after repeated deterministic result",
+                        extra={"event": "agent.routing.repeated_tool_blocked"},
+                    )
+                    if _attempt == 0:
+                        continue
+                    return _ask_user_update(_MODEL_FALLBACK_QUESTION, budget, observations)
                 if (
                     _attempt == 0
                     and candidate.decision.action == "ask_user"
@@ -139,7 +159,54 @@ def main_node(
                 decision.action == "tool_call"
                 and observations
                 and observations[-1].tool is decision.tool
+                and observations[-1].arguments_hash == _arguments_hash(decision.arguments)
             ):
+                if observations[-1].retryable and observations[-1].retry_count == 0:
+                    if tool_executor is None:
+                        return _ask_user_update(
+                            "I cannot access the requested read-only data tool in this runtime.",
+                            budget,
+                            observations,
+                        )
+                    if budget.used_tool_calls >= budget.max_tool_calls:
+                        return _ask_user_update(
+                            _budget_question(observations),
+                            budget,
+                            observations,
+                        )
+                    request = ToolCallRequest(
+                        tool=decision.tool,
+                        arguments=decision.arguments,
+                    )
+                    summary, tool_outcome, retryable, tool_error_code, evidence = _execute_tool_request(
+                        request,
+                        working_state,
+                        tool_executor,
+                        trace_recorder,
+                    )
+                    if evidence is not None:
+                        latest_evidence = evidence
+                    observations.append(ToolObservation(
+                        tool=request.tool,
+                        summary=summary,
+                        arguments_hash=_arguments_hash(request.arguments),
+                        outcome=tool_outcome,
+                        retryable=retryable,
+                        retry_count=1,
+                    ))
+                    observations = observations[-12:]
+                    budget = _advance_tool_budget(budget)
+                    if budget.used_tool_calls >= budget.max_tool_calls:
+                        return _ask_user_update(
+                            _budget_question(observations),
+                            budget,
+                            observations,
+                        )
+                    working_state = state.model_copy(update={
+                        "tool_observations": observations,
+                        "step_budget": budget,
+                    })
+                    continue
                 if decision.tool is ToolName.LIST_JOBS and _is_explicit_jobs_listing(context.user_message):
                     response_text = _list_jobs_response(observations[-1].summary)
                     return {
@@ -179,12 +246,12 @@ def main_node(
                         "step_budget": budget,
                         "tool_observations": observations,
                     }
-                return _ask_user_update(
-                    "I received a repeated data request without a new result. "
-                    "Please clarify the operation you want to perform.",
-                    budget,
-                    observations,
+                repetition_guidance = _repeated_tool_guidance(
+                    decision.tool,
+                    observations[-1].summary,
                 )
+                terminal_only = True
+                continue
             if decision.action == "grounded_answer":
                 if latest_evidence is None:
                     return _ask_user_update(
@@ -236,29 +303,22 @@ def main_node(
                 tool=decision.tool,
                 arguments=decision.arguments,
             )
-            tool_started = perf_counter()
-            tool_outcome = "ok"
-            tool_error_code: str | None = None
-            try:
-                result = tool_executor(request, working_state)
-                summary = _serialize_tool_result(result)
-                evidence = _as_grounding_evidence(result)
-                if evidence is not None:
-                    latest_evidence = evidence
-            except Exception as exc:
-                summary = "tool execution failed"
-                tool_outcome = "failed"
-                tool_error_code = type(exc).__name__
-            if trace_recorder is not None:
-                trace_recorder.tool_call(
-                    context=working_state,
-                    tool_name=request.tool.value,
-                    tool_schema_hash=stable_hash(ToolCallRequest.model_json_schema()),
-                    latency_ms=round((perf_counter() - tool_started) * 1000, 3),
-                    outcome=tool_outcome,
-                    error_code=tool_error_code,
-                )
-            observations.append(ToolObservation(tool=request.tool, summary=summary))
+            summary, tool_outcome, retryable, tool_error_code, evidence = _execute_tool_request(
+                request,
+                working_state,
+                tool_executor,
+                trace_recorder,
+            )
+            if evidence is not None:
+                latest_evidence = evidence
+            observations.append(ToolObservation(
+                tool=request.tool,
+                summary=summary,
+                arguments_hash=_arguments_hash(request.arguments),
+                outcome=tool_outcome,
+                retryable=retryable,
+                retry_count=0,
+            ))
             observations = observations[-12:]
             budget = _advance_tool_budget(budget)
             if budget.used_tool_calls >= budget.max_tool_calls:
@@ -287,6 +347,87 @@ def route_after_main(state: GraphState) -> Literal["analysis", "result_qa", "end
 
 def _main_context(state: GraphState) -> MainModelContext:
     return ContextAssembler().assemble(state)
+
+
+def _arguments_hash(arguments: dict[str, object]) -> str:
+    return stable_hash(arguments)
+
+
+def _repeated_tool_guidance(tool: ToolName, summary: str) -> str:
+    return (
+        f"You already called {tool.value} with the same arguments. Do not call any tool "
+        "again. Use the complete result below to answer the user directly, or ask the "
+        "user to clarify a genuinely missing detail.\n"
+        f"Complete tool result summary:\n{summary}"
+    )
+
+
+def _execute_tool_request(
+    request: ToolCallRequest,
+    state: GraphState,
+    tool_executor: ToolExecutor,
+    trace_recorder: TraceRecorder | None,
+) -> tuple[str, Literal["ok", "failed"], bool, str | None, ToolResult | None]:
+    tool_started = perf_counter()
+    tool_outcome: Literal["ok", "failed"] = "ok"
+    retryable = False
+    tool_error_code: str | None = None
+    evidence: ToolResult | None = None
+    try:
+        result = tool_executor(request, state)
+        summary = _serialize_tool_result(result)
+        evidence = _as_grounding_evidence(result)
+        if isinstance(result, dict):
+            result_ok = result.get("ok", True)
+            result_error_code = result.get("error_code")
+        else:
+            result_ok = getattr(result, "ok", True)
+            result_error_code = getattr(result, "error_code", None)
+        if result_ok is False:
+            tool_outcome = "failed"
+            retryable = _is_transient_error_code(result_error_code)
+            if isinstance(result_error_code, str) and result_error_code:
+                tool_error_code = result_error_code
+    except Exception as exc:
+        summary = "tool execution failed"
+        tool_outcome = "failed"
+        retryable = _is_transient_tool_error(exc)
+        tool_error_code = type(exc).__name__
+    if trace_recorder is not None:
+        trace_recorder.tool_call(
+            context=state,
+            tool_name=request.tool.value,
+            tool_schema_hash=stable_hash(ToolCallRequest.model_json_schema()),
+            latency_ms=round((perf_counter() - tool_started) * 1000, 3),
+            outcome=tool_outcome,
+            error_code=tool_error_code,
+        )
+    return summary, tool_outcome, retryable, tool_error_code, evidence
+
+
+def _is_transient_tool_error(exc: Exception) -> bool:
+    status_code = getattr(exc, "status_code", None)
+    response = getattr(exc, "response", None)
+    if status_code is None and response is not None:
+        status_code = getattr(response, "status_code", None)
+    if isinstance(status_code, int) and 500 <= status_code <= 599:
+        return True
+    if isinstance(exc, (TimeoutError, ConnectionError)):
+        return True
+    name = type(exc).__name__.casefold()
+    return "timeout" in name or "connect" in name
+
+
+def _is_transient_error_code(error_code: object) -> bool:
+    if not isinstance(error_code, str):
+        return False
+    normalized = error_code.casefold()
+    return (
+        "timeout" in normalized
+        or "temporar" in normalized
+        or "unavailable" in normalized
+        or any(code in normalized for code in ("500", "502", "503", "504", "429"))
+    )
 
 
 def _ask_user_update(
@@ -375,9 +516,79 @@ def _serialize_tool_result(result: object) -> str:
     if hasattr(result, "model_dump"):
         payload = result.model_dump(mode="json")
     else:
-        payload = result
-    text = json.dumps(payload, ensure_ascii=False, separators=(",", ":"), default=str)
-    return text[:3900] or "{}"
+        payload = deepcopy(result)
+    text = _json_compact(payload)
+    if len(text) <= _TOOL_SUMMARY_MAX_CHARS:
+        return text or "{}"
+
+    bounded = deepcopy(payload)
+    _truncate_payload_lists(bounded)
+    text = _json_compact(bounded)
+    if len(text) <= _TOOL_SUMMARY_MAX_CHARS:
+        return text or "{}"
+
+    LOG.error(
+        "tool result exceeded the serialized summary limit after structural truncation",
+        extra={
+            "event": "agent.tool.summary_too_large",
+            "summary_chars": len(text),
+            "summary_limit": _TOOL_SUMMARY_MAX_CHARS,
+        },
+    )
+    return _json_compact({
+        "ok": False,
+        "truncated": True,
+        "error_code": "tool_result_summary_too_large",
+    })
+
+
+def _json_compact(payload: object) -> str:
+    return json.dumps(payload, ensure_ascii=False, separators=(",", ":"), default=str)
+
+
+def _truncate_payload_lists(payload: object) -> bool:
+    """Shrink list-heavy result payloads before serialization, preserving JSON."""
+
+    if not isinstance(payload, (dict, list)):
+        return False
+    changed = False
+    while len(_json_compact(payload)) > _TOOL_SUMMARY_MAX_CHARS:
+        targets = _list_targets(payload)
+        if not targets:
+            break
+        values, owner = max(
+            targets,
+            key=lambda item: (len(item[0]), len(_json_compact(item[0]))),
+        )
+        new_length = max(0, len(values) // 2)
+        if new_length == len(values):
+            new_length -= 1
+        del values[new_length:]
+        changed = True
+        if isinstance(owner, dict):
+            if isinstance(owner.get("truncated"), bool):
+                owner["truncated"] = True
+            elif isinstance(payload, dict):
+                payload["truncated"] = True
+    return changed
+
+
+def _list_targets(node: object, owner: dict[str, object] | None = None) -> list[
+    tuple[list[object], dict[str, object] | None]
+]:
+    targets: list[tuple[list[object], dict[str, object] | None]] = []
+    if isinstance(node, dict):
+        for value in node.values():
+            if isinstance(value, list) and value:
+                targets.append((value, node))
+                targets.extend(_list_targets(value, node))
+            elif isinstance(value, dict):
+                targets.extend(_list_targets(value, node))
+    elif isinstance(node, list):
+        for value in node:
+            if isinstance(value, (dict, list)):
+                targets.extend(_list_targets(value, owner))
+    return targets
 
 
 def _budget_question(observations: list[ToolObservation]) -> str:
@@ -410,6 +621,8 @@ def _list_jobs_response(summary: str) -> str:
     return "Available jobs: " + ", ".join(items) if items else "No available jobs."
 
 
+# TODO(P0-3): Replace schema-coupled Python summaries with model-generated
+# responses from the bounded tool summary, as the repetition path already does.
 def _read_only_observation_response(tool: ToolName, summary: str) -> str:
     try:
         payload = json.loads(summary)
@@ -419,10 +632,11 @@ def _read_only_observation_response(tool: ToolName, summary: str) -> str:
         return "I could not read the requested metadata."
     rows = payload.get("rows") or payload.get("fields") or payload.get("candidates") or []
     if tool is ToolName.DESCRIBE_METADATA:
-        if isinstance(rows, list) and rows and isinstance(rows[0], dict):
-            fields = rows[0].get("fields")
-        else:
-            fields = rows
+        fields = [
+            row.get("field")
+            for row in rows
+            if isinstance(row, dict) and row.get("field")
+        ] if isinstance(rows, list) else []
         if isinstance(fields, list) and fields:
             return "Metadata fields: " + ", ".join(str(item) for item in fields)
         return "No metadata fields were available."

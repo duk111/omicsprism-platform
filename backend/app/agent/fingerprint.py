@@ -5,7 +5,7 @@ from collections.abc import Sequence
 from hashlib import sha256
 from typing import TYPE_CHECKING
 
-from .dataset_profile import DatasetProfile, MetadataProfile, MatrixProfile
+from .dataset_profile import DatasetProfile, GroupProfile, MetadataProfile, MatrixProfile
 
 if TYPE_CHECKING:
     from .validation import DatasetRef
@@ -41,6 +41,14 @@ def compute_input_fingerprint(
                 "role": profile.role,
                 "columns": profile.columns,
                 "levels": profile.levels,
+                "alignment": profile.alignment,
+            })
+        elif isinstance(profile, GroupProfile):
+            profile_payload.append({
+                "role": profile.role,
+                "columns": profile.columns,
+                "group1_levels": profile.group1_levels,
+                "group2_levels": profile.group2_levels,
                 "alignment": profile.alignment,
             })
     payload = {

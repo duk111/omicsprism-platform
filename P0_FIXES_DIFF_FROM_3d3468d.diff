@@ -1,0 +1,1143 @@
+﻿diff --git a/backend/app/agent/__init__.py b/backend/app/agent/__init__.py
+index 985d9fb..c2c665b 100644
+--- a/backend/app/agent/__init__.py
++++ b/backend/app/agent/__init__.py
+@@ -1,7 +1,7 @@
+ """OmicsPrism Copilot 的受控 agent 运行时契约。"""
+ 
+ from .schemas import GroundedAnswer, RunState, ToolResult, VerifierVerdict
+-from .dataset_profile import DatasetProfile, MatrixProfile, MetadataProfile, build_dataset_profiles
++from .dataset_profile import DatasetProfile, GroupProfile, MatrixProfile, MetadataProfile, build_dataset_profiles
+ from .fingerprint import compute_input_fingerprint
+ from .param_resolver import (
+     AnalysisParams,
+@@ -69,6 +69,7 @@ __all__ = [
+     "DatasetProfile",
+     "MatrixProfile",
+     "MetadataProfile",
++    "GroupProfile",
+     "build_dataset_profiles",
+     "AnalysisParams",
+     "AnalysisProposal",
+diff --git a/backend/app/agent/context.py b/backend/app/agent/context.py
+index 77f6a06..4ea3c1b 100644
+--- a/backend/app/agent/context.py
++++ b/backend/app/agent/context.py
+@@ -119,6 +119,7 @@ class MainModelContext(BaseModel):
+     user_id: str = Field(default="user-local", min_length=1, max_length=200, exclude=True)
+     user_message: str = Field(min_length=1, max_length=4000)
+     conversation_summary: str | None = Field(default=None, max_length=1200)
++    tool_repetition_guidance: str | None = Field(default=None, max_length=5000)
+     fact_index: FactIndex
+     decision_ledger: DecisionLedger
+     working_set: WorkingSet
+@@ -158,6 +159,7 @@ class ContextAssembler:
+             user_id=str(getattr(state, "user_id", "") or "user-local"),
+             user_message=str(getattr(state, "user_message", "")),
+             conversation_summary=summary,
++            tool_repetition_guidance=None,
+             fact_index=fact_index,
+             decision_ledger=ledger,
+             working_set=working_set,
+diff --git a/backend/app/agent/dataset_profile.py b/backend/app/agent/dataset_profile.py
+index 6798063..6c7ad53 100644
+--- a/backend/app/agent/dataset_profile.py
++++ b/backend/app/agent/dataset_profile.py
+@@ -9,7 +9,7 @@ from pydantic import BaseModel, ConfigDict, Field
+ 
+ 
+ MatrixRole = Literal["counts", "metabs", "transcriptome", "metabolome"]
+-MetadataRole = Literal["metadata", "group"]
++MetadataRole = Literal["metadata"]
+ NumericType = Literal["integer_counts", "continuous_abundance", "mixed"]
+ AlignmentStatus = Literal["exact", "subset", "mismatch"]
+ 
+@@ -30,7 +30,7 @@ class MatrixProfile(BaseModel):
+ 
+ 
+ class MetadataProfile(BaseModel):
+-    """Bounded facts about metadata/group rows and their sample alignment."""
++    """Bounded facts about dynamic metadata rows and sample alignment."""
+ 
+     model_config = ConfigDict(extra="forbid")
+ 
+@@ -42,7 +42,24 @@ class MetadataProfile(BaseModel):
+     alignment: dict[str, AlignmentStatus]
+ 
+ 
+-DatasetProfile = Annotated[Union[MatrixProfile, MetadataProfile], Field(discriminator="role")]
++class GroupProfile(BaseModel):
++    """Bounded facts about the fixed sample_id/group1/group2 table."""
++
++    model_config = ConfigDict(extra="forbid")
++
++    role: Literal["group"]
++    columns: list[str]
++    group1_levels: dict[str, int]
++    group2_levels: dict[str, int]
++    sample_ids: list[str]
++    rows: list[list[str]] | None
++    alignment: dict[str, AlignmentStatus]
++
++
++DatasetProfile = Annotated[
++    Union[MatrixProfile, MetadataProfile, GroupProfile],
++    Field(discriminator="role"),
++]
+ 
+ 
+ def build_dataset_profiles(
+@@ -75,8 +92,10 @@ def build_dataset_profiles(
+     for field, row, headers, sample_ids in inspected:
+         if field in matrix_ids:
+             profiles.append(_matrix_profile(field, row, headers, sample_ids))
+-        elif field in {"metadata", "group"}:
++        elif field == "metadata":
+             profiles.append(_metadata_profile(field, row, sample_ids, matrix_ids))
++        elif field == "group":
++            profiles.append(_group_profile(field, row, sample_ids, matrix_ids))
+     return profiles
+ 
+ 
+@@ -135,7 +154,7 @@ def _metadata_profile(
+         for matrix_field, other_ids in matrix_ids.items()
+     }
+     return MetadataProfile(
+-        role=field,  # type: ignore[arg-type]
++        role="metadata",
+         columns=[str(column) for column in list(row.get("columns") or [])],
+         levels=levels,
+         sample_ids=sample_ids,
+@@ -144,6 +163,40 @@ def _metadata_profile(
+     )
+ 
+ 
++def _group_profile(
++    field: str,
++    row: Mapping[str, object],
++    sample_ids: list[str],
++    matrix_ids: Mapping[str, list[str]],
++) -> GroupProfile:
++    def _levels(name: str) -> dict[str, int]:
++        raw_values = row.get(name)
++        if not isinstance(raw_values, Mapping):
++            return {}
++        return {
++            str(value): max(0, int(count)) for value, count in raw_values.items()
++        }
++    raw_rows = row.get("raw_rows")
++    rows = (
++        [[str(cell) for cell in raw_row] for raw_row in raw_rows]
++        if isinstance(raw_rows, list)
++        else None
++    )
++    alignment = {
++        matrix_field: _alignment_status(sample_ids, other_ids)
++        for matrix_field, other_ids in matrix_ids.items()
++    }
++    return GroupProfile(
++        role="group",
++        columns=[str(column) for column in list(row.get("columns") or [])],
++        group1_levels=_levels("group1_levels"),
++        group2_levels=_levels("group2_levels"),
++        sample_ids=sample_ids,
++        rows=rows,
++        alignment=alignment,
++    )
++
++
+ def _sample_ids(field: str, headers: list[str], rows: list[list[str]]) -> list[str]:
+     if field in {"counts", "metabs", "transcriptome", "metabolome"}:
+         return [value for value in headers[1:] if value]
+diff --git a/backend/app/agent/fingerprint.py b/backend/app/agent/fingerprint.py
+index cc103fe..e029636 100644
+--- a/backend/app/agent/fingerprint.py
++++ b/backend/app/agent/fingerprint.py
+@@ -5,7 +5,7 @@ from collections.abc import Sequence
+ from hashlib import sha256
+ from typing import TYPE_CHECKING
+ 
+-from .dataset_profile import DatasetProfile, MetadataProfile, MatrixProfile
++from .dataset_profile import DatasetProfile, GroupProfile, MetadataProfile, MatrixProfile
+ 
+ if TYPE_CHECKING:
+     from .validation import DatasetRef
+@@ -43,6 +43,14 @@ def compute_input_fingerprint(
+                 "levels": profile.levels,
+                 "alignment": profile.alignment,
+             })
++        elif isinstance(profile, GroupProfile):
++            profile_payload.append({
++                "role": profile.role,
++                "columns": profile.columns,
++                "group1_levels": profile.group1_levels,
++                "group2_levels": profile.group2_levels,
++                "alignment": profile.alignment,
++            })
+     payload = {
+         "owner_id": owner_id,
+         "datasets": sorted(
+diff --git a/backend/app/agent/fixtures/parameter_inference_cases.json b/backend/app/agent/fixtures/parameter_inference_cases.json
+index c54fd25..7f7d0d8 100644
+--- a/backend/app/agent/fixtures/parameter_inference_cases.json
++++ b/backend/app/agent/fixtures/parameter_inference_cases.json
+@@ -55,7 +55,22 @@
+   {
+     "case_id": "gma_defaults_001",
+     "user_message": "Run a gene-metabolite association analysis",
+-    "profiles": [],
++    "profiles": [
++      {
++        "role": "group",
++        "columns": ["sample_id", "group1", "group2"],
++        "group1_levels": {"control": 2, "treated": 2},
++        "group2_levels": {"young": 2, "old": 2},
++        "sample_ids": ["s1", "s2", "s3", "s4"],
++        "rows": [
++          ["s1", "control", "young"],
++          ["s2", "control", "old"],
++          ["s3", "treated", "young"],
++          ["s4", "treated", "old"]
++        ],
++        "alignment": {}
++      }
++    ],
+     "proposal": {"analysis_type": "GMA"},
+     "expected": {
+       "analysis_type": "GMA",
+diff --git a/backend/app/agent/graph.py b/backend/app/agent/graph.py
+index 68e3660..f70bb2e 100644
+--- a/backend/app/agent/graph.py
++++ b/backend/app/agent/graph.py
+@@ -105,13 +105,15 @@ class PlanVersionConflict(ValueError):
+ 
+ 
+ class StepBudget(BaseModel):
+-    """Independent model, tool, and token budgets for one graph turn."""
++    """Independent model, tool, and safety budgets for one graph turn."""
+ 
+     model_config = ConfigDict(extra="forbid")
+ 
+     max_model_steps: int = Field(default=8, ge=1, le=32)
+     max_tool_calls: int = Field(default=12, ge=1, le=64)
+-    max_tokens: int = Field(default=4096, ge=1, le=32768)
++    # Safety valve for runaway model/tool loops. This is the cumulative
++    # provider-reported prompt+completion usage, not an output or cost cap.
++    max_tokens: int = Field(default=16384, ge=1, le=32768)
+     used_model_steps: int = Field(default=0, ge=0)
+     used_tool_calls: int = Field(default=0, ge=0)
+     # These counters contain only values explicitly reported by the provider.
+@@ -466,6 +468,10 @@ class ToolObservation(BaseModel):
+ 
+     tool: ToolName
+     summary: str = Field(min_length=1, max_length=4000)
++    arguments_hash: str = Field(default="", max_length=80)
++    outcome: Literal["ok", "failed"] = "ok"
++    retryable: bool = False
++    retry_count: int = Field(default=0, ge=0, le=1)
+ 
+ 
+ class MainModelOutput(BaseModel):
+diff --git a/backend/app/agent/model.py b/backend/app/agent/model.py
+index 7155191..b00da6a 100644
+--- a/backend/app/agent/model.py
++++ b/backend/app/agent/model.py
+@@ -488,6 +488,8 @@ _GRAPH_MAIN_SYSTEM_PROMPT = (
+     "as 'Show GeneA result' or 'What is the GeneB fold change?' must use query_result "
+     "directly; do not ask for clarification. For a follow-up such as 'make it shorter' "
+     "or 'correct that', use recent_messages and answer the follow-up directly. "
++    "If tool_repetition_guidance is present, treat it as the latest tool result: do not "
++    "select tool_call; choose only answer, ask_user, or grounded_answer. "
+     "For 'List available jobs' or equivalent requests, you MUST first return "
+     "{decision: {action: 'tool_call', tool: 'list_jobs', arguments: {}}, answer: null}. "
+     "Never answer the job list from memory or context; the list_jobs observation "
+@@ -495,11 +497,13 @@ _GRAPH_MAIN_SYSTEM_PROMPT = (
+     "If several Jobs are in context and the user asks for status without naming one, "
+     "choose get_job with job_id null so the result node can ask which Job. "
+     "A grounded_answer must cite the artifact, checksum, and row IDs from the latest "
+-    "successful query observation; never invent citations or numeric values. Never "
++    "successful query observation; never invent citations or numeric values. "
++    "Never claim a dataset fact, Job, artifact, entity, or numeric result that is absent "
++    "from the bounded context. "
++    "Always respond in the same language as the user's most recent message. "
+     "When action is answer, answer is required and must be a concise non-empty response. "
+     "When action is ask_user, question is required. For every other action, answer must be null. "
+-    "claim a dataset fact, Job, artifact, entity, or numeric result that is absent "
+-    "from the bounded context. Do not decide validation, ownership, ambiguity, or "
++    "Do not decide validation, ownership, ambiguity, or "
+     "execution success."
+ )
+ 
+diff --git a/backend/app/agent/nodes/main.py b/backend/app/agent/nodes/main.py
+index 5d820f2..6ff0a1f 100644
+--- a/backend/app/agent/nodes/main.py
++++ b/backend/app/agent/nodes/main.py
+@@ -2,6 +2,7 @@ from __future__ import annotations
+ 
+ import json
+ import logging
++from copy import deepcopy
+ from time import perf_counter
+ from collections.abc import Callable
+ from typing import Literal
+@@ -43,6 +44,7 @@ _FOLLOWUP_RETRY_INSTRUCTION = (
+ 
+ 
+ LOG = logging.getLogger("omicsprism.platform.agent_main")
++_TOOL_SUMMARY_MAX_CHARS = 3900
+ 
+ 
+ def main_node(
+@@ -54,6 +56,8 @@ def main_node(
+         budget = state.step_budget
+         observations = list(state.tool_observations)
+         working_state = state
++        repetition_guidance: str | None = None
++        terminal_only = False
+         pipeline = GroundedAnswerPipeline()
+         latest_evidence: ToolResult | None = None
+         while True:
+@@ -67,6 +71,10 @@ def main_node(
+                     observations,
+                 )
+             context = _main_context(working_state)
++            if repetition_guidance is not None:
++                context = context.model_copy(update={
++                    "tool_repetition_guidance": repetition_guidance,
++                })
+             output = None
+             for _attempt in range(2):
+                 if (
+@@ -103,6 +111,18 @@ def main_node(
+                     continue
+                 usage = getattr(model, "last_usage", None)
+                 budget = _advance_model_budget(budget, usage)
++                if terminal_only and candidate.decision.action not in {
++                    "answer",
++                    "ask_user",
++                    "grounded_answer",
++                }:
++                    LOG.warning(
++                        "model selected a non-terminal action after repeated deterministic result",
++                        extra={"event": "agent.routing.repeated_tool_blocked"},
++                    )
++                    if _attempt == 0:
++                        continue
++                    return _ask_user_update(_MODEL_FALLBACK_QUESTION, budget, observations)
+                 if (
+                     _attempt == 0
+                     and candidate.decision.action == "ask_user"
+@@ -139,7 +159,54 @@ def main_node(
+                 decision.action == "tool_call"
+                 and observations
+                 and observations[-1].tool is decision.tool
++                and observations[-1].arguments_hash == _arguments_hash(decision.arguments)
+             ):
++                if observations[-1].retryable and observations[-1].retry_count == 0:
++                    if tool_executor is None:
++                        return _ask_user_update(
++                            "I cannot access the requested read-only data tool in this runtime.",
++                            budget,
++                            observations,
++                        )
++                    if budget.used_tool_calls >= budget.max_tool_calls:
++                        return _ask_user_update(
++                            _budget_question(observations),
++                            budget,
++                            observations,
++                        )
++                    request = ToolCallRequest(
++                        tool=decision.tool,
++                        arguments=decision.arguments,
++                    )
++                    summary, tool_outcome, retryable, tool_error_code, evidence = _execute_tool_request(
++                        request,
++                        working_state,
++                        tool_executor,
++                        trace_recorder,
++                    )
++                    if evidence is not None:
++                        latest_evidence = evidence
++                    observations.append(ToolObservation(
++                        tool=request.tool,
++                        summary=summary,
++                        arguments_hash=_arguments_hash(request.arguments),
++                        outcome=tool_outcome,
++                        retryable=retryable,
++                        retry_count=1,
++                    ))
++                    observations = observations[-12:]
++                    budget = _advance_tool_budget(budget)
++                    if budget.used_tool_calls >= budget.max_tool_calls:
++                        return _ask_user_update(
++                            _budget_question(observations),
++                            budget,
++                            observations,
++                        )
++                    working_state = state.model_copy(update={
++                        "tool_observations": observations,
++                        "step_budget": budget,
++                    })
++                    continue
+                 if decision.tool is ToolName.LIST_JOBS and _is_explicit_jobs_listing(context.user_message):
+                     response_text = _list_jobs_response(observations[-1].summary)
+                     return {
+@@ -179,12 +246,12 @@ def main_node(
+                         "step_budget": budget,
+                         "tool_observations": observations,
+                     }
+-                return _ask_user_update(
+-                    "I received a repeated data request without a new result. "
+-                    "Please clarify the operation you want to perform.",
+-                    budget,
+-                    observations,
++                repetition_guidance = _repeated_tool_guidance(
++                    decision.tool,
++                    observations[-1].summary,
+                 )
++                terminal_only = True
++                continue
+             if decision.action == "grounded_answer":
+                 if latest_evidence is None:
+                     return _ask_user_update(
+@@ -236,29 +303,22 @@ def main_node(
+                 tool=decision.tool,
+                 arguments=decision.arguments,
+             )
+-            tool_started = perf_counter()
+-            tool_outcome = "ok"
+-            tool_error_code: str | None = None
+-            try:
+-                result = tool_executor(request, working_state)
+-                summary = _serialize_tool_result(result)
+-                evidence = _as_grounding_evidence(result)
+-                if evidence is not None:
+-                    latest_evidence = evidence
+-            except Exception as exc:
+-                summary = "tool execution failed"
+-                tool_outcome = "failed"
+-                tool_error_code = type(exc).__name__
+-            if trace_recorder is not None:
+-                trace_recorder.tool_call(
+-                    context=working_state,
+-                    tool_name=request.tool.value,
+-                    tool_schema_hash=stable_hash(ToolCallRequest.model_json_schema()),
+-                    latency_ms=round((perf_counter() - tool_started) * 1000, 3),
+-                    outcome=tool_outcome,
+-                    error_code=tool_error_code,
+-                )
+-            observations.append(ToolObservation(tool=request.tool, summary=summary))
++            summary, tool_outcome, retryable, tool_error_code, evidence = _execute_tool_request(
++                request,
++                working_state,
++                tool_executor,
++                trace_recorder,
++            )
++            if evidence is not None:
++                latest_evidence = evidence
++            observations.append(ToolObservation(
++                tool=request.tool,
++                summary=summary,
++                arguments_hash=_arguments_hash(request.arguments),
++                outcome=tool_outcome,
++                retryable=retryable,
++                retry_count=0,
++            ))
+             observations = observations[-12:]
+             budget = _advance_tool_budget(budget)
+             if budget.used_tool_calls >= budget.max_tool_calls:
+@@ -289,6 +349,87 @@ def _main_context(state: GraphState) -> MainModelContext:
+     return ContextAssembler().assemble(state)
+ 
+ 
++def _arguments_hash(arguments: dict[str, object]) -> str:
++    return stable_hash(arguments)
++
++
++def _repeated_tool_guidance(tool: ToolName, summary: str) -> str:
++    return (
++        f"You already called {tool.value} with the same arguments. Do not call any tool "
++        "again. Use the complete result below to answer the user directly, or ask the "
++        "user to clarify a genuinely missing detail.\n"
++        f"Complete tool result summary:\n{summary}"
++    )
++
++
++def _execute_tool_request(
++    request: ToolCallRequest,
++    state: GraphState,
++    tool_executor: ToolExecutor,
++    trace_recorder: TraceRecorder | None,
++) -> tuple[str, Literal["ok", "failed"], bool, str | None, ToolResult | None]:
++    tool_started = perf_counter()
++    tool_outcome: Literal["ok", "failed"] = "ok"
++    retryable = False
++    tool_error_code: str | None = None
++    evidence: ToolResult | None = None
++    try:
++        result = tool_executor(request, state)
++        summary = _serialize_tool_result(result)
++        evidence = _as_grounding_evidence(result)
++        if isinstance(result, dict):
++            result_ok = result.get("ok", True)
++            result_error_code = result.get("error_code")
++        else:
++            result_ok = getattr(result, "ok", True)
++            result_error_code = getattr(result, "error_code", None)
++        if result_ok is False:
++            tool_outcome = "failed"
++            retryable = _is_transient_error_code(result_error_code)
++            if isinstance(result_error_code, str) and result_error_code:
++                tool_error_code = result_error_code
++    except Exception as exc:
++        summary = "tool execution failed"
++        tool_outcome = "failed"
++        retryable = _is_transient_tool_error(exc)
++        tool_error_code = type(exc).__name__
++    if trace_recorder is not None:
++        trace_recorder.tool_call(
++            context=state,
++            tool_name=request.tool.value,
++            tool_schema_hash=stable_hash(ToolCallRequest.model_json_schema()),
++            latency_ms=round((perf_counter() - tool_started) * 1000, 3),
++            outcome=tool_outcome,
++            error_code=tool_error_code,
++        )
++    return summary, tool_outcome, retryable, tool_error_code, evidence
++
++
++def _is_transient_tool_error(exc: Exception) -> bool:
++    status_code = getattr(exc, "status_code", None)
++    response = getattr(exc, "response", None)
++    if status_code is None and response is not None:
++        status_code = getattr(response, "status_code", None)
++    if isinstance(status_code, int) and 500 <= status_code <= 599:
++        return True
++    if isinstance(exc, (TimeoutError, ConnectionError)):
++        return True
++    name = type(exc).__name__.casefold()
++    return "timeout" in name or "connect" in name
++
++
++def _is_transient_error_code(error_code: object) -> bool:
++    if not isinstance(error_code, str):
++        return False
++    normalized = error_code.casefold()
++    return (
++        "timeout" in normalized
++        or "temporar" in normalized
++        or "unavailable" in normalized
++        or any(code in normalized for code in ("500", "502", "503", "504", "429"))
++    )
++
++
+ def _ask_user_update(
+     question: str,
+     budget: StepBudget,
+@@ -375,9 +516,79 @@ def _serialize_tool_result(result: object) -> str:
+     if hasattr(result, "model_dump"):
+         payload = result.model_dump(mode="json")
+     else:
+-        payload = result
+-    text = json.dumps(payload, ensure_ascii=False, separators=(",", ":"), default=str)
+-    return text[:3900] or "{}"
++        payload = deepcopy(result)
++    text = _json_compact(payload)
++    if len(text) <= _TOOL_SUMMARY_MAX_CHARS:
++        return text or "{}"
++
++    bounded = deepcopy(payload)
++    _truncate_payload_lists(bounded)
++    text = _json_compact(bounded)
++    if len(text) <= _TOOL_SUMMARY_MAX_CHARS:
++        return text or "{}"
++
++    LOG.error(
++        "tool result exceeded the serialized summary limit after structural truncation",
++        extra={
++            "event": "agent.tool.summary_too_large",
++            "summary_chars": len(text),
++            "summary_limit": _TOOL_SUMMARY_MAX_CHARS,
++        },
++    )
++    return _json_compact({
++        "ok": False,
++        "truncated": True,
++        "error_code": "tool_result_summary_too_large",
++    })
++
++
++def _json_compact(payload: object) -> str:
++    return json.dumps(payload, ensure_ascii=False, separators=(",", ":"), default=str)
++
++
++def _truncate_payload_lists(payload: object) -> bool:
++    """Shrink list-heavy result payloads before serialization, preserving JSON."""
++
++    if not isinstance(payload, (dict, list)):
++        return False
++    changed = False
++    while len(_json_compact(payload)) > _TOOL_SUMMARY_MAX_CHARS:
++        targets = _list_targets(payload)
++        if not targets:
++            break
++        values, owner = max(
++            targets,
++            key=lambda item: (len(item[0]), len(_json_compact(item[0]))),
++        )
++        new_length = max(0, len(values) // 2)
++        if new_length == len(values):
++            new_length -= 1
++        del values[new_length:]
++        changed = True
++        if isinstance(owner, dict):
++            if isinstance(owner.get("truncated"), bool):
++                owner["truncated"] = True
++            elif isinstance(payload, dict):
++                payload["truncated"] = True
++    return changed
++
++
++def _list_targets(node: object, owner: dict[str, object] | None = None) -> list[
++    tuple[list[object], dict[str, object] | None]
++]:
++    targets: list[tuple[list[object], dict[str, object] | None]] = []
++    if isinstance(node, dict):
++        for value in node.values():
++            if isinstance(value, list) and value:
++                targets.append((value, node))
++                targets.extend(_list_targets(value, node))
++            elif isinstance(value, dict):
++                targets.extend(_list_targets(value, node))
++    elif isinstance(node, list):
++        for value in node:
++            if isinstance(value, (dict, list)):
++                targets.extend(_list_targets(value, owner))
++    return targets
+ 
+ 
+ def _budget_question(observations: list[ToolObservation]) -> str:
+@@ -410,6 +621,8 @@ def _list_jobs_response(summary: str) -> str:
+     return "Available jobs: " + ", ".join(items) if items else "No available jobs."
+ 
+ 
++# TODO(P0-3): Replace schema-coupled Python summaries with model-generated
++# responses from the bounded tool summary, as the repetition path already does.
+ def _read_only_observation_response(tool: ToolName, summary: str) -> str:
+     try:
+         payload = json.loads(summary)
+@@ -419,10 +632,11 @@ def _read_only_observation_response(tool: ToolName, summary: str) -> str:
+         return "I could not read the requested metadata."
+     rows = payload.get("rows") or payload.get("fields") or payload.get("candidates") or []
+     if tool is ToolName.DESCRIBE_METADATA:
+-        if isinstance(rows, list) and rows and isinstance(rows[0], dict):
+-            fields = rows[0].get("fields")
+-        else:
+-            fields = rows
++        fields = [
++            row.get("field")
++            for row in rows
++            if isinstance(row, dict) and row.get("field")
++        ] if isinstance(rows, list) else []
+         if isinstance(fields, list) and fields:
+             return "Metadata fields: " + ", ".join(str(item) for item in fields)
+         return "No metadata fields were available."
+diff --git a/backend/app/agent/param_resolver.py b/backend/app/agent/param_resolver.py
+index b6961a4..378d88d 100644
+--- a/backend/app/agent/param_resolver.py
++++ b/backend/app/agent/param_resolver.py
+@@ -7,7 +7,7 @@ from typing import Annotated, Literal, TypeAlias
+ from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
+ 
+ from ..models import AnalysisType
+-from .dataset_profile import DatasetProfile, MetadataProfile
++from .dataset_profile import DatasetProfile, GroupProfile, MetadataProfile
+ 
+ 
+ AnalysisName = Literal["DEG", "DEM", "GMA"]
+@@ -241,8 +241,35 @@ def resolve_analysis_request(
+             params=None,
+             missing=[MissingParam(field="analysis_type", reason="无法从当前请求确定分析类型")],
+         )
+-    metadata = next((item for item in profiles if isinstance(item, MetadataProfile)), None)
+-    if metadata is None:
++    metadata_profiles = [item for item in profiles if isinstance(item, MetadataProfile)]
++    if analysis_type in {"DEG", "DEM"}:
++        if len(metadata_profiles) != 1:
++            reason = (
++                "exactly one metadata profile is required"
++                if metadata_profiles
++                else "metadata profile is required"
++            )
++            return ResolvedRequest(
++                analysis_type=analysis_type,
++                params=None,
++                missing=[MissingParam(field="metadata", options=["metadata"], reason=reason)],
++            )
++        metadata = metadata_profiles[0]
++    else:
++        group_profiles = [item for item in profiles if isinstance(item, GroupProfile)]
++        if len(group_profiles) != 1:
++            reason = (
++                "exactly one group profile is required"
++                if group_profiles
++                else "group profile is required"
++            )
++            return ResolvedRequest(
++                analysis_type=analysis_type,
++                params=None,
++                missing=[MissingParam(field="group", options=["group"], reason=reason)],
++            )
++        return _build_params(analysis_type, proposal.requested_params, None)
++    if analysis_type in {"DEG", "DEM"} and metadata is None:
+         return ResolvedRequest(
+             analysis_type=analysis_type,
+             params=None,
+diff --git a/backend/app/agent/tools.py b/backend/app/agent/tools.py
+index a6803ae..b0b6088 100644
+--- a/backend/app/agent/tools.py
++++ b/backend/app/agent/tools.py
+@@ -113,11 +113,6 @@ class AgentToolRuntime:
+             (item for item in profiles if getattr(item, "role", None) == "metadata"),
+             None,
+         )
+-        if metadata is None:
+-            metadata = next(
+-                (item for item in profiles if getattr(item, "role", None) == "group"),
+-                None,
+-            )
+         if metadata is None:
+             return MetadataDescription(
+                 ok=False,
+@@ -189,11 +184,6 @@ class AgentToolRuntime:
+             (item for item in profiles if getattr(item, "role", None) == "metadata"),
+             None,
+         )
+-        if metadata is None:
+-            metadata = next(
+-                (item for item in profiles if getattr(item, "role", None) == "group"),
+-                None,
+-            )
+         if metadata is None:
+             return ContrastEnumeration(
+                 ok=False,
+@@ -945,6 +935,9 @@ def _inspect_input(field: str, item: AgentInputFile) -> dict[str, Any]:
+                 counts[value] = counts.get(value, 0) + 1
+             group_replicates[header] = counts
+         row["group_replicates"] = group_replicates
++        if field == "group":
++            row["group1_levels"] = dict(group_replicates.get("group1", {}))
++            row["group2_levels"] = dict(group_replicates.get("group2", {}))
+         if field in {"metadata", "group"} and len(data_rows) <= 60 and column_count <= 10:
+             row["raw_rows"] = [
+                 [str(cell).strip()[:60] for cell in cells[:10]]
+diff --git a/backend/tests/test_agent_tool_loop.py b/backend/tests/test_agent_tool_loop.py
+index 4f1b3eb..4c55cf3 100644
+--- a/backend/tests/test_agent_tool_loop.py
++++ b/backend/tests/test_agent_tool_loop.py
+@@ -1,5 +1,7 @@
+ from __future__ import annotations
+ 
++import json
++
+ from backend.app.agent.graph import (
+     AgentDecision,
+     GraphState,
+@@ -10,7 +12,8 @@ from backend.app.agent.graph import (
+ )
+ from backend.app.agent.grounding import FALLBACK_TEXT
+ from backend.app.agent.context import RecentMessage, RecentMessages
+-from backend.app.agent.readonly_tools import MetadataDescription
++from backend.app.agent.nodes.main import _serialize_tool_result
++from backend.app.agent.readonly_tools import MetadataDescription, MetadataFieldDescription
+ from backend.app.agent.schemas import (
+     Citation,
+     GroundedAnswer,
+@@ -87,6 +90,169 @@ def test_main_loop_executes_read_only_tool_and_reassembles_context() -> None:
+     assert state.step_budget.used_tool_calls == 1
+ 
+ 
++def test_repeated_describe_metadata_reads_each_field_name() -> None:
++    model = _Model([
++        MainModelOutput(decision=AgentDecision(
++            action="tool_call",
++            tool=ToolName.DESCRIBE_METADATA,
++            arguments={"fields": ["treatment"]},
++        )),
++        MainModelOutput(decision=AgentDecision(
++            action="tool_call",
++            tool=ToolName.DESCRIBE_METADATA,
++            arguments={"fields": ["treatment"]},
++        )),
++    ])
++
++    def execute(_request: ToolCallRequest, _state: GraphState) -> MetadataDescription:
++        return MetadataDescription(fields=[MetadataFieldDescription(
++            field="treatment",
++            semantic_type="categorical",
++        )])
++
++    result = build_agent_graph(
++        model,
++        lambda _request: [],
++        lambda _request: None,
++        lambda _request: None,
++        lambda _request: None,
++        tool_executor=execute,
++    ).invoke(_state(), _config())
++    state = GraphState.model_validate(result)
++
++    assert state.response_text == "Metadata fields: treatment"
++
++
++def test_tool_summary_truncation_preserves_valid_json() -> None:
++    result = MetadataDescription(fields=[MetadataFieldDescription(
++        field=f"field-{index}",
++        semantic_type="categorical",
++        levels={f"level-{level}": level for level in range(40)},
++    ) for index in range(20)])
++
++    summary = _serialize_tool_result(result)
++    payload = json.loads(summary)
++
++    assert len(summary) <= 3900
++    assert payload["truncated"] is True
++    assert len(payload["fields"]) < 20
++
++
++def test_same_tool_with_different_arguments_is_executed_again() -> None:
++    model = _Model([
++        MainModelOutput(decision=AgentDecision(
++            action="tool_call",
++            tool=ToolName.DESCRIBE_ARTIFACTS,
++            arguments={"job_id": "job-1"},
++        )),
++        MainModelOutput(decision=AgentDecision(
++            action="tool_call",
++            tool=ToolName.DESCRIBE_ARTIFACTS,
++            arguments={"job_id": "job-2"},
++        )),
++        MainModelOutput(decision=AgentDecision(action="answer"), answer="Compared both jobs."),
++    ])
++    requests: list[ToolCallRequest] = []
++
++    def execute(request: ToolCallRequest, _state: GraphState) -> dict[str, object]:
++        requests.append(request)
++        return {"job_id": request.arguments["job_id"], "artifacts": []}
++
++    result = build_agent_graph(
++        model,
++        lambda _request: [],
++        lambda _request: None,
++        lambda _request: None,
++        lambda _request: None,
++        tool_executor=execute,
++    ).invoke(_state(), _config())
++    state = GraphState.model_validate(result)
++
++    assert state.response_text == "Compared both jobs."
++    assert [request.arguments["job_id"] for request in requests] == ["job-1", "job-2"]
++
++
++def test_repeated_deterministic_tool_result_uses_model_guidance() -> None:
++    model = _Model([
++        MainModelOutput(decision=AgentDecision(
++            action="tool_call",
++            tool=ToolName.DESCRIBE_ARTIFACTS,
++            arguments={"job_id": "job-1"},
++        )),
++        MainModelOutput(decision=AgentDecision(
++            action="tool_call",
++            tool=ToolName.DESCRIBE_ARTIFACTS,
++            arguments={"job_id": "job-1"},
++        )),
++        MainModelOutput(decision=AgentDecision(action="answer"), answer="The artifact is a volcano plot."),
++    ])
++    requests: list[ToolCallRequest] = []
++
++    def execute(request: ToolCallRequest, _state: GraphState) -> dict[str, object]:
++        requests.append(request)
++        return {"job_id": "job-1", "artifacts": ["volcano.png"]}
++
++    result = build_agent_graph(
++        model,
++        lambda _request: [],
++        lambda _request: None,
++        lambda _request: None,
++        lambda _request: None,
++        tool_executor=execute,
++    ).invoke(_state(), _config())
++    state = GraphState.model_validate(result)
++
++    assert state.response_text == "The artifact is a volcano plot."
++    assert len(requests) == 1
++    assert len(model.contexts) == 3
++    guidance = model.contexts[-1].tool_repetition_guidance
++    assert guidance is not None
++    assert "Do not call any tool again" in guidance
++    assert '"volcano.png"' in guidance
++
++
++def test_repeated_transient_tool_failure_is_retried_without_extra_model_step() -> None:
++    model = _Model([
++        MainModelOutput(decision=AgentDecision(
++            action="tool_call",
++            tool=ToolName.DESCRIBE_ARTIFACTS,
++            arguments={"job_id": "job-1"},
++        )),
++        MainModelOutput(decision=AgentDecision(
++            action="tool_call",
++            tool=ToolName.DESCRIBE_ARTIFACTS,
++            arguments={"job_id": "job-1"},
++        )),
++        MainModelOutput(decision=AgentDecision(action="answer"), answer="Recovered."),
++    ])
++    requests: list[ToolCallRequest] = []
++    attempts = 0
++
++    def execute(request: ToolCallRequest, _state: GraphState) -> dict[str, object]:
++        nonlocal attempts
++        attempts += 1
++        requests.append(request)
++        if attempts == 1:
++            raise TimeoutError("temporary tool timeout")
++        return {"job_id": "job-1", "artifacts": ["volcano.png"]}
++
++    result = build_agent_graph(
++        model,
++        lambda _request: [],
++        lambda _request: None,
++        lambda _request: None,
++        lambda _request: None,
++        tool_executor=execute,
++    ).invoke(_state(), _config())
++    state = GraphState.model_validate(result)
++
++    assert state.response_text == "Recovered."
++    assert len(requests) == 2
++    assert state.step_budget.used_tool_calls == 2
++    assert state.step_budget.used_model_steps == 3
++    assert state.tool_observations[-1].retry_count == 1
++
++
+ def test_tool_budget_is_an_exit_without_an_extra_model_call() -> None:
+     model = _Model([
+         MainModelOutput(decision=AgentDecision(
+diff --git a/backend/tests/test_agent_trace.py b/backend/tests/test_agent_trace.py
+index bfde7f9..215f704 100644
+--- a/backend/tests/test_agent_trace.py
++++ b/backend/tests/test_agent_trace.py
+@@ -18,8 +18,11 @@ from backend.app.agent.graph import (
+     GraphState,
+     MainModelOutput,
+ )
+-from backend.app.agent.model import VllmGraphModel
+-from backend.app.agent.model import ModelBoundaryError
++from backend.app.agent.model import (
++    ModelBoundaryError,
++    VllmGraphModel,
++    _GRAPH_MAIN_SYSTEM_PROMPT,
++)
+ from backend.app.agent.product_store import InMemoryAgentProductStore
+ from backend.app.agent.queue import AgentTurnWorkItem, InMemoryAgentTurnQueue
+ from backend.app.agent.runtime import AgentRuntime
+@@ -31,6 +34,17 @@ from backend.app.agent.param_resolver import ContrastSpec, DEGParams
+ COOKIE = "omicsprism_session"
+ 
+ 
++def test_main_system_prompt_has_complete_safety_and_language_instructions() -> None:
++    prompt = _GRAPH_MAIN_SYSTEM_PROMPT
++
++    assert (
++        "Never claim a dataset fact, Job, artifact, entity, or numeric result that is absent "
++        "from the bounded context."
++    ) in prompt
++    assert "Always respond in the same language as the user's most recent message." in prompt
++    assert "numeric values. Never When action" not in prompt
++
++
+ class _Graph:
+     def __init__(self) -> None:
+         self.states: dict[str, GraphState] = {}
+diff --git a/backend/tests/test_dataset_profile.py b/backend/tests/test_dataset_profile.py
+index 81daa91..28540a7 100644
+--- a/backend/tests/test_dataset_profile.py
++++ b/backend/tests/test_dataset_profile.py
+@@ -1,6 +1,6 @@
+ from __future__ import annotations
+ 
+-from backend.app.agent.dataset_profile import MatrixProfile, MetadataProfile
++from backend.app.agent.dataset_profile import GroupProfile, MatrixProfile, MetadataProfile
+ from backend.app.agent.tools import AgentInputFile, AgentToolRuntime
+ 
+ 
+@@ -74,6 +74,20 @@ def test_metadata_profile_keeps_multiple_factors_and_levels() -> None:
+     ]
+ 
+ 
++def test_group_profile_keeps_fixed_group_levels_separate_from_metadata() -> None:
++    profile = _runtime((
++        "group",
++        "group.csv",
++        b"sample_id,group1,group2\ns1,control,young\ns2,control,old\ns3,salt,young\n",
++    )).inspect_dataset()[0]
++
++    assert isinstance(profile, GroupProfile)
++    assert profile.role == "group"
++    assert profile.group1_levels == {"control": 2, "salt": 1}
++    assert profile.group2_levels == {"young": 2, "old": 1}
++    assert not isinstance(profile, MetadataProfile)
++
++
+ def test_exact_alignment_is_reported_between_matrix_and_metadata() -> None:
+     profiles = _runtime(
+         (
+diff --git a/backend/tests/test_graph_flow.py b/backend/tests/test_graph_flow.py
+index 4452d59..d6d6fd2 100644
+--- a/backend/tests/test_graph_flow.py
++++ b/backend/tests/test_graph_flow.py
+@@ -468,6 +468,7 @@ def test_main_model_context_excludes_owner_and_dataset_payloads() -> None:
+     assert set(payload) == {
+         "user_message",
+         "conversation_summary",
++        "tool_repetition_guidance",
+         "fact_index",
+         "decision_ledger",
+         "working_set",
+diff --git a/backend/tests/test_graph_state.py b/backend/tests/test_graph_state.py
+index 87fab5b..b4c25c4 100644
+--- a/backend/tests/test_graph_state.py
++++ b/backend/tests/test_graph_state.py
+@@ -136,6 +136,10 @@ def test_step_budget_is_bounded() -> None:
+         StepBudget(max_model_steps=2, used_model_steps=3)
+ 
+ 
++def test_step_budget_defaults_to_a_loop_safety_valve() -> None:
++    assert StepBudget().max_tokens == 16384
++
++
+ def test_pending_interrupt_is_discriminated_and_typed() -> None:
+     clarification = ClarificationPayload(
+         missing=[{"field": "compare_field", "options": ["condition"], "reason": "Choose a factor"}],
+diff --git a/backend/tests/test_param_resolver.py b/backend/tests/test_param_resolver.py
+index 0c95ed1..f802a77 100644
+--- a/backend/tests/test_param_resolver.py
++++ b/backend/tests/test_param_resolver.py
+@@ -2,7 +2,7 @@ from __future__ import annotations
+ 
+ import pytest
+ 
+-from backend.app.agent.dataset_profile import MetadataProfile
++from backend.app.agent.dataset_profile import GroupProfile, MetadataProfile
+ from backend.app.agent.param_resolver import (
+     AnalysisProposal,
+     ContrastSpec,
+@@ -37,6 +37,23 @@ def _two_level(*, reference: str = "control", tested: str = "salt", tested_count
+     return _metadata(rows, ["sample_id", "treatment"])
+ 
+ 
++def _group_profile() -> GroupProfile:
++    return GroupProfile(
++        role="group",
++        columns=["sample_id", "group1", "group2"],
++        group1_levels={"control": 2, "salt": 2},
++        group2_levels={"young": 2, "old": 2},
++        sample_ids=["s1", "s2", "s3", "s4"],
++        rows=[
++            ["s1", "control", "young"],
++            ["s2", "control", "old"],
++            ["s3", "salt", "young"],
++            ["s4", "salt", "old"],
++        ],
++        alignment={},
++    )
++
++
+ def _proposal(**updates: object) -> AnalysisProposal:
+     values: dict[str, object] = {
+         "analysis_type": "DEG",
+@@ -75,6 +92,44 @@ def test_two_groups_with_explicit_reference_are_resolved() -> None:
+     )
+ 
+ 
++def test_resolver_selects_profile_by_analysis_role() -> None:
++    metadata = _two_level()
++    group = _group_profile()
++
++    deg = resolve_analysis_request("", [group, metadata], _proposal())
++    gma = resolve_analysis_request(
++        "",
++        [metadata, group],
++        AnalysisProposal(analysis_type="GMA"),
++    )
++
++    assert deg.params is not None and deg.params.analysis_type == "DEG"
++    assert gma.params is not None and gma.params.analysis_type == "GMA"
++
++
++def test_resolver_rejects_multiple_metadata_profiles_instead_of_using_order() -> None:
++    result = resolve_analysis_request(
++        "",
++        [_two_level(), _two_level(tested="drought")],
++        _proposal(),
++    )
++
++    assert result.params is None
++    assert result.missing[0].field == "metadata"
++    assert "exactly one" in result.missing[0].reason
++
++
++def test_gma_requires_a_group_profile() -> None:
++    result = resolve_analysis_request(
++        "",
++        [_two_level()],
++        AnalysisProposal(analysis_type="GMA"),
++    )
++
++    assert result.params is None
++    assert result.missing[0].field == "group"
++
++
+ def test_control_marker_is_used_only_when_it_is_unique() -> None:
+     resolved = resolve_analysis_request(
+         "", [_two_level()], _proposal(compare_field="treatment")
+diff --git a/frontend/src/copilot/CopilotPage.tsx b/frontend/src/copilot/CopilotPage.tsx
+index 7adc29d..517d87b 100644
+--- a/frontend/src/copilot/CopilotPage.tsx
++++ b/frontend/src/copilot/CopilotPage.tsx
+@@ -12,8 +12,17 @@ import { MessageBlocks } from "./MessageBlocks";
+ import { TracePanel } from "./TracePanel";
+ import "./copilot.css";
+ 
+-const INPUT_FIELDS = ["counts", "metadata", "metabs", "transcriptome", "metabolome", "group"];
+-type Attachment = { id: string; file: File; field: string };
++const INPUT_FIELDS = ["counts", "metadata", "metabs", "transcriptome", "metabolome", "group"] as const;
++type InputField = typeof INPUT_FIELDS[number];
++const INPUT_FIELD_LABELS: Record<InputField, string> = {
++  counts: "Counts matrix",
++  metadata: "Metadata table",
++  metabs: "Metabolite matrix",
++  transcriptome: "Transcriptome matrix",
++  metabolome: "Metabolome matrix",
++  group: "GMA group table (sample_id/group1/group2)",
++};
++type Attachment = { id: string; file: File; field: InputField };
+ type PendingGraph = GraphPendingInterrupt;
+ 
+ export default function CopilotPage() {
+@@ -249,7 +258,7 @@ export default function CopilotPage() {
+         <div ref={messageEnd} />
+       </div>
+       <div className="composer-zone">
+-        {attachments.length > 0 && <div className="attachment-tray">{attachments.map(item => <div className="attachment-item" key={item.id}><FilePlus2 size={16} /><span title={item.file.name}>{item.file.name}</span><label>Role<select value={item.field} onChange={event => setAttachments(current => current.map(entry => entry.id === item.id ? { ...entry, field: event.target.value } : entry))}>{INPUT_FIELDS.map(field => <option key={field}>{field}</option>)}</select><ChevronDown size={14} /></label><button type="button" aria-label={`Remove ${item.file.name}`} onClick={() => setAttachments(current => current.filter(entry => entry.id !== item.id))}><X size={15} /></button></div>)}</div>}
++        {attachments.length > 0 && <div className="attachment-tray">{attachments.map(item => <div className="attachment-item" key={item.id}><FilePlus2 size={16} /><span title={item.file.name}>{item.file.name}</span><label>Role<select value={item.field} onChange={event => setAttachments(current => current.map(entry => entry.id === item.id ? { ...entry, field: event.target.value as InputField } : entry))}>{INPUT_FIELDS.map(field => <option key={field} value={field}>{INPUT_FIELD_LABELS[field]}</option>)}</select><ChevronDown size={14} /></label><button type="button" aria-label={`Remove ${item.file.name}`} onClick={() => setAttachments(current => current.filter(entry => entry.id !== item.id))}><X size={15} /></button></div>)}</div>}
+         <div className="composer"><input ref={fileInput} hidden type="file" multiple accept=".csv,text/csv" onChange={event => { addFiles(event.target.files); event.target.value = ""; }} /><button type="button" className="icon-button" title="Attach CSV files" aria-label="Attach CSV files" onClick={() => fileInput.current?.click()}><Paperclip size={19} /></button><textarea value={draft} rows={1} placeholder="Ask about an analysis or result" aria-label="Message Copilot" onChange={event => setDraft(event.target.value)} onKeyDown={event => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); void send(); } }} /><button type="button" className="send-button" aria-label="Send message" title="Send message" disabled={!draft.trim() || sending || pendingTurn} onClick={() => void send()}><Send size={18} /></button></div>
+       </div>
+     </section>
+@@ -289,5 +298,5 @@ function EmptyState({ loading = false }: { loading?: boolean }) {
+ function upsert<T extends Record<K, string>, K extends keyof T>(items: T[], incoming: T, key: K): T[] { const found = items.findIndex(item => item[key] === incoming[key]); return found < 0 ? [...items, incoming] : items.map((item, index) => index === found ? incoming : item); }
+ function errorMessage(error: unknown) { if (error instanceof ApiRequestError) return error.status === 404 ? "This conversation is unavailable." : error.message; return navigator.onLine ? "Copilot is temporarily unavailable. Try again." : "You are offline. Reconnect to continue."; }
+ function latestUserText(messages: AgentMessageResponse[]) { for (const message of [...messages].reverse()) { if (message.role !== "user") continue; const block = message.blocks.find(item => item.type === "text"); if (block?.type === "text") return block.text; } return ""; }
+-function guessField(name: string) { const value = name.toLowerCase(); return INPUT_FIELDS.find(field => value.includes(field)) || (value.includes("count") ? "counts" : "metadata"); }
++function guessField(name: string): InputField { const value = name.toLowerCase(); return INPUT_FIELDS.find(field => value.includes(field)) || (value.includes("count") ? "counts" : "metadata"); }
+ function relativeTime(value: string) { const date = new Date(value); if (Number.isNaN(date.valueOf())) return ""; const days = Math.floor((Date.now() - date.valueOf()) / 86400000); return days < 1 ? "Today" : days === 1 ? "Yesterday" : `${days}d ago`; }

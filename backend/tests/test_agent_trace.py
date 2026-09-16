@@ -18,8 +18,11 @@ from backend.app.agent.graph import (
     GraphState,
     MainModelOutput,
 )
-from backend.app.agent.model import VllmGraphModel
-from backend.app.agent.model import ModelBoundaryError
+from backend.app.agent.model import (
+    ModelBoundaryError,
+    VllmGraphModel,
+    _GRAPH_MAIN_SYSTEM_PROMPT,
+)
 from backend.app.agent.product_store import InMemoryAgentProductStore
 from backend.app.agent.queue import AgentTurnWorkItem, InMemoryAgentTurnQueue
 from backend.app.agent.runtime import AgentRuntime
@@ -29,6 +32,17 @@ from backend.app.agent.param_resolver import ContrastSpec, DEGParams
 
 
 COOKIE = "omicsprism_session"
+
+
+def test_main_system_prompt_has_complete_safety_and_language_instructions() -> None:
+    prompt = _GRAPH_MAIN_SYSTEM_PROMPT
+
+    assert (
+        "Never claim a dataset fact, Job, artifact, entity, or numeric result that is absent "
+        "from the bounded context."
+    ) in prompt
+    assert "Always respond in the same language as the user's most recent message." in prompt
+    assert "numeric values. Never When action" not in prompt
 
 
 class _Graph:

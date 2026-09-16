@@ -468,6 +468,7 @@ def test_main_model_context_excludes_owner_and_dataset_payloads() -> None:
     assert set(payload) == {
         "user_message",
         "conversation_summary",
+        "tool_repetition_guidance",
         "fact_index",
         "decision_ledger",
         "working_set",

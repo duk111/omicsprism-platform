@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+
 from backend.app.agent.graph import (
     AgentDecision,
     GraphState,
@@ -10,7 +12,8 @@ from backend.app.agent.graph import (
 )
 from backend.app.agent.grounding import FALLBACK_TEXT
 from backend.app.agent.context import RecentMessage, RecentMessages
-from backend.app.agent.readonly_tools import MetadataDescription
+from backend.app.agent.nodes.main import _serialize_tool_result
+from backend.app.agent.readonly_tools import MetadataDescription, MetadataFieldDescription
 from backend.app.agent.schemas import (
     Citation,
     GroundedAnswer,
@@ -85,6 +88,169 @@ def test_main_loop_executes_read_only_tool_and_reassembles_context() -> None:
     assert model.contexts[1].working_set.items[0].kind == "tool"
     assert state.step_budget.used_model_steps == 2
     assert state.step_budget.used_tool_calls == 1
+
+
+def test_repeated_describe_metadata_reads_each_field_name() -> None:
+    model = _Model([
+        MainModelOutput(decision=AgentDecision(
+            action="tool_call",
+            tool=ToolName.DESCRIBE_METADATA,
+            arguments={"fields": ["treatment"]},
+        )),
+        MainModelOutput(decision=AgentDecision(
+            action="tool_call",
+            tool=ToolName.DESCRIBE_METADATA,
+            arguments={"fields": ["treatment"]},
+        )),
+    ])
+
+    def execute(_request: ToolCallRequest, _state: GraphState) -> MetadataDescription:
+        return MetadataDescription(fields=[MetadataFieldDescription(
+            field="treatment",
+            semantic_type="categorical",
+        )])
+
+    result = build_agent_graph(
+        model,
+        lambda _request: [],
+        lambda _request: None,
+        lambda _request: None,
+        lambda _request: None,
+        tool_executor=execute,
+    ).invoke(_state(), _config())
+    state = GraphState.model_validate(result)
+
+    assert state.response_text == "Metadata fields: treatment"
+
+
+def test_tool_summary_truncation_preserves_valid_json() -> None:
+    result = MetadataDescription(fields=[MetadataFieldDescription(
+        field=f"field-{index}",
+        semantic_type="categorical",
+        levels={f"level-{level}": level for level in range(40)},
+    ) for index in range(20)])
+
+    summary = _serialize_tool_result(result)
+    payload = json.loads(summary)
+
+    assert len(summary) <= 3900
+    assert payload["truncated"] is True
+    assert len(payload["fields"]) < 20
+
+
+def test_same_tool_with_different_arguments_is_executed_again() -> None:
+    model = _Model([
+        MainModelOutput(decision=AgentDecision(
+            action="tool_call",
+            tool=ToolName.DESCRIBE_ARTIFACTS,
+            arguments={"job_id": "job-1"},
+        )),
+        MainModelOutput(decision=AgentDecision(
+            action="tool_call",
+            tool=ToolName.DESCRIBE_ARTIFACTS,
+            arguments={"job_id": "job-2"},
+        )),
+        MainModelOutput(decision=AgentDecision(action="answer"), answer="Compared both jobs."),
+    ])
+    requests: list[ToolCallRequest] = []
+
+    def execute(request: ToolCallRequest, _state: GraphState) -> dict[str, object]:
+        requests.append(request)
+        return {"job_id": request.arguments["job_id"], "artifacts": []}
+
+    result = build_agent_graph(
+        model,
+        lambda _request: [],
+        lambda _request: None,
+        lambda _request: None,
+        lambda _request: None,
+        tool_executor=execute,
+    ).invoke(_state(), _config())
+    state = GraphState.model_validate(result)
+
+    assert state.response_text == "Compared both jobs."
+    assert [request.arguments["job_id"] for request in requests] == ["job-1", "job-2"]
+
+
+def test_repeated_deterministic_tool_result_uses_model_guidance() -> None:
+    model = _Model([
+        MainModelOutput(decision=AgentDecision(
+            action="tool_call",
+            tool=ToolName.DESCRIBE_ARTIFACTS,
+            arguments={"job_id": "job-1"},
+        )),
+        MainModelOutput(decision=AgentDecision(
+            action="tool_call",
+            tool=ToolName.DESCRIBE_ARTIFACTS,
+            arguments={"job_id": "job-1"},
+        )),
+        MainModelOutput(decision=AgentDecision(action="answer"), answer="The artifact is a volcano plot."),
+    ])
+    requests: list[ToolCallRequest] = []
+
+    def execute(request: ToolCallRequest, _state: GraphState) -> dict[str, object]:
+        requests.append(request)
+        return {"job_id": "job-1", "artifacts": ["volcano.png"]}
+
+    result = build_agent_graph(
+        model,
+        lambda _request: [],
+        lambda _request: None,
+        lambda _request: None,
+        lambda _request: None,
+        tool_executor=execute,
+    ).invoke(_state(), _config())
+    state = GraphState.model_validate(result)
+
+    assert state.response_text == "The artifact is a volcano plot."
+    assert len(requests) == 1
+    assert len(model.contexts) == 3
+    guidance = model.contexts[-1].tool_repetition_guidance
+    assert guidance is not None
+    assert "Do not call any tool again" in guidance
+    assert '"volcano.png"' in guidance
+
+
+def test_repeated_transient_tool_failure_is_retried_without_extra_model_step() -> None:
+    model = _Model([
+        MainModelOutput(decision=AgentDecision(
+            action="tool_call",
+            tool=ToolName.DESCRIBE_ARTIFACTS,
+            arguments={"job_id": "job-1"},
+        )),
+        MainModelOutput(decision=AgentDecision(
+            action="tool_call",
+            tool=ToolName.DESCRIBE_ARTIFACTS,
+            arguments={"job_id": "job-1"},
+        )),
+        MainModelOutput(decision=AgentDecision(action="answer"), answer="Recovered."),
+    ])
+    requests: list[ToolCallRequest] = []
+    attempts = 0
+
+    def execute(request: ToolCallRequest, _state: GraphState) -> dict[str, object]:
+        nonlocal attempts
+        attempts += 1
+        requests.append(request)
+        if attempts == 1:
+            raise TimeoutError("temporary tool timeout")
+        return {"job_id": "job-1", "artifacts": ["volcano.png"]}
+
+    result = build_agent_graph(
+        model,
+        lambda _request: [],
+        lambda _request: None,
+        lambda _request: None,
+        lambda _request: None,
+        tool_executor=execute,
+    ).invoke(_state(), _config())
+    state = GraphState.model_validate(result)
+
+    assert state.response_text == "Recovered."
+    assert len(requests) == 2
+    assert state.step_budget.used_tool_calls == 2
+    assert state.step_budget.used_model_steps == 3
+    assert state.tool_observations[-1].retry_count == 1
 
 
 def test_tool_budget_is_an_exit_without_an_extra_model_call() -> None:

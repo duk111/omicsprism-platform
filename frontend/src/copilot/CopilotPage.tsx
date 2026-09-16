@@ -12,8 +12,17 @@ import { MessageBlocks } from "./MessageBlocks";
 import { TracePanel } from "./TracePanel";
 import "./copilot.css";
 
-const INPUT_FIELDS = ["counts", "metadata", "metabs", "transcriptome", "metabolome", "group"];
-type Attachment = { id: string; file: File; field: string };
+const INPUT_FIELDS = ["counts", "metadata", "metabs", "transcriptome", "metabolome", "group"] as const;
+type InputField = typeof INPUT_FIELDS[number];
+const INPUT_FIELD_LABELS: Record<InputField, string> = {
+  counts: "Counts matrix",
+  metadata: "Metadata table",
+  metabs: "Metabolite matrix",
+  transcriptome: "Transcriptome matrix",
+  metabolome: "Metabolome matrix",
+  group: "GMA group table (sample_id/group1/group2)",
+};
+type Attachment = { id: string; file: File; field: InputField };
 type PendingGraph = GraphPendingInterrupt;
 
 export default function CopilotPage() {
@@ -249,7 +258,7 @@ export default function CopilotPage() {
         <div ref={messageEnd} />
       </div>
       <div className="composer-zone">
-        {attachments.length > 0 && <div className="attachment-tray">{attachments.map(item => <div className="attachment-item" key={item.id}><FilePlus2 size={16} /><span title={item.file.name}>{item.file.name}</span><label>Role<select value={item.field} onChange={event => setAttachments(current => current.map(entry => entry.id === item.id ? { ...entry, field: event.target.value } : entry))}>{INPUT_FIELDS.map(field => <option key={field}>{field}</option>)}</select><ChevronDown size={14} /></label><button type="button" aria-label={`Remove ${item.file.name}`} onClick={() => setAttachments(current => current.filter(entry => entry.id !== item.id))}><X size={15} /></button></div>)}</div>}
+        {attachments.length > 0 && <div className="attachment-tray">{attachments.map(item => <div className="attachment-item" key={item.id}><FilePlus2 size={16} /><span title={item.file.name}>{item.file.name}</span><label>Role<select value={item.field} onChange={event => setAttachments(current => current.map(entry => entry.id === item.id ? { ...entry, field: event.target.value as InputField } : entry))}>{INPUT_FIELDS.map(field => <option key={field} value={field}>{INPUT_FIELD_LABELS[field]}</option>)}</select><ChevronDown size={14} /></label><button type="button" aria-label={`Remove ${item.file.name}`} onClick={() => setAttachments(current => current.filter(entry => entry.id !== item.id))}><X size={15} /></button></div>)}</div>}
         <div className="composer"><input ref={fileInput} hidden type="file" multiple accept=".csv,text/csv" onChange={event => { addFiles(event.target.files); event.target.value = ""; }} /><button type="button" className="icon-button" title="Attach CSV files" aria-label="Attach CSV files" onClick={() => fileInput.current?.click()}><Paperclip size={19} /></button><textarea value={draft} rows={1} placeholder="Ask about an analysis or result" aria-label="Message Copilot" onChange={event => setDraft(event.target.value)} onKeyDown={event => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); void send(); } }} /><button type="button" className="send-button" aria-label="Send message" title="Send message" disabled={!draft.trim() || sending || pendingTurn} onClick={() => void send()}><Send size={18} /></button></div>
       </div>
     </section>
@@ -289,5 +298,5 @@ function EmptyState({ loading = false }: { loading?: boolean }) {
 function upsert<T extends Record<K, string>, K extends keyof T>(items: T[], incoming: T, key: K): T[] { const found = items.findIndex(item => item[key] === incoming[key]); return found < 0 ? [...items, incoming] : items.map((item, index) => index === found ? incoming : item); }
 function errorMessage(error: unknown) { if (error instanceof ApiRequestError) return error.status === 404 ? "This conversation is unavailable." : error.message; return navigator.onLine ? "Copilot is temporarily unavailable. Try again." : "You are offline. Reconnect to continue."; }
 function latestUserText(messages: AgentMessageResponse[]) { for (const message of [...messages].reverse()) { if (message.role !== "user") continue; const block = message.blocks.find(item => item.type === "text"); if (block?.type === "text") return block.text; } return ""; }
-function guessField(name: string) { const value = name.toLowerCase(); return INPUT_FIELDS.find(field => value.includes(field)) || (value.includes("count") ? "counts" : "metadata"); }
+function guessField(name: string): InputField { const value = name.toLowerCase(); return INPUT_FIELDS.find(field => value.includes(field)) || (value.includes("count") ? "counts" : "metadata"); }
 function relativeTime(value: string) { const date = new Date(value); if (Number.isNaN(date.valueOf())) return ""; const days = Math.floor((Date.now() - date.valueOf()) / 86400000); return days < 1 ? "Today" : days === 1 ? "Yesterday" : `${days}d ago`; }

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from backend.app.agent.dataset_profile import MetadataProfile
+from backend.app.agent.dataset_profile import GroupProfile, MetadataProfile
 from backend.app.agent.param_resolver import (
     AnalysisProposal,
     ContrastSpec,
@@ -35,6 +35,23 @@ def _two_level(*, reference: str = "control", tested: str = "salt", tested_count
     rows = [["s1", reference], ["s2", reference]]
     rows.extend([[f"s{index + 3}", tested] for index in range(tested_count)])
     return _metadata(rows, ["sample_id", "treatment"])
+
+
+def _group_profile() -> GroupProfile:
+    return GroupProfile(
+        role="group",
+        columns=["sample_id", "group1", "group2"],
+        group1_levels={"control": 2, "salt": 2},
+        group2_levels={"young": 2, "old": 2},
+        sample_ids=["s1", "s2", "s3", "s4"],
+        rows=[
+            ["s1", "control", "young"],
+            ["s2", "control", "old"],
+            ["s3", "salt", "young"],
+            ["s4", "salt", "old"],
+        ],
+        alignment={},
+    )
 
 
 def _proposal(**updates: object) -> AnalysisProposal:
@@ -73,6 +90,44 @@ def test_two_groups_with_explicit_reference_are_resolved() -> None:
     assert result.params.contrast == ContrastSpec(
         compare_field="treatment", tested_level="treated", reference_level="baseline"
     )
+
+
+def test_resolver_selects_profile_by_analysis_role() -> None:
+    metadata = _two_level()
+    group = _group_profile()
+
+    deg = resolve_analysis_request("", [group, metadata], _proposal())
+    gma = resolve_analysis_request(
+        "",
+        [metadata, group],
+        AnalysisProposal(analysis_type="GMA"),
+    )
+
+    assert deg.params is not None and deg.params.analysis_type == "DEG"
+    assert gma.params is not None and gma.params.analysis_type == "GMA"
+
+
+def test_resolver_rejects_multiple_metadata_profiles_instead_of_using_order() -> None:
+    result = resolve_analysis_request(
+        "",
+        [_two_level(), _two_level(tested="drought")],
+        _proposal(),
+    )
+
+    assert result.params is None
+    assert result.missing[0].field == "metadata"
+    assert "exactly one" in result.missing[0].reason
+
+
+def test_gma_requires_a_group_profile() -> None:
+    result = resolve_analysis_request(
+        "",
+        [_two_level()],
+        AnalysisProposal(analysis_type="GMA"),
+    )
+
+    assert result.params is None
+    assert result.missing[0].field == "group"
 
 
 def test_control_marker_is_used_only_when_it_is_unique() -> None:

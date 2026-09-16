@@ -7,7 +7,7 @@ from typing import Annotated, Literal, TypeAlias
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
 from ..models import AnalysisType
-from .dataset_profile import DatasetProfile, MetadataProfile
+from .dataset_profile import DatasetProfile, GroupProfile, MetadataProfile
 
 
 AnalysisName = Literal["DEG", "DEM", "GMA"]
@@ -241,8 +241,35 @@ def resolve_analysis_request(
             params=None,
             missing=[MissingParam(field="analysis_type", reason="无法从当前请求确定分析类型")],
         )
-    metadata = next((item for item in profiles if isinstance(item, MetadataProfile)), None)
-    if metadata is None:
+    metadata_profiles = [item for item in profiles if isinstance(item, MetadataProfile)]
+    if analysis_type in {"DEG", "DEM"}:
+        if len(metadata_profiles) != 1:
+            reason = (
+                "exactly one metadata profile is required"
+                if metadata_profiles
+                else "metadata profile is required"
+            )
+            return ResolvedRequest(
+                analysis_type=analysis_type,
+                params=None,
+                missing=[MissingParam(field="metadata", options=["metadata"], reason=reason)],
+            )
+        metadata = metadata_profiles[0]
+    else:
+        group_profiles = [item for item in profiles if isinstance(item, GroupProfile)]
+        if len(group_profiles) != 1:
+            reason = (
+                "exactly one group profile is required"
+                if group_profiles
+                else "group profile is required"
+            )
+            return ResolvedRequest(
+                analysis_type=analysis_type,
+                params=None,
+                missing=[MissingParam(field="group", options=["group"], reason=reason)],
+            )
+        return _build_params(analysis_type, proposal.requested_params, None)
+    if analysis_type in {"DEG", "DEM"} and metadata is None:
         return ResolvedRequest(
             analysis_type=analysis_type,
             params=None,

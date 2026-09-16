@@ -105,13 +105,15 @@ class PlanVersionConflict(ValueError):
 
 
 class StepBudget(BaseModel):
-    """Independent model, tool, and token budgets for one graph turn."""
+    """Independent model, tool, and safety budgets for one graph turn."""
 
     model_config = ConfigDict(extra="forbid")
 
     max_model_steps: int = Field(default=8, ge=1, le=32)
     max_tool_calls: int = Field(default=12, ge=1, le=64)
-    max_tokens: int = Field(default=4096, ge=1, le=32768)
+    # Safety valve for runaway model/tool loops. This is the cumulative
+    # provider-reported prompt+completion usage, not an output or cost cap.
+    max_tokens: int = Field(default=16384, ge=1, le=32768)
     used_model_steps: int = Field(default=0, ge=0)
     used_tool_calls: int = Field(default=0, ge=0)
     # These counters contain only values explicitly reported by the provider.
@@ -466,6 +468,10 @@ class ToolObservation(BaseModel):
 
     tool: ToolName
     summary: str = Field(min_length=1, max_length=4000)
+    arguments_hash: str = Field(default="", max_length=80)
+    outcome: Literal["ok", "failed"] = "ok"
+    retryable: bool = False
+    retry_count: int = Field(default=0, ge=0, le=1)
 
 
 class MainModelOutput(BaseModel):

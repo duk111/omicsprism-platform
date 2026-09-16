@@ -119,6 +119,7 @@ class MainModelContext(BaseModel):
     user_id: str = Field(default="user-local", min_length=1, max_length=200, exclude=True)
     user_message: str = Field(min_length=1, max_length=4000)
     conversation_summary: str | None = Field(default=None, max_length=1200)
+    tool_repetition_guidance: str | None = Field(default=None, max_length=5000)
     fact_index: FactIndex
     decision_ledger: DecisionLedger
     working_set: WorkingSet
@@ -158,6 +159,7 @@ class ContextAssembler:
             user_id=str(getattr(state, "user_id", "") or "user-local"),
             user_message=str(getattr(state, "user_message", "")),
             conversation_summary=summary,
+            tool_repetition_guidance=None,
             fact_index=fact_index,
             decision_ledger=ledger,
             working_set=working_set,

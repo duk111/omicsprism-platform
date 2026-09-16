@@ -114,11 +114,6 @@ class AgentToolRuntime:
             None,
         )
         if metadata is None:
-            metadata = next(
-                (item for item in profiles if getattr(item, "role", None) == "group"),
-                None,
-            )
-        if metadata is None:
             return MetadataDescription(
                 ok=False,
                 fields=[],
@@ -189,11 +184,6 @@ class AgentToolRuntime:
             (item for item in profiles if getattr(item, "role", None) == "metadata"),
             None,
         )
-        if metadata is None:
-            metadata = next(
-                (item for item in profiles if getattr(item, "role", None) == "group"),
-                None,
-            )
         if metadata is None:
             return ContrastEnumeration(
                 ok=False,
@@ -945,6 +935,9 @@ def _inspect_input(field: str, item: AgentInputFile) -> dict[str, Any]:
                 counts[value] = counts.get(value, 0) + 1
             group_replicates[header] = counts
         row["group_replicates"] = group_replicates
+        if field == "group":
+            row["group1_levels"] = dict(group_replicates.get("group1", {}))
+            row["group2_levels"] = dict(group_replicates.get("group2", {}))
         if field in {"metadata", "group"} and len(data_rows) <= 60 and column_count <= 10:
             row["raw_rows"] = [
                 [str(cell).strip()[:60] for cell in cells[:10]]
