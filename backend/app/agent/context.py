@@ -105,6 +105,18 @@ class WorkingSet(BaseModel):
     items: list[WorkingSetItem] = Field(default_factory=list, max_length=3)
 
 
+class ToolObservationContext(BaseModel):
+    """Internal, non-persisted representation used to build chat tool messages."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    tool: str = Field(min_length=1, max_length=100)
+    call_id: str = Field(default="", max_length=200)
+    arguments: dict[str, object] = Field(default_factory=dict, max_length=16)
+    assistant_message: dict[str, object] = Field(default_factory=dict, max_length=8)
+    summary: str = Field(min_length=1, max_length=4000)
+
+
 class MainModelContext(BaseModel):
     """Prompt-safe context assembled from bounded state and deterministic facts."""
 
@@ -129,6 +141,11 @@ class MainModelContext(BaseModel):
     conversation_memory: ConversationMemory = Field(default_factory=lambda: ConversationMemory(
         context_version="memory.v1:empty"
     ))
+    # The model boundary uses this to append tool-role messages between calls.
+    # It is deliberately excluded from the serialized durable prompt context.
+    tool_observations: list[ToolObservationContext] = Field(
+        default_factory=list, max_length=12, exclude=True
+    )
 
 
 class ContextAssembler:
@@ -148,6 +165,17 @@ class ContextAssembler:
         if not isinstance(recent_messages, RecentMessages):
             recent_messages = RecentMessages(context_version="messages.v1:empty")
         memory = self._conversation_memory(state, ledger)
+        observations = [
+            ToolObservationContext(
+                tool=str(getattr(getattr(observation, "tool", "tool"), "value", getattr(observation, "tool", "tool"))),
+                call_id=str(getattr(observation, "call_id", "")),
+                arguments=dict(getattr(observation, "arguments", {}) or {}),
+                assistant_message=dict(getattr(observation, "assistant_message", {}) or {}),
+                summary=str(getattr(observation, "summary", ""))[:4000],
+            )
+            for observation in (getattr(state, "tool_observations", []) or [])
+            if str(getattr(observation, "summary", ""))
+        ]
         summary = getattr(state, "conversation_summary", None)
         if summary:
             summary = str(summary)[:1200]
@@ -165,6 +193,7 @@ class ContextAssembler:
             working_set=working_set,
             recent_messages=recent_messages,
             conversation_memory=memory,
+            tool_observations=observations,
         )
 
     def _fact_index(self, state: object) -> FactIndex:

@@ -20,7 +20,14 @@ from backend.app.agent.graph import (
 )
 from backend.app.agent.dataset_profile import build_dataset_profiles
 from backend.app.agent.model import VllmGraphModel
-from backend.app.agent.context import DecisionLedger, FactIndex, MainModelContext, WorkingSet
+from backend.app.agent.capabilities import readonly_openai_tool_definitions
+from backend.app.agent.context import (
+    DecisionLedger,
+    FactIndex,
+    MainModelContext,
+    ToolObservationContext,
+    WorkingSet,
+)
 from backend.app.agent.param_resolver import ContrastSpec, DEGParams
 from backend.app.agent.product_store import (
     AgentResourceNotFound,
@@ -402,6 +409,73 @@ def test_vllm_graph_model_uses_main_output_schema_and_returns_typed_output() -> 
         mode="json"
     )
     assert model.contexts == [context]
+
+
+def test_vllm_graph_model_emits_native_tool_calls_and_replays_tool_result() -> None:
+    requests: list[dict[str, object]] = []
+    call_id = "call-native-1"
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        requests.append(body)
+        if len(requests) == 1:
+            output = {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [{
+                    "id": call_id,
+                    "type": "function",
+                    "function": {
+                        "name": "describe_metadata",
+                        "arguments": '{"fields":["treatment"]}',
+                    },
+                }],
+            }
+        else:
+            output = {
+                "role": "assistant",
+                "content": "The treatment field is categorical.",
+                "tool_calls": [],
+            }
+        return httpx.Response(200, json={"choices": [{"message": output}]})
+
+    model = VllmGraphModel(
+        base_url="http://model-host:8000",
+        model="Qwen3",
+        client=httpx.Client(transport=httpx.MockTransport(handle)),
+        structured_tool_response=False,
+    )
+    context = MainModelContext(
+        thread_id="thread-native",
+        turn_id="turn-native",
+        run_id="run-native",
+        user_message="Inspect treatment",
+        fact_index=FactIndex(context_version="facts.v1:test"),
+        decision_ledger=DecisionLedger(context_version="ledger.v1:test"),
+        working_set=WorkingSet(context_version="working.v1:test"),
+    )
+
+    first = model(context)
+    assert first.decision.action == "tool_call"
+    assert model.last_tool_calls[0]["id"] == call_id
+    observation = ToolObservationContext(
+        tool="describe_metadata",
+        call_id=call_id,
+        arguments={"fields": ["treatment"]},
+        summary='{"ok":true,"fields":[]}',
+    )
+    second = model(context.model_copy(update={"tool_observations": [observation]}))
+
+    assert second.decision.action == "answer"
+    assert requests[0]["tools"] == readonly_openai_tool_definitions()
+    messages = requests[1]["messages"]
+    assert messages[-2]["role"] == "assistant"
+    assert messages[-2]["tool_calls"][0]["id"] == call_id
+    assert messages[-1] == {
+        "role": "tool",
+        "tool_call_id": call_id,
+        "content": '{"ok":true,"fields":[]}',
+    }
 
 
 @pytest.mark.parametrize("tool", [None, "get_jobs_status"])

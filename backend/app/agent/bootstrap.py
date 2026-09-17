@@ -123,6 +123,10 @@ def create_agent_api_context(
         api_key=settings.agent_model_api_key,
         timeout_seconds=settings.agent_model_request_timeout_seconds,
         trace_recorder=trace_recorder,
+        # vLLM tool calling is validated in native mode. Keep final-answer
+        # JSON schema as an opt-in until this deployment proves that
+        # ``tools`` and ``response_format`` can coexist reliably.
+        structured_tool_response=False,
     )
 
     def load_datasets(request: DatasetLoadRequest) -> list[DatasetRef]:

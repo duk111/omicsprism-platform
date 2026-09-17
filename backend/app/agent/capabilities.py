@@ -66,6 +66,15 @@ class CapabilityInvalidArguments(CapabilityError):
 
 CapabilityHandler = Callable[[BaseModel], BaseModel]
 
+_READONLY_CAPABILITY_CATALOG = (
+    ("describe_metadata", "Describe observed metadata columns and levels.", DescribeMetadataRequest, MetadataDescription),
+    ("enumerate_contrasts", "Enumerate observed, replicate-checked contrast candidates.", EnumerateContrastsRequest, ContrastEnumeration),
+    ("list_jobs", "List the caller's bounded analysis Job history.", ListJobsRequest, JobListResult),
+    ("get_job", "Get one caller-owned Job status summary.", GetJobRequest, ToolResult),
+    ("describe_artifacts", "Describe artifacts belonging to one caller-owned Job.", DescribeArtifactsRequest, ArtifactDescriptionResult),
+    ("query_artifact", "Query a bounded caller-owned artifact with citation metadata.", QueryArtifactRequest, ToolResult),
+)
+
 
 @dataclass(frozen=True)
 class _CapabilityDefinition:
@@ -165,58 +174,67 @@ class CapabilityRegistry:
             raise CapabilityInvalidArguments("capability arguments are invalid") from exc
 
 
+def openai_tool_definitions(
+    registry: CapabilityRegistry,
+    *,
+    names: set[str] | None = None,
+) -> list[dict[str, Any]]:
+    """Convert registered capabilities to strict Chat Completions tools."""
+
+    definitions: list[dict[str, Any]] = []
+    for spec in registry.specs():
+        if names is not None and spec.name not in names:
+            continue
+        definitions.append({
+            "type": "function",
+            "function": {
+                "name": spec.name,
+                "description": spec.description,
+                "parameters": spec.request_schema,
+                "strict": True,
+            },
+        })
+    return definitions
+
+
+def readonly_openai_tool_definitions() -> list[dict[str, Any]]:
+    """Return the model-visible read-only tool catalog without user data."""
+
+    # Keep this catalog aligned with build_readonly_capability_registry while
+    # avoiding a runtime-bound registry (tool definitions contain no secrets).
+    registry = CapabilityRegistry()
+    for name, description, request_model, response_model in _READONLY_CAPABILITY_CATALOG:
+        registry.register(
+            name,
+            description=description,
+            request_model=request_model,
+            response_model=response_model,
+            handler=lambda _request: {},
+        )
+    return openai_tool_definitions(
+        registry,
+        names={"describe_metadata", "enumerate_contrasts", "list_jobs", "describe_artifacts", "query_artifact"},
+    )
+
+
 def build_readonly_capability_registry(runtime: AgentToolRuntime) -> CapabilityRegistry:
     """Register only bounded read operations for one ownership-scoped runtime."""
 
     registry = CapabilityRegistry(owner_subject=runtime.user_id)
-    registry.register(
-        "describe_metadata",
-        description="Describe observed metadata columns and levels.",
-        request_model=DescribeMetadataRequest,
-        response_model=MetadataDescription,
-        handler=lambda request: runtime.describe_metadata(request.fields),
-    )
-    registry.register(
-        "enumerate_contrasts",
-        description="Enumerate observed, replicate-checked contrast candidates.",
-        request_model=EnumerateContrastsRequest,
-        response_model=ContrastEnumeration,
-        handler=lambda request: runtime.enumerate_contrasts(
+    handlers: dict[str, CapabilityHandler] = {
+        "describe_metadata": lambda request: runtime.describe_metadata(request.fields),
+        "enumerate_contrasts": lambda request: runtime.enumerate_contrasts(
             compare_field=request.compare_field,
             scope=request.scope,
             min_replicates=request.min_replicates,
         ),
-    )
-    registry.register(
-        "list_jobs",
-        description="List the caller's bounded analysis Job history.",
-        request_model=ListJobsRequest,
-        response_model=JobListResult,
-        handler=lambda request: runtime.list_jobs(
+        "list_jobs": lambda request: runtime.list_jobs(
             analysis_type=request.analysis_type,
             limit=request.limit,
         ),
-    )
-    registry.register(
-        "get_job",
-        description="Get one caller-owned Job status summary.",
-        request_model=GetJobRequest,
-        response_model=ToolResult,
-        handler=lambda request: runtime.get_job(request.job_id),
-    )
-    registry.register(
-        "describe_artifacts",
-        description="Describe artifacts belonging to one caller-owned Job.",
-        request_model=DescribeArtifactsRequest,
-        response_model=ArtifactDescriptionResult,
-        handler=lambda request: runtime.describe_artifacts(request.job_id),
-    )
-    registry.register(
-        "query_artifact",
-        description="Query a bounded caller-owned artifact with citation metadata.",
-        request_model=QueryArtifactRequest,
-        response_model=ToolResult,
-        handler=lambda request: runtime.query_artifact(
+        "get_job": lambda request: runtime.get_job(request.job_id),
+        "describe_artifacts": lambda request: runtime.describe_artifacts(request.job_id),
+        "query_artifact": lambda request: runtime.query_artifact(
             request.job_id,
             request.artifact,
             filters=request.filters,
@@ -225,5 +243,16 @@ def build_readonly_capability_registry(runtime: AgentToolRuntime) -> CapabilityR
             limit=request.limit,
             resolve_entity=request.resolve_entity,
         ),
-    )
+    }
+    for name, description, request_model, response_model in _READONLY_CAPABILITY_CATALOG:
+        handler = handlers.get(name)
+        if handler is None:
+            continue
+        registry.register(
+            name,
+            description=description,
+            request_model=request_model,
+            response_model=response_model,
+            handler=handler,
+        )
     return registry

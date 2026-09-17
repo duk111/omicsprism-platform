@@ -142,6 +142,8 @@ def main_node(
                 return _ask_user_update(_MODEL_FALLBACK_QUESTION, budget, observations)
 
             decision = output.decision
+            native_call_id = _native_tool_call_id(model, decision) or f"call-{len(observations) + 1}"
+            native_assistant_message = getattr(model, "last_assistant_message", None) or {}
             if (
                 not any(observation.tool is ToolName.LIST_JOBS for observation in observations)
                 and _should_force_list_jobs(context, decision, tool_executor)
@@ -155,6 +157,8 @@ def main_node(
                     tool=ToolName.LIST_JOBS,
                     arguments={},
                 )
+                native_call_id = None
+                native_assistant_message = {}
             if (
                 decision.action == "tool_call"
                 and observations
@@ -188,6 +192,9 @@ def main_node(
                         latest_evidence = evidence
                     observations.append(ToolObservation(
                         tool=request.tool,
+                        call_id=native_call_id or f"call-{len(observations) + 1}",
+                        arguments=dict(request.arguments),
+                        assistant_message=dict(native_assistant_message),
                         summary=summary,
                         arguments_hash=_arguments_hash(request.arguments),
                         outcome=tool_outcome,
@@ -313,6 +320,9 @@ def main_node(
                 latest_evidence = evidence
             observations.append(ToolObservation(
                 tool=request.tool,
+                call_id=native_call_id or f"call-{len(observations) + 1}",
+                arguments=dict(request.arguments),
+                assistant_message=dict(native_assistant_message),
                 summary=summary,
                 arguments_hash=_arguments_hash(request.arguments),
                 outcome=tool_outcome,
@@ -351,6 +361,19 @@ def _main_context(state: GraphState) -> MainModelContext:
 
 def _arguments_hash(arguments: dict[str, object]) -> str:
     return stable_hash(arguments)
+
+
+def _native_tool_call_id(model: object, decision: AgentDecision) -> str | None:
+    """Read the model-provided call id when using native tool calling."""
+
+    if decision.action != "tool_call":
+        return None
+    calls = getattr(model, "last_tool_calls", None)
+    if not isinstance(calls, list) or not calls:
+        return None
+    call = calls[0]
+    call_id = call.get("id") if isinstance(call, dict) else None
+    return call_id.strip() if isinstance(call_id, str) and call_id.strip() else None
 
 
 def _repeated_tool_guidance(tool: ToolName, summary: str) -> str:

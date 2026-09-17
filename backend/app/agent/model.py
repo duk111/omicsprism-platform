@@ -35,6 +35,7 @@ class VllmGraphModel:
         timeout_seconds: float = 60.0,
         client: httpx.Client | None = None,
         trace_recorder: TraceRecorder | None = None,
+        structured_tool_response: bool = True,
     ) -> None:
         if not base_url.strip() or not model.strip():
             raise ValueError("vLLM base_url and model are required")
@@ -43,10 +44,26 @@ class VllmGraphModel:
         self.api_key = api_key
         self.client = client or httpx.Client(timeout=timeout_seconds)
         self.trace_recorder = trace_recorder
+        self.structured_tool_response = structured_tool_response
+        self._structured_tools_supported: bool | None = None
         self.last_usage = ModelUsage()
+        self.last_tool_calls: list[dict[str, object]] = []
+        self.last_assistant_message: dict[str, object] | None = None
         # Keep the same bounded context observation available to live eval as
         # the recorded fixture model. Contexts contain no raw dataset rows.
         self.contexts: list[MainModelContext] = []
+        # A graph turn may invoke the model several times while executing
+        # read-only tools. Keep the OpenAI-compatible chat transcript in
+        # memory so later calls append only new assistant/tool messages to the
+        # stable seed history (vLLM can then reuse its prefix cache).
+        # The graph state remains the source of truth and is still recorded in
+        # ``contexts`` for tracing and tests.
+        self._chat_histories: dict[tuple[str, str, str], list[dict[str, object]]] = {}
+        self._chat_observation_counts: dict[tuple[str, str, str], int] = {}
+        self._chat_fingerprints: dict[tuple[str, str, str], str] = {}
+        self._chat_last_guidance: dict[tuple[str, str, str], str | None] = {}
+        self._chat_tool_call_ids: dict[tuple[str, str, str], list[str]] = {}
+        self._chat_last_summary: dict[tuple[str, str, str], str | None] = {}
         self._debug_raw_output = os.getenv("OMICS_PRISM_AGENT_DEBUG_RAW_OUTPUT", "").lower() in {
             "1", "true", "yes", "on"
         }
@@ -58,46 +75,212 @@ class VllmGraphModel:
         if not isinstance(context, MainModelContext):
             raise ModelBoundaryError("graph model context has an invalid type")
         self.contexts.append(context)
+        chat_key = (context.thread_id, context.turn_id, context.run_id)
+        fingerprint = _context_fingerprint(context)
+        history = self._chat_histories.get(chat_key)
+        if history is None or self._chat_fingerprints.get(chat_key) != fingerprint:
+            if history is None and len(self._chat_histories) >= 64:
+                oldest_key = next(iter(self._chat_histories))
+                self._chat_histories.pop(oldest_key, None)
+                self._chat_observation_counts.pop(oldest_key, None)
+                self._chat_fingerprints.pop(oldest_key, None)
+                self._chat_last_guidance.pop(oldest_key, None)
+                self._chat_tool_call_ids.pop(oldest_key, None)
+                self._chat_last_summary.pop(oldest_key, None)
+            history = [
+                {"role": "system", "content": _GRAPH_MAIN_SYSTEM_PROMPT},
+                {
+                    "role": "user",
+                    "content": json.dumps(
+                        context.model_dump(mode="json"), ensure_ascii=False
+                    ),
+                },
+            ]
+            self._chat_histories[chat_key] = history
+            self._chat_observation_counts[chat_key] = 0
+            self._chat_fingerprints[chat_key] = fingerprint
+            self._chat_last_guidance[chat_key] = context.tool_repetition_guidance
+            self._chat_last_summary[chat_key] = context.conversation_summary
+            self._chat_tool_call_ids[chat_key] = []
+            for observation in context.tool_observations:
+                observation_index = self._chat_observation_counts[chat_key]
+                call_id = observation.call_id or self._tool_call_id(chat_key, observation_index)
+                self._remember_tool_call_id(chat_key, observation_index, call_id)
+                history.append(observation.assistant_message or {
+                    "role": "assistant",
+                    "content": None,
+                    "tool_calls": [{
+                        "id": call_id,
+                        "type": "function",
+                        "function": {
+                            "name": _enum_value(observation.tool),
+                            "arguments": json.dumps(observation.arguments, ensure_ascii=False),
+                        },
+                    }],
+                })
+                history.append({
+                    "role": "tool",
+                    "tool_call_id": call_id,
+                    "content": observation.summary,
+                })
+                self._chat_observation_counts[chat_key] += 1
+        else:
+            observed_count = self._chat_observation_counts.get(chat_key, 0)
+            for observation in context.tool_observations[observed_count:]:
+                call_id = observation.call_id or self._tool_call_id(chat_key, observed_count)
+                self._remember_tool_call_id(chat_key, observed_count, call_id)
+                last_assistant = next(
+                    (item for item in reversed(history) if item.get("role") == "assistant"),
+                    None,
+                )
+                last_calls = last_assistant.get("tool_calls", []) if last_assistant else []
+                if not last_calls or last_calls[-1].get("id") != call_id:
+                    # A graph guard may have forced a tool call after the
+                    # model returned a terminal action. Make the resulting
+                    # tool message a valid pair in the replayed transcript.
+                    history.append(observation.assistant_message or {
+                        "role": "assistant",
+                        "content": None,
+                        "tool_calls": [{
+                            "id": call_id,
+                            "type": "function",
+                            "function": {
+                                "name": _enum_value(observation.tool),
+                                "arguments": json.dumps(observation.arguments, ensure_ascii=False),
+                            },
+                        }],
+                    })
+                history.append({
+                    "role": "tool",
+                    "tool_call_id": call_id,
+                    "content": observation.summary,
+                })
+                observed_count += 1
+            self._chat_observation_counts[chat_key] = len(context.tool_observations)
+            guidance = context.tool_repetition_guidance
+            previous_guidance = self._chat_last_guidance.get(chat_key)
+            if guidance and guidance != previous_guidance:
+                # The deterministic repetition guard is a new observation
+                # from the graph. Complete the just-returned assistant tool
+                # call with a tool-role policy result instead of inserting a
+                # user message between an assistant call and its result.
+                last_assistant = next(
+                    (item for item in reversed(history) if item.get("role") == "assistant"),
+                    None,
+                )
+                last_calls = last_assistant.get("tool_calls", []) if last_assistant else []
+                call_id = last_calls[-1].get("id") if last_calls else None
+                if isinstance(call_id, str) and call_id:
+                    history.append({
+                        "role": "tool",
+                        "tool_call_id": call_id,
+                        "content": guidance,
+                    })
+                else:
+                    history.append({"role": "user", "content": guidance})
+            self._chat_last_guidance[chat_key] = guidance
+            previous_summary = self._chat_last_summary.get(chat_key)
+            if context.conversation_summary != previous_summary and context.conversation_summary:
+                delta = context.conversation_summary
+                if previous_summary and delta.startswith(previous_summary):
+                    delta = delta[len(previous_summary):].lstrip()
+                if delta:
+                    history.append({"role": "user", "content": delta})
+            self._chat_last_summary[chat_key] = context.conversation_summary
         headers = {"Content-Type": "application/json"}
         if self.api_key:
             headers["Authorization"] = f"Bearer {self.api_key}"
         started = perf_counter()
         self.last_usage = ModelUsage()
+        self.last_tool_calls = []
+        self.last_assistant_message = None
+        from .capabilities import readonly_openai_tool_definitions
         try:
             raw_content: str | None = None
-            response = self.client.post(
-                self.endpoint,
-                headers=headers,
-                json={
+            request_payload: dict[str, object] = {
                 "model": self.model_name,
                 "temperature": 0,
                 "max_tokens": 768,
-                "response_format": {
+                "chat_template_kwargs": {"enable_thinking": False},
+                "tools": readonly_openai_tool_definitions(),
+                "tool_choice": "auto",
+                "parallel_tool_calls": False,
+                "messages": history,
+            }
+            if self.structured_tool_response and self._structured_tools_supported is not False:
+                request_payload["response_format"] = {
                     "type": "json_schema",
                     "json_schema": {
                         "name": "main_model_output",
                         "strict": True,
                         "schema": MainModelOutput.model_json_schema(),
                     },
-                },
-                "chat_template_kwargs": {"enable_thinking": False},
-                "messages": [
-                    {"role": "system", "content": _GRAPH_MAIN_SYSTEM_PROMPT},
-                    {
-                        "role": "user",
-                        "content": json.dumps(
-                            context.model_dump(mode="json"), ensure_ascii=False
-                        ),
-                    },
-                ],
-                },
-            )
+                }
+            response = self.client.post(self.endpoint, headers=headers, json=request_payload)
+            if (
+                response.status_code == 400
+                and self.structured_tool_response
+                and self._structured_tools_supported is not False
+                and _response_mentions_unsupported_response_format(response)
+            ):
+                # Some vLLM releases support native tools and JSON schema
+                # responses independently, but reject them in one request.
+                # Retry the same turn in native tool mode without losing the
+                # transcript or charging a second graph step.
+                fallback_payload = dict(request_payload)
+                fallback_payload.pop("response_format", None)
+                self._structured_tools_supported = False
+                response = self.client.post(
+                    self.endpoint,
+                    headers=headers,
+                    json=fallback_payload,
+                )
             self.last_usage = _usage_from_response(response)
             response.raise_for_status()
             try:
-                content = response.json()["choices"][0]["message"]["content"]
+                message = response.json()["choices"][0]["message"]
+                if not isinstance(message, dict):
+                    raise TypeError("model message is not an object")
+                self.last_tool_calls = [
+                    item for item in (message.get("tool_calls") or [])
+                    if isinstance(item, dict)
+                ]
+                if len(self.last_tool_calls) > 1:
+                    raise ValueError("parallel tool calls are not supported")
+                self.last_assistant_message = _standard_assistant_message(message)
+                content = message.get("content")
                 raw_content = content if isinstance(content, str) else None
-                payload = json.loads(content)
+                native_tool_call = bool(self.last_tool_calls)
+                if native_tool_call:
+                    call = self.last_tool_calls[0]
+                    function = call.get("function") if isinstance(call, dict) else None
+                    if not isinstance(function, dict):
+                        raise ValueError("tool call function is invalid")
+                    tool_name = function.get("name")
+                    raw_arguments = function.get("arguments", "{}")
+                    if not isinstance(tool_name, str) or not isinstance(raw_arguments, str):
+                        raise ValueError("tool call fields are invalid")
+                    arguments = json.loads(raw_arguments)
+                    payload = {
+                        "decision": {
+                            "action": "tool_call",
+                            "tool": tool_name,
+                            "arguments": arguments,
+                        },
+                        "answer": None,
+                    }
+                else:
+                    if not isinstance(content, str) or not content.strip():
+                        raise ValueError("model response has no content")
+                    try:
+                        payload = json.loads(content)
+                    except json.JSONDecodeError:
+                        # Native tool mode permits ordinary assistant text for
+                        # terminal turns; retain the graph's typed boundary.
+                        payload = {
+                            "decision": {"action": "answer"},
+                            "answer": content.strip(),
+                        }
                 decision = payload.get("decision") if isinstance(payload, dict) else None
                 action = decision.get("action") if isinstance(decision, dict) else None
                 answer_present = isinstance(payload, dict) and "answer" in payload
@@ -118,11 +301,12 @@ class VllmGraphModel:
                         raw[:4000],
                         extra={"event": "agent.model.raw_output_debug"},
                     )
-                _normalize_legacy_action_fields(payload, context)
-                _normalize_result_query_artifact(payload, context)
-                _normalize_explicit_jobs_tool(payload, context)
-                _normalize_result_evidence_tool(payload, context)
-                _normalize_explicit_business_actions(payload, context)
+                if not native_tool_call:
+                    _normalize_legacy_action_fields(payload, context)
+                    _normalize_result_query_artifact(payload, context)
+                    _normalize_explicit_jobs_tool(payload, context)
+                    _normalize_result_evidence_tool(payload, context)
+                    _normalize_explicit_business_actions(payload, context)
                 _drop_irrelevant_action_fields(payload)
                 result = MainModelOutput.model_validate(payload)
             except (KeyError, IndexError, TypeError, ValueError, ValidationError) as exc:
@@ -140,6 +324,16 @@ class VllmGraphModel:
                 )
                 raise ModelBoundaryError("vLLM graph response is invalid") from exc
             else:
+                # Preserve exactly what the model decided so the next call in
+                # this turn can replay it as an assistant message.
+                history.append(
+                    self.last_assistant_message
+                    or {"role": "assistant", "content": raw_content or json.dumps(payload, ensure_ascii=False)}
+                )
+                for index, call in enumerate(self.last_tool_calls):
+                    call_id = call.get("id") if isinstance(call, dict) else None
+                    if isinstance(call_id, str) and call_id.strip():
+                        self._remember_tool_call_id(chat_key, index, call_id.strip())
                 self._record_call(context, started, outcome="accepted")
                 return result
         except httpx.HTTPStatusError as exc:
@@ -170,6 +364,18 @@ class VllmGraphModel:
             outcome=outcome,
             error_code=error_code,
         )
+
+    def _tool_call_id(self, chat_key: tuple[str, str, str], index: int) -> str:
+        ids = self._chat_tool_call_ids.setdefault(chat_key, [])
+        while len(ids) <= index:
+            ids.append(f"call-{len(ids) + 1}")
+        return ids[index]
+
+    def _remember_tool_call_id(self, chat_key: tuple[str, str, str], index: int, call_id: str) -> None:
+        ids = self._chat_tool_call_ids.setdefault(chat_key, [])
+        while len(ids) <= index:
+            ids.append(f"call-{len(ids) + 1}")
+        ids[index] = call_id
 
 
 def _drop_irrelevant_action_fields(payload: object) -> None:
@@ -468,15 +674,75 @@ def _chat_completions_url(base_url: str) -> str:
     return normalized + "/v1/chat/completions"
 
 
+def _context_fingerprint(context: MainModelContext) -> str:
+    """Identify the seed prompt for a graph turn without hashing tool output."""
+
+    payload = {
+        "thread_id": context.thread_id,
+        "turn_id": context.turn_id,
+        "run_id": context.run_id,
+        "user_message": context.user_message,
+        "fact_index": context.fact_index.context_version,
+        "recent_messages": context.recent_messages.context_version,
+        "conversation_memory": context.conversation_memory.context_version,
+    }
+    return json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+
+
+def _enum_value(value: object) -> str:
+    raw = getattr(value, "value", value)
+    return str(raw)
+
+
+def _standard_assistant_message(message: dict[str, object]) -> dict[str, object]:
+    """Keep only OpenAI-compatible fields for transcript replay."""
+
+    result: dict[str, object] = {
+        "role": "assistant",
+        "content": message.get("content"),
+    }
+    if isinstance(result["content"], str):
+        result["content"] = result["content"][:4000]
+    if isinstance(message.get("tool_calls"), list):
+        calls: list[dict[str, object]] = []
+        for call in message["tool_calls"]:
+            if not isinstance(call, dict):
+                continue
+            function = call.get("function")
+            if not isinstance(function, dict):
+                continue
+            calls.append({
+                "id": str(call.get("id", ""))[:200],
+                "type": "function",
+                "function": {
+                    "name": str(function.get("name", ""))[:100],
+                    "arguments": str(function.get("arguments", "{}"))[:4000],
+                },
+            })
+        result["tool_calls"] = calls
+    if message.get("reasoning_content") is not None:
+        # vLLM/Qwen may require this vendor extension when replaying a
+        # tool-call assistant turn, even though it is not part of the core
+        # OpenAI message shape.
+        reasoning = message["reasoning_content"]
+        if reasoning:
+            result["reasoning_content"] = reasoning
+    if message.get("refusal") is not None:
+        result["refusal"] = message["refusal"]
+    return result
+
+
 _GRAPH_MAIN_SYSTEM_PROMPT = (
-    "You are OmicsPrism Copilot. Return exactly one object matching the supplied "
-    "MainModelOutput schema. A tool_call may invoke only the read-only tools "
+    "You are OmicsPrism Copilot. Use the supplied tools for read-only data access "
+    "and return a concise final answer when no tool is needed. A tool call may "
+    "invoke only the read-only tools "
     "describe_metadata, enumerate_contrasts, list_jobs, describe_artifacts, or "
     "query_artifact; provide typed arguments and wait for its observation before "
     "deciding. Use answer, grounded_answer, or ask_user as terminal LoopExit actions. "
     "Route general knowledge to answer; dataset inspection or DEG/DEM/GMA requests "
     "to inspect_dataset, run_analysis, or propose_plan; existing Job status "
     "or evidence questions to get_job or query_result. Do not put action-specific "
+    "For legacy structured final decisions, do not put action-specific "
     "fields in decision.arguments: arguments is only for tool_call. For analysis "
     "actions put candidates in decision.proposal, for example run_analysis uses "
     "{analysis_type: 'DEG', compare_field: 'treatment', tested_level: 'salt', "
@@ -501,8 +767,8 @@ _GRAPH_MAIN_SYSTEM_PROMPT = (
     "Never claim a dataset fact, Job, artifact, entity, or numeric result that is absent "
     "from the bounded context. "
     "Always respond in the same language as the user's most recent message. "
-    "When action is answer, answer is required and must be a concise non-empty response. "
-    "When action is ask_user, question is required. For every other action, answer must be null. "
+    "When returning a legacy structured final decision, action=answer requires a "
+    "concise non-empty answer; action=ask_user requires question. "
     "Do not decide validation, ownership, ambiguity, or "
     "execution success."
 )
@@ -529,6 +795,19 @@ def _usage_from_response(response: httpx.Response) -> ModelUsage:
         total_tokens=total,
         cached_tokens=cached,
         status="reported" if any(item is not None for item in (prompt, completion, total, cached)) else "unknown",
+    )
+
+
+def _response_mentions_unsupported_response_format(response: httpx.Response) -> bool:
+    try:
+        body = response.text.casefold()
+    except Exception:
+        return False
+    mentions_feature = any(
+        marker in body for marker in ("response_format", "structured output", "json schema")
+    )
+    return mentions_feature and any(
+        marker in body for marker in ("not support", "unsupported", "not compatible", "cannot", "invalid")
     )
 
 

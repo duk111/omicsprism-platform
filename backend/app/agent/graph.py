@@ -467,6 +467,9 @@ class ToolObservation(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     tool: ToolName
+    call_id: str = Field(default="", max_length=200)
+    arguments: dict[str, Any] = Field(default_factory=dict, max_length=16)
+    assistant_message: dict[str, Any] = Field(default_factory=dict, max_length=8)
     summary: str = Field(min_length=1, max_length=4000)
     arguments_hash: str = Field(default="", max_length=80)
     outcome: Literal["ok", "failed"] = "ok"
