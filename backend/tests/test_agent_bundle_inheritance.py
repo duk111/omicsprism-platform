@@ -160,6 +160,49 @@ def test_consecutive_bundles_inherit_previous_files():
     assert fields == {"metadata", "counts", "transcriptome", "group", "metabolome"}
 
 
+def test_expired_input_bundle_can_be_listed_and_deleted() -> None:
+    store = InMemoryAgentProductStore()
+    now = datetime.now(timezone.utc)
+    thread_id = f"thread-{uuid4()}"
+    store.save_thread(AgentThreadRecord(
+        thread_id=thread_id,
+        user_id="user-test",
+        title="Test thread",
+        current_run_id=f"run-{uuid4()}",
+        status="active",
+        version=0,
+        created_at=now - timedelta(hours=3),
+        updated_at=now - timedelta(hours=2),
+    ))
+    bundle = AgentInputBundleRecord(
+        bundle_id=f"bundle-{uuid4()}",
+        thread_id=thread_id,
+        user_id="user-test",
+        status="active",
+        expires_at=now - timedelta(hours=1),
+        created_at=now - timedelta(hours=3),
+    )
+    file = AgentInputFileRecord(
+        file_id=f"file-{uuid4()}",
+        bundle_id=bundle.bundle_id,
+        user_id="user-test",
+        field="counts",
+        filename="counts.csv",
+        storage_key="agent-inputs/expired/counts.csv",
+        checksum="sha256:expired",
+        content_type="text/csv",
+        size_bytes=10,
+        created_at=bundle.created_at,
+    )
+    store.save_input_bundle_with_files(bundle=bundle, files=[file])
+
+    expired = store.list_expired_input_bundles(before=now)
+    assert [item.bundle_id for item in expired] == [bundle.bundle_id]
+    removed = store.delete_input_bundle(bundle_id=bundle.bundle_id, user_id="user-test")
+    assert [item.file_id for item in removed] == [file.file_id]
+    assert store.list_expired_input_bundles(before=now) == []
+
+
 def test_same_field_override_not_duplicate():
     """同角色重复上传时以新文件为准，不产生重复角色。"""
     store = InMemoryAgentProductStore()

@@ -320,18 +320,6 @@ export interface Citation {
   row_ids: number[];
 }
 
-export interface ClarificationItem {
-  field: string;
-  options?: string[];
-  reason: string;
-}
-
-export interface ClarificationPayload {
-  kind?: "clarification";
-  missing?: ClarificationItem[];
-  question: string;
-}
-
 export interface ConfirmationPayload {
   kind?: "confirmation";
   analysis_type: "DEG" | "DEM" | "GMA";
@@ -417,12 +405,6 @@ export interface GMAParams {
   max_missing_fraction?: number;
 }
 
-export interface GraphClarificationResumeRequest {
-  kind?: "clarification";
-  interrupt_id: string;
-  answer: string;
-}
-
 export interface GraphConfirmationResumeRequest {
   kind?: "confirmation";
   interrupt_id: string;
@@ -434,7 +416,7 @@ export interface GraphConfirmationResumeRequest {
 
 export interface GraphInterrupt {
   interrupt_id: string;
-  payload: ClarificationPayload | ConfirmationPayload;
+  payload: ConfirmationPayload;
 }
 
 export interface GraphPendingInterrupt {

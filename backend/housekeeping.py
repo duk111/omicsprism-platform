@@ -42,8 +42,36 @@ def cleanup_once() -> int:
         except Exception:
             LOG.exception("failed to clean expired job", extra={"job_id": job.id})
 
-    LOG.info("housekeeping pass complete", extra={"removed_jobs": removed})
-    return removed
+    expired_input_cutoff = datetime.now(timezone.utc)
+    removed_inputs = 0
+    for bundle in context.product_store.list_expired_input_bundles(before=expired_input_cutoff):
+        try:
+            files = context.product_store.list_input_files(
+                bundle_id=bundle.bundle_id,
+                user_id=bundle.user_id,
+            )
+            for item in files:
+                context.files.delete_staged_upload(item.storage_key)
+            context.product_store.delete_input_bundle(
+                bundle_id=bundle.bundle_id,
+                user_id=bundle.user_id,
+            )
+            removed_inputs += 1
+            LOG.info(
+                "expired input bundle cleaned",
+                extra={"bundle_id": bundle.bundle_id, "thread_id": bundle.thread_id},
+            )
+        except Exception:
+            LOG.exception(
+                "failed to clean expired input bundle",
+                extra={"bundle_id": bundle.bundle_id, "thread_id": bundle.thread_id},
+            )
+
+    LOG.info(
+        "housekeeping pass complete",
+        extra={"removed_jobs": removed, "removed_input_bundles": removed_inputs},
+    )
+    return removed + removed_inputs
 
 
 def main() -> None:

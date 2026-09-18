@@ -17,7 +17,6 @@ from .feedback import build_eval_candidate, requires_eval_review
 from .graph import (
     DatasetLoadRequest,
     DatasetProfileRef,
-    GraphClarificationResumeRequest,
     GraphConfirmationResumeRequest,
     GraphInterrupt,
     GraphPendingInterrupt,
@@ -409,47 +408,30 @@ def create_agent_router(
             raise HTTPException(status_code=400, detail="Input field roles are invalid or duplicated")
 
         now = datetime.now(timezone.utc)
-        bundle = AgentInputBundleRecord(
-            bundle_id=f"bundle-{uuid4()}",
-            thread_id=thread_id,
-            user_id=user_id,
-            status="active",
-            expires_at=now + timedelta(hours=24),
-            created_at=now,
+        thread_record = ctx.product_store.get_thread(thread_id=thread_id, user_id=user_id)
+        ctx.product_store.save_thread(thread_record.model_copy(update={"updated_at": now}))
+        bundle = ctx.product_store.get_latest_active_bundle(
+            thread_id=thread_id, user_id=user_id,
+            before=now + timedelta(microseconds=1),
         )
-        records: list[AgentInputFileRecord] = []
-        total_size = 0
-        new_fields = set(fields)
-        try:
-            # 查找同一 thread 内最近的 active bundle，继承未覆盖的文件
-            previous_bundle = ctx.product_store.get_latest_active_bundle(
-                thread_id=thread_id,
-                user_id=user_id,
-                before=now,
+        is_new_bundle = bundle is None
+        if bundle is None:
+            bundle = AgentInputBundleRecord(
+                bundle_id=f"bundle-{uuid4()}", thread_id=thread_id,
+                user_id=user_id, status="active",
+                expires_at=now + timedelta(hours=24), created_at=now,
             )
-            if previous_bundle is not None:
-                previous_files = ctx.product_store.list_input_files(
-                    bundle_id=previous_bundle.bundle_id,
-                    user_id=user_id,
-                )
-                for prev_file in previous_files:
-                    if prev_file.field not in new_fields:
-                        # 继承未被新上传覆盖的角色
-                        inherited = AgentInputFileRecord(
-                            file_id=f"file-{uuid4()}",
-                            bundle_id=bundle.bundle_id,
-                            user_id=user_id,
-                            field=prev_file.field,
-                            filename=prev_file.filename,
-                            storage_key=prev_file.storage_key,
-                            checksum=prev_file.checksum,
-                            content_type=prev_file.content_type,
-                            size_bytes=prev_file.size_bytes,
-                            created_at=now,
-                        )
-                        records.append(inherited)
-                        total_size += inherited.size_bytes
-
+        else:
+            bundle = bundle.model_copy(update={"expires_at": now + timedelta(hours=24)})
+        records: list[AgentInputFileRecord] = []
+        new_fields = set(fields)
+        existing_files = (
+            ctx.product_store.list_input_files(bundle_id=bundle.bundle_id, user_id=user_id)
+            if not is_new_bundle else []
+        )
+        total_size = sum(item.size_bytes for item in existing_files if item.field not in new_fields)
+        try:
+            records = []
             for field, upload in zip(fields, files):
                 stored = await ctx.files.save_staged_upload(bundle.bundle_id, field, upload)
                 total_size += stored.size_bytes
@@ -467,7 +449,19 @@ def create_agent_router(
                 ))
                 if total_size > AGENT_BUNDLE_MAX_BYTES:
                     raise HTTPException(status_code=413, detail="Input bundle exceeds 150 MB limit")
-            ctx.product_store.save_input_bundle_with_files(bundle=bundle, files=records)
+            if not is_new_bundle:
+                replaced = ctx.product_store.replace_input_files(
+                    bundle=bundle, files=records, fields=new_fields,
+                )
+                new_keys = {record.storage_key for record in records}
+                for item in replaced:
+                    if item.storage_key not in new_keys:
+                        try:
+                            ctx.files.delete_staged_upload(item.storage_key)
+                        except Exception:
+                            pass
+            else:
+                ctx.product_store.save_input_bundle_with_files(bundle=bundle, files=records)
         except Exception:
             for item in records:
                 ctx.files.delete_staged_upload(item.storage_key)

@@ -14,7 +14,6 @@ import type {
   AgentTraceEventListResponse,
   AgentTurnListResponse,
   AgentTurnResponse,
-  GraphClarificationResumeRequest,
   GraphConfirmationResumeRequest,
   GraphPendingInterrupt,
   GraphTurnResult,
@@ -22,7 +21,7 @@ import type {
 
 const root = "/api/agent/threads";
 
-export type GraphResumeRequest = GraphClarificationResumeRequest | GraphConfirmationResumeRequest;
+export type GraphResumeRequest = GraphConfirmationResumeRequest;
 
 function json(method: string, body: unknown): RequestInit {
   return { method, headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) };

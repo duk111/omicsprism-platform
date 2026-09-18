@@ -7,28 +7,6 @@ import { GraphInterruptPanel } from "./GraphInterruptPanel";
 afterEach(cleanup);
 
 describe("GraphInterruptPanel", () => {
-  it("renders clarification details and resumes with the selected answer", async () => {
-    const resume = vi.fn();
-    render(<GraphInterruptPanel interrupt={clarification()} busy={false} onResume={resume} />);
-
-    expect(screen.getByText("Treatment group")).toBeVisible();
-    expect(screen.getByText("Choose one level from the uploaded metadata.")).toBeVisible();
-    await userEvent.click(screen.getByRole("button", { name: "salt" }));
-    await userEvent.click(screen.getByRole("button", { name: "Continue" }));
-
-    expect(resume).toHaveBeenCalledWith({ kind: "clarification", interrupt_id: "interrupt-1", answer: "salt" });
-  });
-
-  it("accepts a manual clarification answer", async () => {
-    const resume = vi.fn();
-    render(<GraphInterruptPanel interrupt={clarification()} busy={false} onResume={resume} />);
-
-    await userEvent.type(screen.getByLabelText("Your answer"), "use salt as the treatment");
-    await userEvent.click(screen.getByRole("button", { name: "Continue" }));
-
-    expect(resume).toHaveBeenCalledWith({ kind: "clarification", interrupt_id: "interrupt-1", answer: "use salt as the treatment" });
-  });
-
   it("renders confirmation evidence and submits all three actions", async () => {
     const resume = vi.fn();
     render(<GraphInterruptPanel interrupt={confirmation()} busy={false} onResume={resume} />);
@@ -53,17 +31,6 @@ describe("GraphInterruptPanel", () => {
     expect(resume).toHaveBeenLastCalledWith({ kind: "confirmation", interrupt_id: "interrupt-2", plan_id: "plan-1", plan_version: 1, approve: false });
   });
 });
-
-function clarification(): GraphInterrupt {
-  return {
-    interrupt_id: "interrupt-1",
-    payload: {
-      kind: "clarification",
-      question: "Which treatment should be compared?",
-      missing: [{ field: "treatment_group", options: ["salt", "drought"], reason: "Choose one level from the uploaded metadata." }],
-    },
-  };
-}
 
 function confirmation(): GraphInterrupt {
   return {

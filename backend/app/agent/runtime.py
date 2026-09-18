@@ -329,7 +329,6 @@ class AgentRuntime:
             "decision": None,
             "response_text": None,
             "response_blocks": [],
-            "clarification_answer": None,
             "resolved_request": None,
             "validation_report": None,
             "job_summary": None,

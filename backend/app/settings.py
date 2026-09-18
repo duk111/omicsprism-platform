@@ -49,8 +49,6 @@ class AppSettings:
     agent_retry_max_seconds: float = 30.0
     agent_retry_jitter_seconds: float = 0.25
     job_timeout_seconds: int = 7200
-    # 按真实 HTTP 次数计费：3 次 decide × 每次最多 2 次 HTTP（含 schema 修复）。
-    agent_max_model_calls: int = 6
     agent_poll_seconds: float = 1.0
     log_level: str = "INFO"
     dev_email: str = "dev@omicsprism.local"
@@ -99,7 +97,6 @@ def load_settings() -> AppSettings:
         agent_retry_max_seconds=float(os.getenv("OMICS_PRISM_AGENT_RETRY_MAX_SECONDS", "30")),
         agent_retry_jitter_seconds=float(os.getenv("OMICS_PRISM_AGENT_RETRY_JITTER_SECONDS", "0.25")),
         job_timeout_seconds=int(os.getenv("OMICS_PRISM_JOB_TIMEOUT_SECONDS", "7200")),
-        agent_max_model_calls=int(os.getenv("OMICS_PRISM_AGENT_MAX_MODEL_CALLS", "6")),
         agent_poll_seconds=float(os.getenv("OMICS_PRISM_AGENT_POLL_SECONDS", "1")),
         log_level=os.getenv("OMICS_PRISM_LOG_LEVEL", "INFO"),
         dev_email=os.getenv("OMICS_PRISM_DEV_EMAIL", "dev@omicsprism.local"),

@@ -13,9 +13,6 @@ from ..fingerprint import compute_input_fingerprint
 from ..message_blocks import job_block, text_block
 from ..graph import (
     AnalysisExecutionRequest,
-    ClarificationItem,
-    ClarificationPayload,
-    ClarificationResume,
     ConfirmationPayload,
     ConfirmationResume,
     DatasetLoadRequest,
@@ -114,19 +111,14 @@ def analysis_node(
                 goto="analysis",
             )
 
-        payload = _clarification_payload(resolved, report)
-        resumed = ClarificationResume.model_validate(
-            interrupt(payload.model_dump(mode="json"))
-        )
         return Command(
             update={
-                "clarification_answer": resumed.answer,
+                "response_text": _clarification_question(resolved, report),
                 "resolved_request": resolved,
                 "validation_report": report,
-                "pending_interrupt": payload,
                 "step_budget": next_budget,
             },
-            goto="analysis",
+            goto=END,
         )
 
     return run
@@ -161,7 +153,6 @@ def _handle_confirmation(
                 "pending_interrupt": None,
                 "decision": None,
                 "user_message": resumed.message,
-                "clarification_answer": None,
                 "response_text": None,
             },
             goto="main",
@@ -183,27 +174,18 @@ def _handle_confirmation(
             state, payload, resumed, dataset_loader, job_submitter
         )
     except (DatasetLoadError, ExecutionRejected) as exc:
-        clarification = ClarificationPayload(
-            missing=[ClarificationItem(
-                field="input_fingerprint",
-                reason=str(exc)[:500],
-            )],
-            question=(
-                "The analysis inputs changed after validation. Review the current "
-                "datasets and confirm the analysis request again."
-            ),
-        )
-        answer = ClarificationResume.model_validate(
-            interrupt(clarification.model_dump(mode="json"))
-        )
         return Command(
             update={
-                "clarification_answer": answer.answer,
-                "pending_interrupt": clarification,
-                "response_text": None,
+                "pending_interrupt": None,
+                "pending_plan": None,
+                "response_text": (
+                    "The analysis inputs changed before submission ("
+                    f"{str(exc)[:400]}). Please review the current datasets and "
+                    "start the analysis again."
+                ),
                 "step_budget": next_budget,
             },
-            goto="analysis",
+            goto=END,
         )
 
     recent_jobs = [
@@ -358,9 +340,7 @@ def _plan_provenance(state: GraphState, params: object) -> dict[str, str]:
 
 
 def _analysis_request_text(state: GraphState) -> str:
-    if state.clarification_answer is None:
-        return state.user_message
-    return f"{state.user_message}\n用户补充：{state.clarification_answer}"
+    return state.user_message
 
 
 def _load_validation_refs(
@@ -435,31 +415,20 @@ def _check_metadata_fields(
         )
 
 
-def _clarification_payload(
+def _clarification_question(
     resolved: ResolvedRequest,
     report: ValidationReport,
-) -> ClarificationPayload:
+) -> str:
     if resolved.missing:
-        items = [
-            ClarificationItem(
-                field=item.field[:200],
-                options=item.options[:20],
-                reason=item.reason[:500],
-            )
-            for item in resolved.missing[:3]
-        ]
         question = resolved.clarification or "请补充缺失的分析参数。"
-    else:
-        items = [
-            ClarificationItem(
-                field=(item.field or item.code)[:200],
-                reason=item.message[:500],
-            )
-            for item in report.blocking[:3]
+        options = [
+            f"{item.field}: {', '.join(item.options[:20])}"
+            for item in resolved.missing[:3]
+            if item.options
         ]
-        details = "；".join(item.reason for item in items)
+        if options:
+            question = f"{question} 可选项：" + "；".join(options)
+    else:
+        details = "；".join(item.message[:500] for item in report.blocking[:3])
         question = f"分析请求未通过校验，请处理后继续：{details}"
-    return ClarificationPayload(
-        missing=items,
-        question=question[:1000],
-    )
+    return question[:1200]

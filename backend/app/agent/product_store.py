@@ -141,6 +141,16 @@ class AgentProductStore(Protocol):
                                      files: list[AgentInputFileRecord]) -> None:
         ...
 
+    def replace_input_files(
+        self,
+        *,
+        bundle: AgentInputBundleRecord,
+        files: list[AgentInputFileRecord],
+        fields: set[str],
+    ) -> list[AgentInputFileRecord]:
+        """Replace the thread dataset library entries for the supplied roles."""
+        ...
+
     def get_input_bundle(self, *, bundle_id: str, user_id: str) -> AgentInputBundleRecord:
         ...
 
@@ -154,6 +164,12 @@ class AgentProductStore(Protocol):
         ...
 
     def get_latest_active_bundle(self, *, thread_id: str, user_id: str, before: datetime) -> AgentInputBundleRecord | None:
+        ...
+
+    def list_expired_input_bundles(self, *, before: datetime) -> list[AgentInputBundleRecord]:
+        ...
+
+    def delete_input_bundle(self, *, bundle_id: str, user_id: str) -> list[AgentInputFileRecord]:
         ...
 
     def create_job_wait(self, wait: AgentJobWaitRecord) -> AgentJobWaitRecord:
@@ -593,6 +609,37 @@ class InMemoryAgentProductStore:
         for item in files:
             self._files[item.file_id] = item.model_dump(mode="json")
 
+    def replace_input_files(
+        self,
+        *,
+        bundle: AgentInputBundleRecord,
+        files: list[AgentInputFileRecord],
+        fields: set[str],
+    ) -> list[AgentInputFileRecord]:
+        self.get_thread(thread_id=bundle.thread_id, user_id=bundle.user_id)
+        if len(files) > 6 or any(
+            (item.bundle_id, item.user_id) != (bundle.bundle_id, bundle.user_id)
+            for item in files
+        ):
+            raise ValueError("input files do not match bundle ownership")
+        if len({item.field for item in files}) != len(files) or not fields.issuperset(item.field for item in files):
+            raise ValueError("input bundle fields are invalid or duplicated")
+        old = [
+            AgentInputFileRecord.model_validate(deepcopy(payload))
+            for payload in self._files.values()
+            if payload["bundle_id"] == bundle.bundle_id
+            and payload["user_id"] == bundle.user_id
+            and payload["field"] in fields
+        ]
+        for item in old:
+            self._files.pop(item.file_id, None)
+        self._bundles[bundle.bundle_id] = bundle.model_dump(mode="json")
+        for item in files:
+            if item.file_id in self._files:
+                raise ValueError("agent input file id already exists")
+            self._files[item.file_id] = item.model_dump(mode="json")
+        return old
+
     def get_input_bundle(self, *, bundle_id: str, user_id: str) -> AgentInputBundleRecord:
         payload = self._bundles.get(bundle_id)
         if payload is None or payload["user_id"] != user_id:
@@ -635,6 +682,29 @@ class InMemoryAgentProductStore:
             return None
         candidates.sort(key=lambda item: item.created_at, reverse=True)
         return candidates[0]
+
+    def list_expired_input_bundles(self, *, before: datetime) -> list[AgentInputBundleRecord]:
+        bundles = []
+        for payload in self._bundles.values():
+            if payload["status"] != "active":
+                continue
+            bundle = AgentInputBundleRecord.model_validate(deepcopy(payload))
+            thread = self._threads.get(bundle.thread_id)
+            if bundle.expires_at <= before and thread is not None:
+                thread_record = AgentThreadRecord.model_validate(deepcopy(thread))
+                if thread_record.updated_at <= before:
+                    bundles.append(bundle)
+        bundles.sort(key=lambda item: (item.expires_at, item.bundle_id))
+        return bundles
+
+    def delete_input_bundle(self, *, bundle_id: str, user_id: str) -> list[AgentInputFileRecord]:
+        bundle = self.get_input_bundle(bundle_id=bundle_id, user_id=user_id)
+        files = self.list_input_files(bundle_id=bundle_id, user_id=user_id)
+        for file_id, payload in list(self._files.items()):
+            if payload["bundle_id"] == bundle_id and payload["user_id"] == user_id:
+                del self._files[file_id]
+        self._bundles.pop(bundle.bundle_id, None)
+        return files
 
     def create_job_wait(self, wait: AgentJobWaitRecord) -> AgentJobWaitRecord:
         self.get_thread(thread_id=wait.thread_id, user_id=wait.user_id)
@@ -1476,6 +1546,60 @@ class PostgresAgentProductStore:
                     ),
                 )
 
+    def replace_input_files(
+        self,
+        *,
+        bundle: AgentInputBundleRecord,
+        files: list[AgentInputFileRecord],
+        fields: set[str],
+    ) -> list[AgentInputFileRecord]:
+        if len(files) > 6 or any(
+            (item.bundle_id, item.user_id) != (bundle.bundle_id, bundle.user_id)
+            for item in files
+        ) or len({item.field for item in files}) != len(files):
+            raise ValueError("input files do not match bundle ownership")
+        with self._connect() as conn:
+            owned = conn.execute(
+                "select thread_id from agent_threads where thread_id = %s and user_id = %s",
+                (bundle.thread_id, bundle.user_id),
+            ).fetchone()
+            if owned is None:
+                raise AgentResourceNotFound(bundle.thread_id)
+            rows = conn.execute(
+                """
+                select file_id, bundle_id, user_id, field, filename, storage_key,
+                       checksum, content_type, size_bytes, created_at
+                from agent_input_files where bundle_id = %s and user_id = %s
+                  and field = any(%s)
+                """,
+                (bundle.bundle_id, bundle.user_id, list(fields)),
+            ).fetchall()
+            conn.execute(
+                """
+                update agent_input_bundles set status = %s, expires_at = %s
+                where bundle_id = %s and user_id = %s
+                """,
+                (bundle.status.value, bundle.expires_at, bundle.bundle_id, bundle.user_id),
+            )
+            conn.execute(
+                "delete from agent_input_files where bundle_id = %s and user_id = %s and field = any(%s)",
+                (bundle.bundle_id, bundle.user_id, list(fields)),
+            )
+            for item in files:
+                conn.execute(
+                    """
+                    insert into agent_input_files (
+                        file_id, bundle_id, user_id, field, filename, storage_key,
+                        checksum, content_type, size_bytes, created_at
+                    ) values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    """,
+                    (item.file_id, item.bundle_id, item.user_id, item.field, item.filename,
+                     item.storage_key, item.checksum, item.content_type, item.size_bytes, item.created_at),
+                )
+        fields_out = ("file_id", "bundle_id", "user_id", "field", "filename", "storage_key",
+                      "checksum", "content_type", "size_bytes", "created_at")
+        return [AgentInputFileRecord.model_validate(dict(zip(fields_out, row))) for row in rows]
+
     def get_input_bundle(self, *, bundle_id: str, user_id: str) -> AgentInputBundleRecord:
         with self._connect() as conn:
             row = conn.execute(
@@ -1573,6 +1697,49 @@ class PostgresAgentProductStore:
         return AgentInputBundleRecord.model_validate(dict(zip(
             ("bundle_id", "thread_id", "user_id", "status", "expires_at", "created_at"), row,
         )))
+
+    def list_expired_input_bundles(self, *, before: datetime) -> list[AgentInputBundleRecord]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                select bundle_id, thread_id, user_id, status, expires_at, created_at
+                from agent_input_bundles b
+                join agent_threads t on t.thread_id = b.thread_id and t.user_id = b.user_id
+                where b.status = 'active' and b.expires_at <= %s and t.updated_at <= %s
+                order by expires_at, bundle_id
+                """,
+                (before, before),
+            ).fetchall()
+        fields = ("bundle_id", "thread_id", "user_id", "status", "expires_at", "created_at")
+        return [AgentInputBundleRecord.model_validate(dict(zip(fields, row))) for row in rows]
+
+    def delete_input_bundle(self, *, bundle_id: str, user_id: str) -> list[AgentInputFileRecord]:
+        with self._connect() as conn:
+            row = conn.execute(
+                "select 1 from agent_input_bundles where bundle_id = %s and user_id = %s for update",
+                (bundle_id, user_id),
+            ).fetchone()
+            if row is None:
+                raise AgentResourceNotFound(bundle_id)
+            rows = conn.execute(
+                """
+                select file_id, bundle_id, user_id, field, filename, storage_key,
+                       checksum, content_type, size_bytes, created_at
+                from agent_input_files where bundle_id = %s and user_id = %s
+                """,
+                (bundle_id, user_id),
+            ).fetchall()
+            conn.execute(
+                "delete from agent_input_files where bundle_id = %s and user_id = %s",
+                (bundle_id, user_id),
+            )
+            conn.execute(
+                "delete from agent_input_bundles where bundle_id = %s and user_id = %s",
+                (bundle_id, user_id),
+            )
+        fields = ("file_id", "bundle_id", "user_id", "field", "filename", "storage_key",
+                  "checksum", "content_type", "size_bytes", "created_at")
+        return [AgentInputFileRecord.model_validate(dict(zip(fields, row))) for row in rows]
 
     def create_job_wait(self, wait: AgentJobWaitRecord) -> AgentJobWaitRecord:
         self.get_thread(thread_id=wait.thread_id, user_id=wait.user_id)

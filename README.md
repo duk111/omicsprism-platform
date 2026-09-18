@@ -9,7 +9,7 @@ It supports PostgreSQL, Redis, a worker process, and an object storage layer.
 omicsprism-platform/
   backend/     FastAPI API, worker, storage, quota, audit, scripts
   frontend/    React + TypeScript + Vite UI
-  docs/        deployment notes
+  wiki/        deployment notes and project wiki
   docker-compose.yml
   .env.example
 ```

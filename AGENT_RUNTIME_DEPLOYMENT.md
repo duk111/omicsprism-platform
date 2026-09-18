@@ -2,7 +2,7 @@
 
 This is the current operational deployment contract for the v3 split runtime.
 The historical document
-[`docs/OMICS_PRISM_SERVER_DEPLOYMENT_MODE_FROZEN_ZH.md`](docs/OMICS_PRISM_SERVER_DEPLOYMENT_MODE_FROZEN_ZH.md)
+[`wiki/OMICS_PRISM_SERVER_DEPLOYMENT_MODE_FROZEN_ZH.md`](wiki/OMICS_PRISM_SERVER_DEPLOYMENT_MODE_FROZEN_ZH.md)
 is retained for audit history and is not an instruction to restore the old
 API-local graph or legacy `agent-worker` topology. The architecture decision is
 also captured in [`ADR_0001_AGENT_RUNTIME_BOUNDARY.md`](ADR_0001_AGENT_RUNTIME_BOUNDARY.md).

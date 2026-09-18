@@ -207,28 +207,6 @@ JobReader = Callable[[JobLookupRequest], JobSummary]
 ResultQuerier = Callable[[ResultEvidenceRequest], ToolResult]
 
 
-class ClarificationItem(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    field: str = Field(min_length=1, max_length=200)
-    options: list[str] = Field(default_factory=list, max_length=20)
-    reason: str = Field(min_length=1, max_length=500)
-
-
-class ClarificationPayload(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    kind: Literal["clarification"] = "clarification"
-    missing: list[ClarificationItem] = Field(default_factory=list, max_length=3)
-    question: str = Field(min_length=1, max_length=1000)
-
-
-class ClarificationResume(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    answer: str = Field(min_length=1, max_length=1000)
-
-
 class StratumSummary(BaseModel):
     """Bounded sample counts shown as part of a pending analysis plan."""
 
@@ -316,10 +294,7 @@ class ConfirmationResume(BaseModel):
         return self
 
 
-PendingInterrupt = Annotated[
-    ClarificationPayload | ConfirmationPayload,
-    Field(discriminator="kind"),
-]
+PendingInterrupt = ConfirmationPayload
 
 
 class GraphInterrupt(BaseModel):
@@ -355,14 +330,6 @@ class AgentStreamEvent(BaseModel):
     data: AgentTurnResponse | AgentMessageResponse | AgentJobWaitResponse | GraphPendingInterrupt | None
 
 
-class GraphClarificationResumeRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    kind: Literal["clarification"] = "clarification"
-    interrupt_id: str = Field(min_length=1, max_length=200)
-    answer: str = Field(min_length=1, max_length=1000)
-
-
 class GraphConfirmationResumeRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -384,10 +351,7 @@ class GraphConfirmationResumeRequest(BaseModel):
         return self
 
 
-GraphResumeRequest = Annotated[
-    GraphClarificationResumeRequest | GraphConfirmationResumeRequest,
-    Field(discriminator="kind"),
-]
+GraphResumeRequest = GraphConfirmationResumeRequest
 
 
 class GraphTurnResult(BaseModel):
@@ -573,7 +537,6 @@ class GraphState(BaseModel):
     # Nodes populate this only from typed, ownership-bound facts. Runtime
     # persists the blocks as-is and must never infer semantics from text.
     response_blocks: list[AgentMessageBlock] = Field(default_factory=list, max_length=20)
-    clarification_answer: str | None = Field(default=None, max_length=1000)
     resolved_request: ResolvedRequest | None = None
     validation_report: ValidationReport | None = None
     job_summary: JobSummary | None = None
