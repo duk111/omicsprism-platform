@@ -11,14 +11,13 @@ from backend.app.agent.param_resolver import ContrastSpec, DEGParams, ResolvedRe
 def _state() -> GraphState:
     metadata = MetadataProfile(
         role="metadata",
-        columns=["sample_id", "line", "timepoint", "treatment"],
+        columns=["line", "timepoint", "treatment"],
         levels={
             "line": {"WT": 2, "mutant": 2},
             "timepoint": {"24h": 4},
             "treatment": {"control": 2, "salt": 2},
         },
         sample_ids=["s1", "s2", "s3", "s4"],
-        rows=[["s1", "WT", "24h", "control"]],
         alignment={"counts": "exact"},
     )
     matrix = MatrixProfile(
@@ -73,7 +72,7 @@ def _state() -> GraphState:
 def test_context_assembler_exposes_bounded_facts_and_decisions() -> None:
     context = ContextAssembler().assemble(_state())
 
-    assert context.fact_index.metadata_fields == ["sample_id", "line", "timepoint", "treatment"]
+    assert context.fact_index.metadata_fields == ["line", "timepoint", "treatment"]
     assert context.fact_index.metadata_levels["line"] == {"WT": 2, "mutant": 2}
     assert context.fact_index.sample_count == 4
     assert context.fact_index.alignment == {"counts": "exact"}
@@ -114,10 +113,9 @@ def test_context_assembler_does_not_accept_unbounded_payloads() -> None:
 def test_context_assembler_truncates_large_metadata_index() -> None:
     profile = MetadataProfile(
         role="metadata",
-        columns=["sample_id", *[f"factor_{index}" for index in range(25)]],
+        columns=[*[f"factor_{index}" for index in range(25)]],
         levels={f"factor_{index}": {"value": 1} for index in range(25)},
         sample_ids=["s1"],
-        rows=None,
         alignment={},
     )
     state = SimpleNamespace(
@@ -129,7 +127,7 @@ def test_context_assembler_truncates_large_metadata_index() -> None:
     context = ContextAssembler().assemble(state)
 
     assert len(context.fact_index.metadata_fields) == 20
-    assert len(context.fact_index.metadata_levels) == 19
+    assert len(context.fact_index.metadata_levels) == 20
     assert context.fact_index.truncated
 
 

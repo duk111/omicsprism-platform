@@ -12,12 +12,11 @@ import { MessageBlocks } from "./MessageBlocks";
 import { TracePanel } from "./TracePanel";
 import "./copilot.css";
 
-const INPUT_FIELDS = ["counts", "metadata", "metabs", "transcriptome", "metabolome", "group"] as const;
+const INPUT_FIELDS = ["counts", "metadata", "transcriptome", "metabolome", "group"] as const;
 type InputField = typeof INPUT_FIELDS[number];
 const INPUT_FIELD_LABELS: Record<InputField, string> = {
   counts: "Counts matrix",
   metadata: "Metadata table",
-  metabs: "Metabolite matrix",
   transcriptome: "Transcriptome matrix",
   metabolome: "Metabolome matrix",
   group: "GMA group table (sample_id/group1/group2)",
@@ -298,5 +297,9 @@ function EmptyState({ loading = false }: { loading?: boolean }) {
 function upsert<T extends Record<K, string>, K extends keyof T>(items: T[], incoming: T, key: K): T[] { const found = items.findIndex(item => item[key] === incoming[key]); return found < 0 ? [...items, incoming] : items.map((item, index) => index === found ? incoming : item); }
 function errorMessage(error: unknown) { if (error instanceof ApiRequestError) return error.status === 404 ? "This conversation is unavailable." : error.message; return navigator.onLine ? "Copilot is temporarily unavailable. Try again." : "You are offline. Reconnect to continue."; }
 function latestUserText(messages: AgentMessageResponse[]) { for (const message of [...messages].reverse()) { if (message.role !== "user") continue; const block = message.blocks.find(item => item.type === "text"); if (block?.type === "text") return block.text; } return ""; }
-function guessField(name: string): InputField { const value = name.toLowerCase(); return INPUT_FIELDS.find(field => value.includes(field)) || (value.includes("count") ? "counts" : "metadata"); }
+function guessField(name: string): InputField {
+  const value = name.toLowerCase();
+  return INPUT_FIELDS.find(field => value.includes(field))
+    || (value.includes("count") ? "counts" : value.includes("metab") ? "metabolome" : "metadata");
+}
 function relativeTime(value: string) { const date = new Date(value); if (Number.isNaN(date.valueOf())) return ""; const days = Math.floor((Date.now() - date.valueOf()) / 86400000); return days < 1 ? "Today" : days === 1 ? "Yesterday" : `${days}d ago`; }

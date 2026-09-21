@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from backend.app.agent.dataset_profile import GroupProfile, MetadataProfile
+from backend.app.agent.dataset_profile import GroupProfile, MetadataProfile, build_dataset_profiles
 from backend.app.agent.param_resolver import (
     AnalysisProposal,
     ContrastSpec,
@@ -21,12 +21,12 @@ def _metadata(rows: list[list[str]], columns: list[str]) -> MetadataProfile:
         for row in rows:
             counts[row[index]] = counts.get(row[index], 0) + 1
         levels[column] = counts
+    data_columns = columns[1:]
     return MetadataProfile(
         role="metadata",
-        columns=columns,
+        columns=data_columns,
         levels=levels,
         sample_ids=[row[0] for row in rows],
-        rows=rows,
         alignment={},
     )
 
@@ -341,3 +341,39 @@ def test_legacy_same_fields_column_keeps_all_valid_strata() -> None:
         mode="stratified", blocking_fields=["batch"]
     )
     assert result.legacy_params()["same_fields"] == "batch"
+
+
+def test_large_metadata_uses_aggregated_strata_for_fixed_and_stratified_scope() -> None:
+    headers = ["sample_id", "batch", "treatment"] + [f"extra_{index}" for index in range(9)]
+    rows: list[str] = []
+    sample = 1
+    for batch in ("b1", "b2"):
+        for treatment in ("control", "salt"):
+            for _ in range(16):
+                values = [f"s{sample}", batch, treatment] + ["constant"] * 9
+                rows.append(",".join(values))
+                sample += 1
+    content = (",".join(headers) + "\n" + "\n".join(rows) + "\n").encode()
+    profile = next(
+        item for item in build_dataset_profiles({"metadata": ("metadata.csv", content)})
+        if isinstance(item, MetadataProfile)
+    )
+
+    assert not hasattr(profile, "rows")
+    assert len(profile.columns) == 11
+    for scope in (
+        ScopeSpec(mode="fixed", fixed_filters={"batch": "b1"}),
+        ScopeSpec(mode="stratified", blocking_fields=["batch"]),
+    ):
+        result = resolve_analysis_request(
+            "compare salt and control",
+            [profile],
+            _proposal(
+                compare_field="treatment",
+                tested_level="salt",
+                reference_level="control",
+                scope=scope,
+            ),
+        )
+        assert result.params is not None
+        assert result.params.contrast.scope == scope

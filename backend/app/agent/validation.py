@@ -48,12 +48,16 @@ def derive_scoped_dataset_refs(
     )
     if metadata is None:
         raise ValueError("fixed scope requires metadata")
+    metadata_text = metadata.content.decode("utf-8-sig", errors="replace")
+    metadata_parsed = list(csv.reader(io.StringIO(metadata_text, newline="")))
+    metadata_header = [str(value).strip() for value in (metadata_parsed[0] if metadata_parsed else [])]
     metadata_rows = _csv_rows(metadata.content)
     if not metadata_rows:
         raise ValueError("fixed scope metadata is empty")
-    columns = set(metadata_rows[0])
-    if "sample_id" not in columns:
-        raise ValueError("fixed scope metadata requires a sample_id column")
+    if not metadata_header:
+        raise ValueError("fixed scope metadata is empty")
+    sample_id_column = metadata_header[0]
+    columns = set(metadata_header[1:])
     missing = sorted(set(scope.fixed_filters) - columns)
     if missing:
         raise ValueError("fixed scope fields are missing from metadata: " + ", ".join(missing))
@@ -61,7 +65,7 @@ def derive_scoped_dataset_refs(
         row for row in metadata_rows
         if all(row.get(field, "").strip() == value for field, value in scope.fixed_filters.items())
     ]
-    sample_ids = [row.get("sample_id", "").strip() for row in selected_rows]
+    sample_ids = [row.get(sample_id_column, "").strip() for row in selected_rows]
     sample_ids = [item for item in sample_ids if item]
     if not sample_ids:
         raise ValueError("fixed scope selected no samples")
@@ -219,6 +223,10 @@ def validate_analysis_request(
             ref.role: UploadFile(filename=ref.filename, file=io.BytesIO(ref.content))
             for ref in validation_refs
         }
+        # The agent uses the canonical ``metabolome`` role. The legacy
+        # preflight/job contract still calls the DEM matrix ``metabs``.
+        if analysis_type == AnalysisType.DEM and "metabs" not in files and "metabolome" in files:
+            files["metabs"] = files["metabolome"]
         params = request.params.legacy_params()
         response = PreflightService().preflight(analysis_type, params=params, files=files)
         blocking.extend(_issues(response.errors))

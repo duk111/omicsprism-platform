@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from datetime import datetime, timedelta, timezone
 from threading import Event, Thread
 from time import sleep
@@ -32,6 +33,7 @@ from backend.app.agent.job_events import (
 )
 from backend.app.agent.queue import AgentTurnInput, AgentTurnWorkItem, InMemoryAgentTurnQueue
 from backend.app.agent.runtime import AgentRuntime
+from backend.app.observability import ContextFilter
 from backend.app.agent.schemas import (
     AgentInputBundleRecord,
     AgentInputBundleStatus,
@@ -72,6 +74,12 @@ class _Graph:
             raise KeyboardInterrupt()
         assert self.state is not None
         self.state = self.state.model_copy(update={"response_text": "runtime complete"})
+
+
+class _LoggingGraph(_Graph):
+    def invoke(self, input_value: object, config: dict) -> None:
+        logging.getLogger("test.agent_runtime.graph").info("graph invoked")
+        super().invoke(input_value, config)
 
 
 class _GraphWithoutNextHint(_Graph):
@@ -237,6 +245,34 @@ def test_runtime_completes_queued_turn_and_persists_assistant_message() -> None:
     messages = context.product_store.list_messages(thread_id=turn.thread_id, user_id=turn.user_id)
     assert [block.text for block in messages[0].blocks] == ["runtime complete"]
     assert not queue.processing
+
+
+def test_graph_invocation_logs_with_turn_context(caplog: pytest.LogCaptureFixture) -> None:
+    context, queue, turn = _context(_LoggingGraph())
+    item = AgentTurnWorkItem(
+        turn_id=turn.turn_id,
+        thread_id=turn.thread_id,
+        trace_id="trace-runtime-log",
+        user_id=turn.user_id,
+        state=_state(),
+    )
+    queue.enqueue(item)
+    raw = queue.reserve()
+    assert raw is not None
+
+    caplog.set_level(logging.INFO, logger="test.agent_runtime.graph")
+    context_filter = ContextFilter()
+    caplog.handler.addFilter(context_filter)
+    try:
+        AgentRuntime(context, queue).run_once(raw)
+    finally:
+        caplog.handler.removeFilter(context_filter)
+
+    graph_records = [record for record in caplog.records if record.name == "test.agent_runtime.graph"]
+    assert len(graph_records) == 1
+    assert graph_records[0].trace_id == "trace-runtime-log"
+    assert graph_records[0].user_id == "user-1"
+    assert graph_records[0].project_id == "thread-1"
 
 
 def test_runtime_executes_job_continuation_and_closes_wait() -> None:

@@ -315,6 +315,20 @@ class GraphPendingInterrupt(BaseModel):
     interrupt: GraphInterrupt
 
 
+class PendingAnalysisClarification(BaseModel):
+    """A resumable analysis intent waiting for an ordinary chat answer."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    status: Literal["active", "consumed", "superseded", "expired"] = "active"
+    analysis_type: AnalysisTypeName | None = None
+    question: str = Field(min_length=1, max_length=1200)
+    missing: list[str] = Field(default_factory=list, max_length=3)
+    options: list[str] = Field(default_factory=list, max_length=20)
+    source_message: str = Field(min_length=1, max_length=4000)
+    input_bundle_id: str | None = Field(default=None, max_length=200)
+
+
 class AgentStreamEvent(BaseModel):
     """Public SSE event carrying durable turn, message, or HITL state."""
 
@@ -542,6 +556,7 @@ class GraphState(BaseModel):
     job_summary: JobSummary | None = None
     grounded_answer: GroundedAnswer | None = None
     pending_plan: PendingPlan | None = None
+    pending_analysis: PendingAnalysisClarification | None = None
     confirmed_params: AnalysisParams | None = None
     tool_observations: list[ToolObservation] = Field(default_factory=list, max_length=12)
     pending_interrupt: PendingInterrupt | None = None

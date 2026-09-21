@@ -308,7 +308,7 @@ def test_production_tool_executor_loads_owned_inputs_and_dispatches_read_only_to
         state,
     )
     assert result.ok is True
-    assert [field.field for field in result.fields] == ["sample_id", "condition"]
+    assert [field.field for field in result.fields] == ["condition"]
 
     foreign_state = state.model_copy(update={"user_id": "user-2"})
     with pytest.raises(HTTPException) as exc_info:

@@ -30,7 +30,7 @@ class MatrixProfile(BaseModel):
 
 
 class MetadataProfile(BaseModel):
-    """Bounded facts about dynamic metadata rows and sample alignment."""
+    """Bounded metadata facts excluding sample identifiers and raw rows."""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -38,7 +38,6 @@ class MetadataProfile(BaseModel):
     columns: list[str]
     levels: dict[str, dict[str, int]]
     sample_ids: list[str]
-    rows: list[list[str]] | None
     alignment: dict[str, AlignmentStatus]
 
 
@@ -68,7 +67,7 @@ def build_dataset_profiles(
     """Convert the existing bounded inspection facts into typed profiles.
 
     `_inspect_input` remains the source of numeric statistics, sampling, and
-    metadata thresholds. This adapter only adds the explicit profile contract
+    metadata aggregation. This adapter only adds the explicit profile contract
     and uses headers/rows to calculate the alignment map.
     """
 
@@ -143,12 +142,6 @@ def _metadata_profile(
             levels[str(column)] = {
                 str(value): max(0, int(count)) for value, count in values.items()
             }
-    raw_rows = row.get("raw_rows")
-    rows = (
-        [[str(cell) for cell in raw_row] for raw_row in raw_rows]
-        if isinstance(raw_rows, list)
-        else None
-    )
     alignment = {
         matrix_field: _alignment_status(sample_ids, other_ids)
         for matrix_field, other_ids in matrix_ids.items()
@@ -158,7 +151,6 @@ def _metadata_profile(
         columns=[str(column) for column in list(row.get("columns") or [])],
         levels=levels,
         sample_ids=sample_ids,
-        rows=rows,
         alignment=alignment,
     )
 
@@ -201,13 +193,7 @@ def _sample_ids(field: str, headers: list[str], rows: list[list[str]]) -> list[s
     if field in {"counts", "metabs", "transcriptome", "metabolome"}:
         return [value for value in headers[1:] if value]
     if field in {"metadata", "group"} and headers:
-        sample_index = headers.index("sample_id") if "sample_id" in headers else -1
-        if sample_index >= 0:
-            return [
-                row[sample_index].strip()
-                for row in rows
-                if len(row) > sample_index and row[sample_index].strip()
-            ]
+        return [row[0].strip() for row in rows if row and row[0].strip()]
     return []
 
 

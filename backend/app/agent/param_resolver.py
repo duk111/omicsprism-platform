@@ -360,37 +360,13 @@ def _scope_options(
         requested_fields = list(scope.blocking_fields)
     if any(field == compare_field or field not in metadata.levels for field in requested_fields):
         return []
-    fixed_constraints = dict(scope.fixed_filters) if scope.mode == "fixed" else {}
-    if any(value not in metadata.levels[field] for field, value in fixed_constraints.items()):
-        return []
-    if metadata.rows is None:
-        # Aggregate level counts cannot prove per-stratum replicate counts.
+    if any(value not in metadata.levels[field] for field, value in scope.fixed_filters.items()):
         return []
 
-    secondary_fields = requested_fields
-    if scope.mode == "fixed":
-        secondary_fields = []
-
-    strata: dict[tuple[str, ...], list[list[str]]] = {}
-    for row in metadata.rows:
-        if _row_value(row, metadata, compare_field) not in {tested, reference}:
-            continue
-        if any(_row_value(row, metadata, field) != value for field, value in fixed_constraints.items()):
-            continue
-        key = tuple(_row_value(row, metadata, field) for field in secondary_fields)
-        if scope.mode == "fixed":
-            strata.setdefault((), []).append(row)
-        elif all(key):
-            strata.setdefault(key, []).append(row)
-
-    valid = False
-    for key, rows in strata.items():
-        if sum(_row_value(row, metadata, compare_field) == tested for row in rows) < min_replicates:
-            continue
-        if sum(_row_value(row, metadata, compare_field) == reference for row in rows) < min_replicates:
-            continue
-        valid = True
-    return [scope] if valid else []
+    # Exact per-stratum replicate counts require the source metadata rows.
+    # They are intentionally computed by enumerate_contrasts in the bounded
+    # backend tool, not duplicated in the profile/resolver layer.
+    return [scope]
 
 
 def _build_resolved(

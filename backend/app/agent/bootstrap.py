@@ -172,10 +172,16 @@ def create_agent_api_context(
         ]
         scoped_by_id = {item.dataset_id: item for item in request.scoped_inputs}
         inputs: list[UploadedFileInfo] = []
+        execution_alias = (
+            lambda field: "metabs"
+            if request.resolved_params.analysis_type == "DEM" and field == "metabolome"
+            else field
+        )
         for item in input_records:
+            execution_item = item.model_copy(update={"field": execution_alias(item.field)})
             scoped = scoped_by_id.get(item.file_id)
             if scoped is None:
-                inputs.append(files.copy_staged_input(job_id, item))
+                inputs.append(files.copy_staged_input(job_id, execution_item))
                 continue
             if scoped.owner_id != request.user_id or scoped.role != item.field:
                 raise HTTPException(status_code=409, detail="Scoped dataset ownership or role changed")
@@ -183,7 +189,7 @@ def create_agent_api_context(
             checksum = sha256(content).hexdigest()
             if "sha256:" + checksum != scoped.checksum:
                 raise HTTPException(status_code=409, detail=f"{item.field} scoped input checksum changed")
-            relative_path = f"inputs/{item.field}.csv"
+            relative_path = f"inputs/{execution_item.field}.csv"
             storage_key = files.storage_key(job_id, relative_path)
             files.backend.put_bytes(
                 content,
@@ -193,7 +199,7 @@ def create_agent_api_context(
                     "checksum": checksum,
                     "created_at": datetime.now(timezone.utc).isoformat(),
                     "kind": FileArtifactKind.INPUT.value,
-                    "field": item.field,
+                    "field": execution_item.field,
                     "filename": item.filename,
                     "path": relative_path,
                     "source_bundle_id": item.bundle_id,
@@ -202,7 +208,7 @@ def create_agent_api_context(
             )
             inputs.append(UploadedFileInfo(
                 kind=FileArtifactKind.INPUT,
-                field=item.field,
+                field=execution_item.field,
                 filename=item.filename,
                 path=relative_path,
                 storage_key=storage_key,

@@ -22,6 +22,7 @@ from ..graph import (
     JobSubmitter,
     NodeCapabilityError,
     PendingPlan,
+    PendingAnalysisClarification,
     PlanVersionConflict,
     StratumSummary,
 )
@@ -104,6 +105,11 @@ def analysis_node(
                     "resolved_request": resolved,
                     "validation_report": report,
                     "pending_plan": pending_plan,
+                    "pending_analysis": (
+                        state.pending_analysis.model_copy(update={"status": "consumed"})
+                        if state.pending_analysis is not None
+                        else None
+                    ),
                     "pending_interrupt": payload,
                     "response_text": None,
                     "step_budget": next_budget,
@@ -111,11 +117,20 @@ def analysis_node(
                 goto="analysis",
             )
 
+        pending = PendingAnalysisClarification(
+            analysis_type=resolved.analysis_type,
+            question=_clarification_question(resolved, report),
+            missing=[item.field for item in resolved.missing[:3]],
+            options=[option for item in resolved.missing[:3] for option in item.options[:20]],
+            source_message=state.user_message,
+            input_bundle_id=state.active_input_bundle_id,
+        )
         return Command(
             update={
-                "response_text": _clarification_question(resolved, report),
+                "response_text": pending.question,
                 "resolved_request": resolved,
                 "validation_report": report,
+                "pending_analysis": pending,
                 "step_budget": next_budget,
             },
             goto=END,

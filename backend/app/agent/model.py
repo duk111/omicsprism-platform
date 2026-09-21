@@ -685,6 +685,7 @@ def _context_fingerprint(context: MainModelContext) -> str:
         "fact_index": context.fact_index.context_version,
         "recent_messages": context.recent_messages.context_version,
         "conversation_memory": context.conversation_memory.context_version,
+        "pending_analysis": context.pending_analysis,
     }
     return json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
 
@@ -750,10 +751,18 @@ _GRAPH_MAIN_SYSTEM_PROMPT = (
     "decision.job_id. For query_result put job_id and a complete decision.result_query "
     "with artifact and, when applicable, resolve_entity. AnalysisProposal values are "
     "candidates only and must use observed dataset roles and explicit user language. "
+    "When discussing supported analyses, use fact_index.analysis_capabilities: "
+    "an analysis is runnable only when its missing-role list is empty. "
     "When the context has exactly one in-scope Job and one artifact, a request such "
     "as 'Show GeneA result' or 'What is the GeneB fold change?' must use query_result "
     "directly; do not ask for clarification. For a follow-up such as 'make it shorter' "
     "or 'correct that', use recent_messages and answer the follow-up directly. "
+    "Only pending_analysis with status=active is resumable. When it is active, "
+    "treat the latest user message as a possible answer to that analysis clarification "
+    "unless the user changes the dataset or asks an unrelated question; in the first "
+    "case return the same analysis action with a completed proposal. Pending records "
+    "with status=consumed, superseded, or expired are historical context only and "
+    "must not trigger analysis recovery. "
     "If tool_repetition_guidance is present, treat it as the latest tool result: do not "
     "select tool_call; choose only answer, ask_user, or grounded_answer. "
     "For 'List available jobs' or equivalent requests, you MUST first return "

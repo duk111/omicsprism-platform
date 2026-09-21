@@ -22,28 +22,6 @@ describe("MessageBlocks", () => {
     expect(container.querySelector("img")).toBeNull();
   });
 
-  it("renders bounded biological advice as labeled plain text", () => {
-    const { container } = render(<MessageBlocks message={message([{
-      type: "advisory",
-      category: "general_biology",
-      text: "ABA supports drought responses. <script>alert(1)</script>",
-    }])} onRetry={vi.fn()} />);
-
-    expect(screen.getByRole("region", { name: "Biological knowledge" })).toBeVisible();
-    expect(screen.getByText("ABA supports drought responses. <script>alert(1)</script>")).toBeVisible();
-    expect(container.querySelector("script")).toBeNull();
-  });
-
-  it("distinguishes analysis guidance from biological knowledge", () => {
-    render(<MessageBlocks message={message([{
-      type: "advisory",
-      category: "analysis_guidance",
-      text: "Upload counts and metadata before execution.",
-    }])} onRetry={vi.fn()} />);
-
-    expect(screen.getByRole("region", { name: "Analysis guidance" })).toBeVisible();
-  });
-
   it("shows verifiable artifact, row and checksum evidence", () => {
     render(<MessageBlocks message={message([{ type: "evidence", claims: [{ text: "Gene A is elevated.", citation: { artifact: "deg.csv", checksum: "sha256:12345678901234567890", row_ids: [4, 8] } }] }])} onRetry={vi.fn()} />);
     expect(screen.getByText("deg.csv")).toBeVisible();

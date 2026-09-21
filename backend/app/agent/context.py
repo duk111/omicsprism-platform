@@ -67,6 +67,7 @@ class FactIndex(BaseModel):
     sample_count: int = Field(default=0, ge=0)
     alignment: dict[str, str] = Field(default_factory=dict, max_length=12)
     job_artifacts: dict[str, list[str]] = Field(default_factory=dict, max_length=20)
+    analysis_capabilities: dict[str, list[str]] = Field(default_factory=dict, max_length=3)
 
 
 class DecisionLedger(BaseModel):
@@ -141,6 +142,7 @@ class MainModelContext(BaseModel):
     conversation_memory: ConversationMemory = Field(default_factory=lambda: ConversationMemory(
         context_version="memory.v1:empty"
     ))
+    pending_analysis: dict[str, object] | None = None
     # The model boundary uses this to append tool-role messages between calls.
     # It is deliberately excluded from the serialized durable prompt context.
     tool_observations: list[ToolObservationContext] = Field(
@@ -193,6 +195,11 @@ class ContextAssembler:
             working_set=working_set,
             recent_messages=recent_messages,
             conversation_memory=memory,
+            pending_analysis=(
+                getattr(getattr(state, "pending_analysis", None), "model_dump", lambda **_: None)(mode="json")
+                if getattr(state, "pending_analysis", None) is not None
+                else None
+            ),
             tool_observations=observations,
         )
 
@@ -232,6 +239,16 @@ class ContextAssembler:
                 artifacts = [str(item) for item in getattr(summary, "artifacts", [])]
                 job_artifacts[job_id] = artifacts[: self._MAX_JOB_ARTIFACTS]
                 truncated = truncated or len(artifacts) > self._MAX_JOB_ARTIFACTS
+        canonical_roles = {"metabolome" if role == "metabs" else role for role in roles}
+        requirements = {
+            "DEG": {"counts", "metadata"},
+            "DEM": {"metabolome", "metadata"},
+            "GMA": {"transcriptome", "metabolome", "group"},
+        }
+        analysis_capabilities = {
+            name: sorted(required - canonical_roles)
+            for name, required in requirements.items()
+        }
         payload = {
             "roles": roles,
             "fields": metadata_fields,
@@ -239,6 +256,7 @@ class ContextAssembler:
             "sample_count": sample_count,
             "alignment": alignment,
             "job_artifacts": job_artifacts,
+            "analysis_capabilities": analysis_capabilities,
         }
         return FactIndex(
             context_version=_version("facts", payload),
@@ -249,6 +267,7 @@ class ContextAssembler:
             sample_count=sample_count,
             alignment=alignment,
             job_artifacts=job_artifacts,
+            analysis_capabilities=analysis_capabilities,
         )
 
     def _decision_ledger(self, state: object) -> DecisionLedger:

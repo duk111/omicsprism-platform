@@ -194,9 +194,9 @@ class AgentToolRuntime:
             )
 
         headers, records = _metadata_records(self, metadata)
-        metadata_fields = [field for field in headers if field and field != "sample_id"]
+        metadata_fields = [field for field in headers if field]
         if not metadata_fields:
-            metadata_fields = [field for field in metadata.columns if field != "sample_id"]
+            metadata_fields = list(metadata.columns)
         if compare_field and compare_field not in metadata_fields:
             return ContrastEnumeration(
                 ok=False,
@@ -531,23 +531,20 @@ def _metadata_records(
 ) -> tuple[list[str], list[dict[str, str]]]:
     source = runtime.inputs.get(metadata.role)
     if source is not None:
-        parsed = list(csv.reader(io.StringIO(source.content.decode("utf-8-sig", errors="replace"))))
-        headers = [str(value).strip() for value in (parsed[0] if parsed else [])]
-        reader = csv.DictReader(io.StringIO(source.content.decode("utf-8-sig", errors="replace")))
-        records = [
-            {str(key).strip(): (value or "").strip() for key, value in row.items() if key is not None}
-            for row in reader
-        ]
+        reader = csv.reader(io.StringIO(source.content.decode("utf-8-sig", errors="replace")))
+        raw_headers = [str(value).strip() for value in next(reader, [])]
+        headers = raw_headers[1:]
+        records: list[dict[str, str]] = []
+        for values in reader:
+            record = {
+                header: (values[index] if index < len(values) else "").strip()
+                for index, header in enumerate(raw_headers[1:], 1)
+            }
+            record["sample_id"] = values[0].strip() if values else ""
+            records.append(record)
         return headers, records
     headers = list(metadata.columns)
-    records = [
-        {
-            header: (row[index].strip() if index < len(row) else "")
-            for index, header in enumerate(headers)
-        }
-        for row in (metadata.rows or [])
-    ]
-    return headers, records
+    return headers, []
 
 
 def _metadata_semantic_type(
@@ -877,7 +874,8 @@ def _inspect_input(field: str, item: AgentInputFile) -> dict[str, Any]:
     headers = parsed[0] if parsed else []
     data_rows = parsed[1:]
     column_count = len(headers)
-    columns = headers if column_count <= 12 else headers[:10] + headers[-2:]
+    visible_headers = headers[1:] if field == "metadata" else headers
+    columns = visible_headers if len(visible_headers) <= 12 else visible_headers[:10] + visible_headers[-2:]
     row = {
         "field": field,
         "filename": item.filename,
@@ -926,9 +924,8 @@ def _inspect_input(field: str, item: AgentInputFile) -> dict[str, Any]:
     else:
         records = _dict_rows(item.content)
         group_replicates: dict[str, dict[str, int]] = {}
-        for header in headers:
-            if header == "sample_id":
-                continue
+        data_headers = headers[1:] if field in {"metadata", "group"} else headers
+        for header in data_headers:
             counts: dict[str, int] = {}
             for record in records:
                 value = record.get(header, "")
@@ -938,7 +935,7 @@ def _inspect_input(field: str, item: AgentInputFile) -> dict[str, Any]:
         if field == "group":
             row["group1_levels"] = dict(group_replicates.get("group1", {}))
             row["group2_levels"] = dict(group_replicates.get("group2", {}))
-        if field in {"metadata", "group"} and len(data_rows) <= 60 and column_count <= 10:
+        if field == "group" and len(data_rows) <= 60 and column_count <= 10:
             row["raw_rows"] = [
                 [str(cell).strip()[:60] for cell in cells[:10]]
                 for cells in data_rows[:60]

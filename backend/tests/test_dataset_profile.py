@@ -63,15 +63,24 @@ def test_metadata_profile_keeps_multiple_factors_and_levels() -> None:
 
     assert isinstance(profile, MetadataProfile)
     assert profile.role == "metadata"
-    assert profile.columns == ["sample_id", "treatment", "batch"]
+    assert profile.columns == ["treatment", "batch"]
     assert profile.levels["treatment"] == {"control": 2, "salt": 2}
     assert profile.levels["batch"] == {"b1": 2, "b2": 2}
-    assert profile.rows == [
-        ["s1", "control", "b1"],
-        ["s2", "control", "b2"],
-        ["s3", "salt", "b1"],
-        ["s4", "salt", "b2"],
-    ]
+    assert not hasattr(profile, "rows")
+
+
+def test_metadata_first_column_is_internal_sample_identifier_even_when_not_named_sample_id() -> None:
+    profile = _runtime((
+        "metadata",
+        "metadata.csv",
+        b"specimen,treatment,batch\na1,control,b1\na2,salt,b1\n",
+    )).inspect_dataset()[0]
+
+    assert isinstance(profile, MetadataProfile)
+    assert profile.sample_ids == ["a1", "a2"]
+    assert profile.columns == ["treatment", "batch"]
+    assert "specimen" not in profile.levels
+    assert "specimen" not in profile.columns
 
 
 def test_group_profile_keeps_fixed_group_levels_separate_from_metadata() -> None:
@@ -133,7 +142,7 @@ def test_large_metadata_omits_raw_rows_but_keeps_bounded_facts() -> None:
     )).inspect_dataset()[0]
 
     assert isinstance(profile, MetadataProfile)
-    assert profile.rows is None
+    assert not hasattr(profile, "rows")
     assert profile.levels["condition"] == {"salt": 61}
     assert len(profile.sample_ids) == 61
 

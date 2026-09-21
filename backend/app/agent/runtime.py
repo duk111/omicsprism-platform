@@ -308,6 +308,12 @@ class AgentRuntime:
             if not has_new_inputs and self._can_inherit_dataset_profiles(current, item)
             else []
         )
+        pending_analysis = current.pending_analysis
+        if pending_analysis is not None:
+            if has_new_inputs:
+                pending_analysis = pending_analysis.model_copy(update={"status": "superseded"})
+            elif current.active_input_bundle_id and not inherited_profiles:
+                pending_analysis = pending_analysis.model_copy(update={"status": "expired"})
         merged = current.model_copy(update={
             "trace_id": item.trace_id,
             "turn_id": item.turn_id,
@@ -335,6 +341,7 @@ class AgentRuntime:
             "grounded_answer": None,
             "pending_plan": None,
             "pending_interrupt": None,
+            "pending_analysis": pending_analysis,
             "tool_observations": [],
             "step_budget": type(current.step_budget)(),
             "conversation_memory": existing_memory.model_copy(update={
@@ -561,7 +568,12 @@ class AgentRuntime:
 
         def invoke() -> None:
             try:
-                result.append(self.context.graph.invoke(*args))
+                with log_context(
+                    trace_id=item.trace_id,
+                    user_id=item.user_id,
+                    project_id=item.thread_id,
+                ):
+                    result.append(self.context.graph.invoke(*args))
             except BaseException as exc:  # preserve KeyboardInterrupt in tests/runtime
                 errors.append(exc)
 
@@ -611,12 +623,6 @@ class AgentRuntime:
         exponential = self.retry_base_seconds * (2 ** max(0, attempt - 1))
         bounded = min(self.retry_max_seconds, exponential)
         return bounded + self.random_fn() * self.retry_jitter_seconds
-        with log_context(
-            trace_id=item.trace_id,
-            user_id=item.user_id,
-            project_id=item.thread_id,
-        ):
-            return self.context.graph.invoke(*args)
 
     def _finalize(self, item: AgentTurnWorkItem, turn: AgentTurnRecord) -> bool:
         config = {"configurable": {"thread_id": item.thread_id}}
