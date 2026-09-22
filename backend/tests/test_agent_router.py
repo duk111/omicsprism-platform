@@ -50,3 +50,10 @@ def test_explicit_job_request_requires_existing_job_context() -> None:
 
 def test_explicit_result_query_with_pending_analysis_stays_result_qa() -> None:
     assert route(_state("Show the fold change result for GeneA")) is AgentRole.RESULT_QA
+
+
+def test_job_continuation_bypasses_message_rules() -> None:
+    state = _state("What is FDR?", pending=False, jobs=False).model_copy(
+        update={"turn_origin": "job_continuation"}
+    )
+    assert route(state) is AgentRole.RESULT_QA

@@ -12,6 +12,9 @@ def route(state: GraphState) -> AgentRole:
     has_jobs = bool(state.current_job or state.recent_jobs)
     pending = state.pending_analysis
 
+    if state.turn_origin == "job_continuation":
+        return AgentRole.RESULT_QA
+
     if pending is not None and pending.status == "active":
         if _is_explicit_knowledge_question(message):
             return AgentRole.QA

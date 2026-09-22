@@ -13,7 +13,14 @@ from psycopg import OperationalError
 
 from .bootstrap import AgentApiContext
 from .context import ContextAssembler, build_recent_messages
-from .graph import GraphInterrupt, GraphState, JobLookupRequest, JobRef, JobSummary
+from .graph import (
+    GraphInterrupt,
+    GraphState,
+    JobContinuationFact,
+    JobLookupRequest,
+    JobRef,
+    JobSummary,
+)
 from ..observability import log_context
 from .product_store import AgentResourceNotFound, TurnConflict
 from .job_events import AgentJobWaitStatus
@@ -318,6 +325,7 @@ class AgentRuntime:
             "trace_id": item.trace_id,
             "turn_id": item.turn_id,
             "run_id": run_id,
+            "turn_origin": "user",
             "user_message": turn_input.message,
             "focus": focus,
             "version": version,
@@ -338,6 +346,7 @@ class AgentRuntime:
             "resolved_request": None,
             "validation_report": None,
             "job_summary": None,
+            "job_continuation": None,
             "grounded_answer": None,
             "pending_plan": None,
             "pending_interrupt": None,
@@ -425,19 +434,18 @@ class AgentRuntime:
             raise ValueError("graph checkpoint ownership mismatch")
         if state.run_id != event.run_id:
             raise ValueError("Job completion event run does not match graph checkpoint")
-        # The graph receives a bounded system message. Job status and error
-        # details are read deterministically by the next graph node; no model
-        # supplied event fields are trusted for ownership or artifacts.
-        message = (
-            f"System Job event: {event.job_id} reached {event.status.value}."
-            if event.status.value == "succeeded"
-            else f"System Job event: {event.job_id} reached {event.status.value}."
-        )
         updated = state.model_copy(update={
             "turn_id": item.turn_id,
             "run_id": run_id,
             "trace_id": item.trace_id,
-            "user_message": message,
+            "turn_origin": "job_continuation",
+            "user_message": "A Job completion fact is ready for result QA.",
+            "job_continuation": JobContinuationFact(
+                job_id=event.job_id,
+                owner_id=event.user_id,
+                status=event.status.value,
+                error_code=event.error_code,
+            ),
             # Completion events are the authoritative ownership-bound Job
             # reference. A later user turn may have changed current_job on the
             # same thread, so continuation must never resolve against stale
@@ -456,26 +464,8 @@ class AgentRuntime:
             "tool_observations": [],
         })
         if event.status.value != "succeeded":
-            outcome = "failed" if event.status.value == "failed" else "cancelled"
-            detail = f" ({event.error_code})" if event.error_code else ""
-            updated = updated.model_copy(update={
-                "response_text": (
-                    f"Analysis job {event.job_id} {outcome}{detail}. "
-                    "No result interpretation was generated."
-                ),
-                "response_blocks": [
-                    text_block(
-                        f"Analysis job {event.job_id} {outcome}{detail}. "
-                        "No result interpretation was generated."
-                    ),
-                    job_block(
-                        event.job_id,
-                        JobStatus(event.status.value),
-                        progress=100 if event.status.value == "succeeded" else 0,
-                    ),
-                ],
-            })
             self.context.graph.update_state(config, updated.model_dump(mode="json"))
+            self._invoke_graph(item, updated.model_dump(mode="json"), config)
             return
         if self.context.job_reader is not None:
             try:
@@ -497,6 +487,7 @@ class AgentRuntime:
                         ),
                     })
                     self.context.graph.update_state(config, updated.model_dump(mode="json"))
+                    self._invoke_graph(item, updated.model_dump(mode="json"), config)
                     return
             except LookupError:
                 updated = updated.model_copy(update={
@@ -508,6 +499,7 @@ class AgentRuntime:
                     )],
                 })
                 self.context.graph.update_state(config, updated.model_dump(mode="json"))
+                self._invoke_graph(item, updated.model_dump(mode="json"), config)
                 return
         self.context.graph.update_state(config, updated.model_dump(mode="json"))
         self._invoke_graph(item, updated.model_dump(mode="json"), config)

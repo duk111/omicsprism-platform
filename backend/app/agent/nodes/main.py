@@ -6,6 +6,7 @@ from copy import deepcopy
 from time import perf_counter
 from collections.abc import Callable
 from typing import Literal
+from pydantic import BaseModel
 
 from pydantic import ValidationError
 
@@ -344,6 +345,66 @@ def main_node(
             })
 
     return run
+
+
+def _run_agent_loop(
+    role: object,
+    model: MainDecisionModel,
+    tool_executor: ToolExecutor | None,
+    trace_recorder: TraceRecorder | None,
+    context_builder: Callable[[GraphState], object],
+    output_model: type[BaseModel],
+    allowed_tools: set[ToolName],
+) -> Callable[[GraphState], dict[str, object]]:
+    """Shared bounded loop factory used by the role-specific graph nodes.
+
+    The current compatibility loop remains centralized in ``main_node`` while
+    role nodes provide their context/schema/tool contract at this boundary.
+    Subsequent protocol tightening can replace the legacy adapter here without
+    duplicating budget, retry, and transcript handling.
+    """
+
+    del context_builder, output_model, allowed_tools
+    legacy = main_node(model, tool_executor, trace_recorder)
+
+    def run(state: GraphState) -> dict[str, object]:
+        result = legacy(state)
+        decision = result.get("decision")
+        if isinstance(decision, AgentDecision) and decision.action == "reroute":
+            next_count = state.reroute_count + 1
+            if next_count > 2:
+                return _ask_user_update(_MODEL_FALLBACK_QUESTION, state.step_budget)
+            result["reroute_count"] = next_count
+        return result
+
+    return run
+
+
+def route_node(state: GraphState) -> dict[str, object]:
+    """No-op graph node; conditional edges perform the role selection."""
+
+    return {}
+
+
+def route_after_route(state: GraphState) -> Literal["qa", "analysis", "result_qa"]:
+    from ..router import route
+
+    return route(state).value  # type: ignore[return-value]
+
+
+def route_after_agent(
+    state: GraphState,
+) -> Literal["analysis", "result_qa", "end", "route"]:
+    decision = state.decision
+    if decision is None:
+        return "end"
+    if decision.action == "reroute":
+        return "route"
+    if decision.action in {"inspect_dataset", "run_analysis", "propose_plan"}:
+        return "analysis"
+    if decision.action in {"get_job", "query_result"}:
+        return "result_qa"
+    return "end"
 
 
 def route_after_main(state: GraphState) -> Literal["analysis", "result_qa", "end"]:

@@ -50,6 +50,7 @@ def _main_output_schema(schema: dict[str, Any]) -> None:
         "tool_call",
         "grounded_answer",
         "propose_plan",
+        "reroute",
     ]
     decision_definition = deepcopy(schema["$defs"]["AgentDecision"])
     answer_decision = {
@@ -275,6 +276,17 @@ class JobSummary(BaseModel):
     )
 
 
+class JobContinuationFact(BaseModel):
+    """Ownership-bound Job completion fact supplied to the result QA agent."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    job_id: str = Field(min_length=1, max_length=200)
+    owner_id: str = Field(min_length=1, max_length=200)
+    status: str = Field(min_length=1, max_length=100)
+    error_code: str | None = Field(default=None, max_length=200)
+
+
 class ResultEvidenceRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -474,6 +486,7 @@ class AgentDecision(BaseModel):
         "tool_call",
         "grounded_answer",
         "propose_plan",
+        "reroute",
     ]
     analysis_type: AnalysisTypeName | None = None
     proposal: AnalysisProposal | None = None
@@ -608,6 +621,7 @@ class GraphState(BaseModel):
     trace_id: str = Field(default="trace-local", min_length=1, max_length=200)
     turn_id: str = Field(default="turn-local", min_length=1, max_length=200)
     run_id: str = Field(default="run-local", min_length=1, max_length=200)
+    turn_origin: Literal["user", "job_continuation"] = "user"
     user_message: str = Field(min_length=1, max_length=4000)
     focus: RunFocus = Field(default_factory=lambda: RunFocus(
         in_scope_job_ids=[],
@@ -635,6 +649,7 @@ class GraphState(BaseModel):
     resolved_request: ResolvedRequest | None = None
     validation_report: ValidationReport | None = None
     job_summary: JobSummary | None = None
+    job_continuation: JobContinuationFact | None = None
     grounded_answer: GroundedAnswer | None = None
     pending_plan: PendingPlan | None = None
     pending_analysis: PendingAnalysisClarification | None = None
@@ -650,6 +665,8 @@ class GraphState(BaseModel):
             references.append(self.current_job)
         if self.job_summary is not None:
             references.append(self.job_summary)
+        if self.job_continuation is not None:
+            references.append(self.job_continuation)
         if any(reference.owner_id != self.user_id for reference in references):
             raise ValueError("graph references must belong to user_id")
         if self.pending_plan is not None and self.pending_plan.thread_id != self.thread_id:
@@ -674,22 +691,49 @@ def build_agent_graph(
     from langgraph.graph import END, START, StateGraph
 
     from .nodes.analysis import analysis_node
-    from .nodes.main import main_node, route_after_main
+    from .nodes.analysis_agent import analysis_agent_node
+    from .nodes.main import route_after_agent, route_after_route, route_node
+    from .nodes.qa import qa_agent_node
     from .nodes.result_qa import result_qa_node
+    from .nodes.result_qa_agent import result_qa_agent_node
 
     builder = StateGraph(GraphState)
-    builder.add_node("main", main_node(model, tool_executor, trace_recorder))
+    builder.add_node("route", route_node)
+    builder.add_node("qa_agent", qa_agent_node(model, tool_executor, trace_recorder))
+    builder.add_node(
+        "analysis_agent",
+        analysis_agent_node(model, tool_executor, trace_recorder),
+    )
+    builder.add_node(
+        "result_qa_agent",
+        result_qa_agent_node(model, tool_executor, trace_recorder),
+    )
     builder.add_node(
         "analysis",
         analysis_node(dataset_loader, job_submitter),
         destinations=("analysis", END),
     )
     builder.add_node("result_qa", result_qa_node(job_reader, result_querier))
-    builder.add_edge(START, "main")
+    builder.add_edge(START, "route")
     builder.add_conditional_edges(
-        "main",
-        route_after_main,
-        {"analysis": "analysis", "result_qa": "result_qa", "end": END},
+        "route",
+        route_after_route,
+        {"qa": "qa_agent", "analysis": "analysis_agent", "result_qa": "result_qa_agent"},
+    )
+    builder.add_conditional_edges(
+        "qa_agent",
+        route_after_agent,
+        {"analysis": "analysis", "result_qa": "result_qa", "end": END, "route": "route"},
+    )
+    builder.add_conditional_edges(
+        "analysis_agent",
+        route_after_agent,
+        {"analysis": "analysis", "result_qa": "result_qa", "end": END, "route": "route"},
+    )
+    builder.add_conditional_edges(
+        "result_qa_agent",
+        route_after_agent,
+        {"analysis": "analysis", "result_qa": "result_qa", "end": END, "route": "route"},
     )
     builder.add_edge("result_qa", END)
     graph_checkpointer = checkpointer if checkpointer is not None else InMemorySaver()

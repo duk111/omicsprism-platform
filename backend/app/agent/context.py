@@ -95,6 +95,16 @@ class ResultFocusContext(BaseModel):
     in_scope_job_ids: list[str] = Field(default_factory=list, max_length=20)
 
 
+class JobContinuationContext(BaseModel):
+    """Structured completion fact visible to result QA."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    job_id: str = Field(min_length=1, max_length=200)
+    status: str = Field(min_length=1, max_length=100)
+    error_code: str | None = Field(default=None, max_length=200)
+
+
 class DecisionLedger(BaseModel):
     """Non-summarized record of decisions already made in the current thread."""
 
@@ -168,6 +178,7 @@ class MainModelContext(BaseModel):
         context_version="memory.v1:empty"
     ))
     pending_analysis: dict[str, object] | None = None
+    job_continuation: dict[str, object] | None = None
     # The model boundary uses this to append tool-role messages between calls.
     # It is deliberately excluded from the serialized durable prompt context.
     tool_observations: list[ToolObservationContext] = Field(
@@ -206,6 +217,7 @@ class ResultQaModelContext(BaseModel):
     recent_jobs: list[JobContextRef] = Field(default_factory=list, max_length=20)
     focus: ResultFocusContext = Field(default_factory=ResultFocusContext)
     job_artifacts: dict[str, list[str]] = Field(default_factory=dict, max_length=20)
+    job_continuation: JobContinuationContext | None = None
 
 
 class ContextAssembler:
@@ -256,6 +268,11 @@ class ContextAssembler:
             pending_analysis=(
                 getattr(getattr(state, "pending_analysis", None), "model_dump", lambda **_: None)(mode="json")
                 if getattr(state, "pending_analysis", None) is not None
+                else None
+            ),
+            job_continuation=(
+                getattr(getattr(state, "job_continuation", None), "model_dump", lambda **_: None)(mode="json")
+                if getattr(state, "job_continuation", None) is not None
                 else None
             ),
             tool_observations=observations,
@@ -310,11 +327,21 @@ class ContextAssembler:
             if str(job_id)
         ][:20]
         fact_index = self._fact_index(state)
+        continuation = getattr(state, "job_continuation", None)
         return ResultQaModelContext(
             current_job=current_job,
             recent_jobs=recent_jobs,
             focus=ResultFocusContext(in_scope_job_ids=in_scope_job_ids),
             job_artifacts=dict(fact_index.job_artifacts),
+            job_continuation=(
+                JobContinuationContext(
+                    job_id=str(getattr(continuation, "job_id", "")),
+                    status=str(getattr(continuation, "status", "")),
+                    error_code=getattr(continuation, "error_code", None),
+                )
+                if continuation is not None
+                else None
+            ),
         )
 
     @staticmethod

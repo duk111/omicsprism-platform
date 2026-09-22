@@ -37,6 +37,7 @@ class AgentJobEventReconciler:
                 thread_id=event.thread_id,
                 trace_id=event.trace_id,
                 user_id=event.user_id,
+                turn_origin="job_continuation",
                 continuation=event,
             ))
             self.store.mark_job_event_published(event_id=event.event_id, now=now)

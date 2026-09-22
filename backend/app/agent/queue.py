@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections import deque
-from typing import Protocol
+from typing import Literal, Protocol
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -36,6 +36,7 @@ class AgentTurnWorkItem(BaseModel):
     thread_id: str = Field(min_length=1, max_length=200)
     trace_id: str = Field(default="trace-local", min_length=1, max_length=200)
     user_id: str = Field(min_length=1, max_length=200)
+    turn_origin: Literal["user", "job_continuation"] = "user"
     input: AgentTurnInput | None = None
     # Legacy start payload retained while already queued messages drain.
     state: GraphState | None = None
