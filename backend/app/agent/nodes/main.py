@@ -13,9 +13,13 @@ from pydantic import ValidationError
 from ..grounding import GroundedAnswerPipeline
 from ..graph import (
     AgentDecision,
+    AgentRole,
+    AnalysisModelOutput,
     GraphState,
     MainDecisionModel,
     MainModelOutput,
+    QaModelOutput,
+    ResultQaModelOutput,
     StepBudget,
     ToolCallRequest,
     ToolExecutor,
@@ -83,8 +87,13 @@ def _run_agent_loop(
                 if context_builder is not None
                 else _main_context(working_state)
             )
+            control_context = _main_context(working_state)
             if repetition_guidance is not None:
-                context = context.model_copy(update={
+                if "tool_repetition_guidance" in context.model_fields:
+                    context = context.model_copy(update={
+                        "tool_repetition_guidance": repetition_guidance,
+                    })
+                control_context = control_context.model_copy(update={
                     "tool_repetition_guidance": repetition_guidance,
                 })
             output = None
@@ -97,10 +106,10 @@ def _run_agent_loop(
                 try:
                     attempt_context = context
                     if _attempt:
-                        summary = context.conversation_summary or ""
+                        summary = control_context.conversation_summary or ""
                         retry_instruction = (
                             _FOLLOWUP_RETRY_INSTRUCTION
-                            if _should_retry_followup(context)
+                            if _should_retry_followup(control_context)
                             else _MODEL_RETRY_INSTRUCTION
                         )
                         attempt_context = context.model_copy(update={
@@ -108,8 +117,12 @@ def _run_agent_loop(
                                 f"{summary}\n{retry_instruction}"
                                 if summary else retry_instruction
                             )[:1200],
-                        })
-                    candidate = output_model.model_validate(model(attempt_context))
+                        }) if "conversation_summary" in context.model_fields else context
+                    candidate = _coerce_role_output(
+                        output_model.model_validate(
+                            _invoke_role_model(model, attempt_context, role)
+                        )
+                    )
                 except (Exception, ValidationError) as exc:
                     LOG.warning(
                         "model decision rejected",
@@ -226,7 +239,7 @@ def _run_agent_loop(
                         "step_budget": budget,
                     })
                     continue
-                if decision.tool is ToolName.LIST_JOBS and _is_explicit_jobs_listing(context.user_message):
+                if decision.tool is ToolName.LIST_JOBS and _is_explicit_jobs_listing(control_context.user_message):
                     response_text = _list_jobs_response(observations[-1].summary)
                     return {
                         "decision": AgentDecision(action="answer"),
@@ -365,6 +378,28 @@ def _run_agent_loop(
         return result
 
     return run
+
+
+def _invoke_role_model(model: MainDecisionModel, context: object, role: object) -> object:
+    """Call role-aware models while retaining old callable-model compatibility."""
+
+    try:
+        return model(context, role=role)  # type: ignore[call-arg]
+    except TypeError as exc:
+        if "unexpected keyword" not in str(exc) and "positional argument" not in str(exc):
+            raise
+        return model(context)
+
+
+def _coerce_role_output(output: object) -> MainModelOutput:
+    if isinstance(output, MainModelOutput):
+        return output
+    if isinstance(output, (QaModelOutput, AnalysisModelOutput, ResultQaModelOutput)):
+        return MainModelOutput(
+            decision=AgentDecision(**output.decision.model_dump(mode="python")),
+            answer=output.answer,
+        )
+    return MainModelOutput.model_validate(output)
 
 
 def main_node(

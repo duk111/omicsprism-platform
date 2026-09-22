@@ -134,6 +134,8 @@ class AnalysisDecision(BaseModel):
         "ask_user",
         "reroute",
     ]
+    analysis_type: AnalysisTypeName | None = None
+    proposal: AnalysisProposal | None = None
 
 
 class ResultDecision(BaseModel):
@@ -148,6 +150,9 @@ class ResultDecision(BaseModel):
         "ask_user",
         "reroute",
     ]
+    job_id: str | None = Field(default=None, max_length=200)
+    result_query: ResultQuerySpec | None = None
+    grounded_answer: GroundedAnswer | None = None
 
 
 class QaModelOutput(BaseModel):

@@ -3,8 +3,7 @@ from __future__ import annotations
 from collections.abc import Callable
 
 from ..context import ContextAssembler
-from ..graph import AgentRole, GraphState, MainDecisionModel, MainModelOutput, ToolExecutor
-from ..schemas import ToolName
+from ..graph import AgentRole, GraphState, MainDecisionModel, QaModelOutput, ToolExecutor
 from ..trace import TraceRecorder
 from .main import _run_agent_loop
 
@@ -19,8 +18,8 @@ def qa_agent_node(
         model,
         tool_executor,
         trace_recorder,
-        ContextAssembler().assemble,
-        MainModelOutput,
+        ContextAssembler().assemble_for_qa,
+        QaModelOutput,
         set(),
     )
 
