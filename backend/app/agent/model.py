@@ -9,11 +9,29 @@ from typing import TYPE_CHECKING
 import httpx
 from pydantic import ValidationError
 
+from .graph import (
+    AgentRole,
+    AnalysisModelOutput,
+    MainModelOutput,
+    QaModelOutput,
+    ResultQaModelOutput,
+)
 from .trace import ModelUsage, TraceRecorder
 
 if TYPE_CHECKING:
-    from .context import MainModelContext
-    from .graph import MainModelOutput
+    from .context import (
+        AnalysisModelContext,
+        MainModelContext,
+        QaModelContext,
+        ResultQaModelContext,
+    )
+    from .graph import (
+        AgentRole,
+        MainModelOutput,
+        QaModelOutput,
+        AnalysisModelOutput,
+        ResultQaModelOutput,
+    )
 
 
 class ModelBoundaryError(ValueError):
@@ -51,32 +69,85 @@ class VllmGraphModel:
         self.last_assistant_message: dict[str, object] | None = None
         # Keep the same bounded context observation available to live eval as
         # the recorded fixture model. Contexts contain no raw dataset rows.
-        self.contexts: list[MainModelContext] = []
+        self.contexts: list[object] = []
+        self.last_request_payload: dict[str, object] | None = None
+        self.last_role: str | None = None
         # A graph turn may invoke the model several times while executing
         # read-only tools. Keep the OpenAI-compatible chat transcript in
         # memory so later calls append only new assistant/tool messages to the
         # stable seed history (vLLM can then reuse its prefix cache).
         # The graph state remains the source of truth and is still recorded in
         # ``contexts`` for tracing and tests.
-        self._chat_histories: dict[tuple[str, str, str], list[dict[str, object]]] = {}
-        self._chat_observation_counts: dict[tuple[str, str, str], int] = {}
-        self._chat_fingerprints: dict[tuple[str, str, str], str] = {}
-        self._chat_last_guidance: dict[tuple[str, str, str], str | None] = {}
-        self._chat_tool_call_ids: dict[tuple[str, str, str], list[str]] = {}
-        self._chat_last_summary: dict[tuple[str, str, str], str | None] = {}
+        self._chat_histories: dict[tuple[str, str, str, str], list[dict[str, object]]] = {}
+        self._chat_observation_counts: dict[tuple[str, str, str, str], int] = {}
+        self._chat_fingerprints: dict[tuple[str, str, str, str], str] = {}
+        self._chat_last_guidance: dict[tuple[str, str, str, str], str | None] = {}
+        self._chat_tool_call_ids: dict[tuple[str, str, str, str], list[str]] = {}
+        self._chat_last_summary: dict[tuple[str, str, str, str], str | None] = {}
         self._debug_raw_output = os.getenv("OMICS_PRISM_AGENT_DEBUG_RAW_OUTPUT", "").lower() in {
             "1", "true", "yes", "on"
         }
 
-    def __call__(self, context: MainModelContext) -> MainModelOutput:
-        from .context import MainModelContext
-        from .graph import MainModelOutput
+    def __call__(
+        self,
+        context: object,
+        *,
+        role: AgentRole | None = None,
+    ) -> MainModelOutput | QaModelOutput | AnalysisModelOutput | ResultQaModelOutput:
+        from .context import (
+            AnalysisModelContext,
+            MainModelContext,
+            QaModelContext,
+            ResultQaModelContext,
+        )
+        from .graph import (
+            AgentRole,
+            AnalysisModelOutput,
+            MainModelOutput,
+            QaModelOutput,
+            ResultQaModelOutput,
+        )
 
-        if not isinstance(context, MainModelContext):
-            raise ModelBoundaryError("graph model context has an invalid type")
+        if role is not None and not isinstance(role, AgentRole):
+            try:
+                role = AgentRole(role)
+            except ValueError as exc:
+                raise ModelBoundaryError("agent role is invalid") from exc
+        role_contexts = {
+            AgentRole.QA: QaModelContext,
+            AgentRole.ANALYSIS: AnalysisModelContext,
+            AgentRole.RESULT_QA: ResultQaModelContext,
+        }
+        if role is None:
+            if not isinstance(context, MainModelContext):
+                raise ModelBoundaryError("graph model context has an invalid type")
+            output_model = MainModelOutput
+            system_prompt = _GRAPH_MAIN_SYSTEM_PROMPT
+            schema_name = "main_model_output"
+            tool_names: set[str] | None = None
+        else:
+            context_type = role_contexts[role]
+            if not isinstance(context, context_type):
+                raise ModelBoundaryError(
+                    f"{role.value} model context has an invalid type"
+                )
+            role_config = _ROLE_CONFIG[role]
+            output_model = role_config["output_model"]
+            system_prompt = role_config["system_prompt"]
+            schema_name = role_config["schema_name"]
+            tool_names = role_config["tool_names"]
         self.contexts.append(context)
-        chat_key = (context.thread_id, context.turn_id, context.run_id)
-        fingerprint = _context_fingerprint(context)
+        self.last_role = role.value if role is not None else None
+        context_thread_id = str(getattr(context, "thread_id", "thread-local"))
+        context_turn_id = str(getattr(context, "turn_id", "turn-local"))
+        context_run_id = str(getattr(context, "run_id", "run-local"))
+        chat_key = (
+            role.value if role is not None else "main",
+            context_thread_id,
+            context_turn_id,
+            context_run_id,
+        )
+        fingerprint = _context_fingerprint(context, role=role)
         history = self._chat_histories.get(chat_key)
         if history is None or self._chat_fingerprints.get(chat_key) != fingerprint:
             if history is None and len(self._chat_histories) >= 64:
@@ -88,7 +159,7 @@ class VllmGraphModel:
                 self._chat_tool_call_ids.pop(oldest_key, None)
                 self._chat_last_summary.pop(oldest_key, None)
             history = [
-                {"role": "system", "content": _GRAPH_MAIN_SYSTEM_PROMPT},
+                {"role": "system", "content": system_prompt},
                 {
                     "role": "user",
                     "content": json.dumps(
@@ -99,10 +170,10 @@ class VllmGraphModel:
             self._chat_histories[chat_key] = history
             self._chat_observation_counts[chat_key] = 0
             self._chat_fingerprints[chat_key] = fingerprint
-            self._chat_last_guidance[chat_key] = context.tool_repetition_guidance
-            self._chat_last_summary[chat_key] = context.conversation_summary
+            self._chat_last_guidance[chat_key] = getattr(context, "tool_repetition_guidance", None)
+            self._chat_last_summary[chat_key] = getattr(context, "conversation_summary", None)
             self._chat_tool_call_ids[chat_key] = []
-            for observation in context.tool_observations:
+            for observation in getattr(context, "tool_observations", []) or []:
                 observation_index = self._chat_observation_counts[chat_key]
                 call_id = observation.call_id or self._tool_call_id(chat_key, observation_index)
                 self._remember_tool_call_id(chat_key, observation_index, call_id)
@@ -126,7 +197,7 @@ class VllmGraphModel:
                 self._chat_observation_counts[chat_key] += 1
         else:
             observed_count = self._chat_observation_counts.get(chat_key, 0)
-            for observation in context.tool_observations[observed_count:]:
+            for observation in (getattr(context, "tool_observations", []) or [])[observed_count:]:
                 call_id = observation.call_id or self._tool_call_id(chat_key, observed_count)
                 self._remember_tool_call_id(chat_key, observed_count, call_id)
                 last_assistant = next(
@@ -156,8 +227,9 @@ class VllmGraphModel:
                     "content": observation.summary,
                 })
                 observed_count += 1
-            self._chat_observation_counts[chat_key] = len(context.tool_observations)
-            guidance = context.tool_repetition_guidance
+            observations = getattr(context, "tool_observations", []) or []
+            self._chat_observation_counts[chat_key] = len(observations)
+            guidance = getattr(context, "tool_repetition_guidance", None)
             previous_guidance = self._chat_last_guidance.get(chat_key)
             if guidance and guidance != previous_guidance:
                 # The deterministic repetition guard is a new observation
@@ -180,13 +252,14 @@ class VllmGraphModel:
                     history.append({"role": "user", "content": guidance})
             self._chat_last_guidance[chat_key] = guidance
             previous_summary = self._chat_last_summary.get(chat_key)
-            if context.conversation_summary != previous_summary and context.conversation_summary:
-                delta = context.conversation_summary
+            conversation_summary = getattr(context, "conversation_summary", None)
+            if conversation_summary != previous_summary and conversation_summary:
+                delta = conversation_summary
                 if previous_summary and delta.startswith(previous_summary):
                     delta = delta[len(previous_summary):].lstrip()
                 if delta:
                     history.append({"role": "user", "content": delta})
-            self._chat_last_summary[chat_key] = context.conversation_summary
+            self._chat_last_summary[chat_key] = conversation_summary
         headers = {"Content-Type": "application/json"}
         if self.api_key:
             headers["Authorization"] = f"Bearer {self.api_key}"
@@ -202,20 +275,24 @@ class VllmGraphModel:
                 "temperature": 0,
                 "max_tokens": 768,
                 "chat_template_kwargs": {"enable_thinking": False},
-                "tools": readonly_openai_tool_definitions(),
-                "tool_choice": "auto",
+                "tools": readonly_openai_tool_definitions(names=tool_names),
                 "parallel_tool_calls": False,
                 "messages": history,
             }
+            if tool_names is not None:
+                request_payload["tool_choice"] = "auto" if tool_names else "none"
+            else:
+                request_payload["tool_choice"] = "auto"
             if self.structured_tool_response and self._structured_tools_supported is not False:
                 request_payload["response_format"] = {
                     "type": "json_schema",
                     "json_schema": {
-                        "name": "main_model_output",
+                        "name": schema_name,
                         "strict": True,
-                        "schema": MainModelOutput.model_json_schema(),
+                        "schema": output_model.model_json_schema(),
                     },
                 }
+            self.last_request_payload = request_payload
             response = self.client.post(self.endpoint, headers=headers, json=request_payload)
             if (
                 response.status_code == 400
@@ -301,14 +378,17 @@ class VllmGraphModel:
                         raw[:4000],
                         extra={"event": "agent.model.raw_output_debug"},
                     )
-                if not native_tool_call:
+                if role is None and not native_tool_call:
                     _normalize_legacy_action_fields(payload, context)
                     _normalize_result_query_artifact(payload, context)
                     _normalize_explicit_jobs_tool(payload, context)
                     _normalize_result_evidence_tool(payload, context)
                     _normalize_explicit_business_actions(payload, context)
-                _drop_irrelevant_action_fields(payload)
-                result = MainModelOutput.model_validate(payload)
+                if role is None:
+                    _drop_irrelevant_action_fields(payload)
+                elif native_tool_call:
+                    raise ValueError("role-specific native tool calls are not supported")
+                result = output_model.model_validate(payload)
             except (KeyError, IndexError, TypeError, ValueError, ValidationError) as exc:
                 if self._debug_raw_output:
                     LOG.warning(
@@ -345,7 +425,7 @@ class VllmGraphModel:
 
     def _record_call(
         self,
-        context: MainModelContext,
+        context: object,
         started: float,
         *,
         outcome: str,
@@ -353,11 +433,20 @@ class VllmGraphModel:
     ) -> None:
         if self.trace_recorder is None:
             return
+        if not all(hasattr(context, name) for name in ("trace_id", "thread_id", "turn_id", "user_id")):
+            LOG.info(
+                "skipping model trace for role context without correlation identifiers",
+                extra={"event": "agent.model.trace_skipped", "agent_role": self.last_role},
+            )
+            return
+        from .graph import AgentRole
+        active_role = AgentRole(self.last_role) if self.last_role is not None else None
+        role_config = _ROLE_CONFIG.get(active_role) if active_role is not None else None
         self.trace_recorder.model_call(
             context=context,
             model_name=self.model_name,
-            system_prompt=_GRAPH_MAIN_SYSTEM_PROMPT,
-            schema_version="main-model-output.v1",
+            system_prompt=(role_config["system_prompt"] if role_config else _GRAPH_MAIN_SYSTEM_PROMPT),
+            schema_version=(role_config["schema_version"] if role_config else "main-model-output.v1"),
             usage=self.last_usage,
             latency_ms=round((perf_counter() - started) * 1000, 3),
             retry_count=0,
@@ -365,13 +454,13 @@ class VllmGraphModel:
             error_code=error_code,
         )
 
-    def _tool_call_id(self, chat_key: tuple[str, str, str], index: int) -> str:
+    def _tool_call_id(self, chat_key: tuple[str, str, str, str], index: int) -> str:
         ids = self._chat_tool_call_ids.setdefault(chat_key, [])
         while len(ids) <= index:
             ids.append(f"call-{len(ids) + 1}")
         return ids[index]
 
-    def _remember_tool_call_id(self, chat_key: tuple[str, str, str], index: int, call_id: str) -> None:
+    def _remember_tool_call_id(self, chat_key: tuple[str, str, str, str], index: int, call_id: str) -> None:
         ids = self._chat_tool_call_ids.setdefault(chat_key, [])
         while len(ids) <= index:
             ids.append(f"call-{len(ids) + 1}")
@@ -674,18 +763,20 @@ def _chat_completions_url(base_url: str) -> str:
     return normalized + "/v1/chat/completions"
 
 
-def _context_fingerprint(context: MainModelContext) -> str:
+def _context_fingerprint(context: object, *, role: AgentRole | None = None) -> str:
     """Identify the seed prompt for a graph turn without hashing tool output."""
 
+    model_dump = getattr(context, "model_dump", None)
+    if callable(model_dump):
+        serialized = model_dump(mode="json", exclude={"tool_observations"})
+    else:
+        serialized = str(context)
     payload = {
-        "thread_id": context.thread_id,
-        "turn_id": context.turn_id,
-        "run_id": context.run_id,
-        "user_message": context.user_message,
-        "fact_index": context.fact_index.context_version,
-        "recent_messages": context.recent_messages.context_version,
-        "conversation_memory": context.conversation_memory.context_version,
-        "pending_analysis": context.pending_analysis,
+        "role": role.value if role is not None else "main",
+        "thread_id": getattr(context, "thread_id", "thread-local"),
+        "turn_id": getattr(context, "turn_id", "turn-local"),
+        "run_id": getattr(context, "run_id", "run-local"),
+        "context": serialized,
     }
     return json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
 
@@ -781,6 +872,56 @@ _GRAPH_MAIN_SYSTEM_PROMPT = (
     "Do not decide validation, ownership, ambiguity, or "
     "execution success."
 )
+
+_QA_SYSTEM_PROMPT = (
+    "You are the OmicsPrism general QA agent. Answer general questions and use only "
+    "the supplied recent messages and dataset role names. Do not infer metadata fields, "
+    "analysis parameters, Jobs, artifacts, or numeric results that are not present. "
+    "Return one typed decision: answer for a direct response, ask_user when the user "
+    "must clarify, or reroute when the request belongs to analysis or result QA. "
+    "Use the same language as the user's latest message."
+)
+
+_ANALYSIS_SYSTEM_PROMPT = (
+    "You are the OmicsPrism analysis agent. Use the bounded fact_index metadata fields, "
+    "metadata levels, dataset roles, pending_analysis, and decision_ledger to propose "
+    "analysis decisions. Infer compare_field and scope only from observed metadata and "
+    "explicit user language. Return inspect_dataset, propose_plan, or run_analysis for "
+    "analysis work, ask_user for a missing requirement, or reroute for a general or "
+    "result question. Do not claim validation or submit a Job. Use the user's language."
+)
+
+_RESULT_QA_SYSTEM_PROMPT = (
+    "You are the OmicsPrism result QA agent. Use only the supplied ownership-bound Job "
+    "references, in-scope Job IDs, and artifact index. Return query_result for an "
+    "evidence request, get_job for Job status, grounded_answer only when evidence is "
+    "available, ask_user when a Job must be selected, or reroute for analysis or general "
+    "questions. Never invent artifacts, citations, or numeric values. Use the user's language."
+)
+
+_ROLE_CONFIG: dict[AgentRole, dict[str, object]] = {
+    AgentRole.QA: {
+        "system_prompt": _QA_SYSTEM_PROMPT,
+        "output_model": QaModelOutput,
+        "schema_name": "qa_model_output",
+        "schema_version": "qa-model-output.v1",
+        "tool_names": set(),
+    },
+    AgentRole.ANALYSIS: {
+        "system_prompt": _ANALYSIS_SYSTEM_PROMPT,
+        "output_model": AnalysisModelOutput,
+        "schema_name": "analysis_model_output",
+        "schema_version": "analysis-model-output.v1",
+        "tool_names": {"describe_metadata", "enumerate_contrasts"},
+    },
+    AgentRole.RESULT_QA: {
+        "system_prompt": _RESULT_QA_SYSTEM_PROMPT,
+        "output_model": ResultQaModelOutput,
+        "schema_name": "result_qa_model_output",
+        "schema_version": "result-qa-model-output.v1",
+        "tool_names": {"list_jobs", "describe_artifacts", "query_artifact"},
+    },
+}
 
 
 def _usage_from_response(response: httpx.Response) -> ModelUsage:

@@ -12,19 +12,33 @@ from fastapi import HTTPException
 from backend.app.agent import bootstrap
 from backend.app.agent.graph import (
     AnalysisExecutionRequest,
+    AgentRole,
+    AnalysisModelOutput,
+    AnalysisDecision,
     DatasetLoadRequest,
     DatasetProfileRef,
     GraphState,
+    QaModelOutput,
+    QaDecision,
+    ResultQaModelOutput,
+    ResultDecision,
     ToolCallRequest,
     MainModelOutput,
 )
 from backend.app.agent.dataset_profile import build_dataset_profiles
-from backend.app.agent.model import VllmGraphModel
+from backend.app.agent.model import VllmGraphModel, _GRAPH_MAIN_SYSTEM_PROMPT
 from backend.app.agent.capabilities import readonly_openai_tool_definitions
 from backend.app.agent.context import (
+    AnalysisModelContext,
     DecisionLedger,
     FactIndex,
     MainModelContext,
+    QaFactIndex,
+    QaModelContext,
+    RecentMessages,
+    ResultQaModelContext,
+    ResultFocusContext,
+    JobContextRef,
     ToolObservationContext,
     WorkingSet,
 )
@@ -409,6 +423,94 @@ def test_vllm_graph_model_uses_main_output_schema_and_returns_typed_output() -> 
         mode="json"
     )
     assert model.contexts == [context]
+
+
+@pytest.mark.parametrize(
+    ("role", "context", "output", "expected_tools", "schema_name"),
+    [
+        (
+            AgentRole.QA,
+            QaModelContext(
+                user_message="What data roles are available?",
+                recent_messages=RecentMessages(context_version="messages.v1:test"),
+                fact_index=QaFactIndex(dataset_roles=["metadata", "counts"]),
+            ),
+            QaModelOutput(
+                decision=QaDecision(action="answer"),
+                answer="Metadata and counts are available.",
+            ),
+            set(),
+            "qa_model_output",
+        ),
+        (
+            AgentRole.ANALYSIS,
+            AnalysisModelContext(
+                fact_index=FactIndex(
+                    context_version="facts.v1:test",
+                    dataset_roles=["metadata", "counts"],
+                    metadata_fields=["treatment"],
+                    metadata_levels={"treatment": {"control": 2, "salt": 2}},
+                ),
+                decision_ledger=DecisionLedger(context_version="ledger.v1:test"),
+            ),
+            AnalysisModelOutput(
+                decision=AnalysisDecision(action="propose_plan"),
+            ),
+            {"describe_metadata", "enumerate_contrasts"},
+            "analysis_model_output",
+        ),
+        (
+            AgentRole.RESULT_QA,
+            ResultQaModelContext(
+                current_job=JobContextRef(job_id="job-1", owner_id="user-1"),
+                focus=ResultFocusContext(in_scope_job_ids=["job-1"]),
+                job_artifacts={"job-1": ["result.csv"]},
+            ),
+            ResultQaModelOutput(
+                decision=ResultDecision(action="reroute"),
+            ),
+            {"list_jobs", "describe_artifacts", "query_artifact"},
+            "result_qa_model_output",
+        ),
+    ],
+)
+def test_vllm_graph_model_uses_role_specific_prompt_tools_and_schema(
+    role,
+    context,
+    output,
+    expected_tools,
+    schema_name,
+) -> None:
+    captured: dict[str, object] = {}
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        captured["body"] = json.loads(request.content)
+        return httpx.Response(200, json={
+            "choices": [{"message": {"content": json.dumps(output.model_dump(mode="json"))}}]
+        })
+
+    model = VllmGraphModel(
+        base_url="http://model-host:8000",
+        model="Qwen3",
+        client=httpx.Client(transport=httpx.MockTransport(handle)),
+    )
+
+    result = model(context, role=role)
+    body = captured["body"]
+    assert isinstance(body, dict)
+    assert type(result) is type(output)
+    assert body["response_format"]["json_schema"]["name"] == schema_name
+    assert body["response_format"]["json_schema"]["schema"] == type(output).model_json_schema()
+    schema = body["response_format"]["json_schema"]["schema"]
+    assert "oneOf" not in json.dumps(schema)
+    assert "allOf" not in json.dumps(schema)
+    tool_names = {
+        item["function"]["name"]
+        for item in body["tools"]
+    }
+    assert tool_names == expected_tools
+    assert body["messages"][0]["content"] != _GRAPH_MAIN_SYSTEM_PROMPT
+    assert json.loads(body["messages"][1]["content"]) == context.model_dump(mode="json")
 
 
 def test_vllm_graph_model_emits_native_tool_calls_and_replays_tool_result() -> None:

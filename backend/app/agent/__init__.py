@@ -41,7 +41,19 @@ from .context import (
     WorkingSet,
 )
 from .queue import AgentTurnInput
-from .graph import PendingPlan, PlanVersionConflict, ProvenanceSource, StratumSummary
+from .graph import (
+    AgentRole,
+    AnalysisModelOutput,
+    AnalysisDecision,
+    PendingPlan,
+    PlanVersionConflict,
+    ProvenanceSource,
+    QaDecision,
+    QaModelOutput,
+    ResultDecision,
+    ResultQaModelOutput,
+    StratumSummary,
+)
 from .product_store import InMemoryAgentProductStore, PostgresAgentProductStore
 from .trace import AgentTraceEvent, ModelUsage, TraceRecorder
 from .tools import (
@@ -96,6 +108,13 @@ __all__ = [
     "validate_analysis_request",
     "compute_input_fingerprint",
     "VllmGraphModel",
+    "AgentRole",
+    "QaDecision",
+    "AnalysisDecision",
+    "ResultDecision",
+    "QaModelOutput",
+    "AnalysisModelOutput",
+    "ResultQaModelOutput",
     "AnalysisModelContext",
     "ContextAssembler",
     "ConversationMemory",

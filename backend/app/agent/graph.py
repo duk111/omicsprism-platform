@@ -149,6 +149,41 @@ class ResultDecision(BaseModel):
     ]
 
 
+class QaModelOutput(BaseModel):
+    """Structured response contract for the general QA role."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    decision: QaDecision
+    answer: str | None = Field(default=None, min_length=1, max_length=1200)
+
+    @model_validator(mode="after")
+    def _answer_matches_action(self) -> "QaModelOutput":
+        if self.decision.action == "answer" and self.answer is None:
+            raise ValueError("answer action requires answer text")
+        if self.decision.action != "answer" and self.answer is not None:
+            raise ValueError("answer text is only valid for answer action")
+        return self
+
+
+class AnalysisModelOutput(BaseModel):
+    """Structured response contract for the analysis role."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    decision: AnalysisDecision
+    answer: str | None = Field(default=None, min_length=1, max_length=1200)
+
+
+class ResultQaModelOutput(BaseModel):
+    """Structured response contract for the result QA role."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    decision: ResultDecision
+    answer: str | None = Field(default=None, min_length=1, max_length=1200)
+
+
 class StepBudget(BaseModel):
     """Independent model, tool, and safety budgets for one graph turn."""
 

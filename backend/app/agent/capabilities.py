@@ -197,7 +197,10 @@ def openai_tool_definitions(
     return definitions
 
 
-def readonly_openai_tool_definitions() -> list[dict[str, Any]]:
+def readonly_openai_tool_definitions(
+    *,
+    names: set[str] | None = None,
+) -> list[dict[str, Any]]:
     """Return the model-visible read-only tool catalog without user data."""
 
     # Keep this catalog aligned with build_readonly_capability_registry while
@@ -211,10 +214,12 @@ def readonly_openai_tool_definitions() -> list[dict[str, Any]]:
             response_model=response_model,
             handler=lambda _request: {},
         )
-    return openai_tool_definitions(
-        registry,
-        names={"describe_metadata", "enumerate_contrasts", "list_jobs", "describe_artifacts", "query_artifact"},
+    visible_names = (
+        {"describe_metadata", "enumerate_contrasts", "list_jobs", "describe_artifacts", "query_artifact"}
+        if names is None
+        else names
     )
+    return openai_tool_definitions(registry, names=visible_names)
 
 
 def build_readonly_capability_registry(runtime: AgentToolRuntime) -> CapabilityRegistry:
