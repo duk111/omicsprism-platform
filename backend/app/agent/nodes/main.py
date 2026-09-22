@@ -62,7 +62,7 @@ def _run_agent_loop(
     output_model: type[BaseModel] = MainModelOutput,
     allowed_tools: set[ToolName] | None = None,
 ) -> Callable[[GraphState], dict[str, object]]:
-    del role, allowed_tools
+    del role
 
     def loop_run(state: GraphState) -> dict[str, object]:
         budget = state.step_budget
@@ -167,6 +167,19 @@ def _run_agent_loop(
                 return _ask_user_update(_MODEL_FALLBACK_QUESTION, budget, observations)
 
             decision = output.decision
+            if (
+                decision.action == "tool_call"
+                and allowed_tools is not None
+                and decision.tool not in allowed_tools
+            ):
+                return {
+                    "decision": AgentDecision(action="reroute"),
+                    "response_text": None,
+                    "response_blocks": [],
+                    "grounded_answer": None,
+                    "step_budget": budget,
+                    "tool_observations": observations,
+                }
             native_call_id = _native_tool_call_id(model, decision) or f"call-{len(observations) + 1}"
             native_assistant_message = getattr(model, "last_assistant_message", None) or {}
             if (
