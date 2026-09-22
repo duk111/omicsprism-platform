@@ -17,6 +17,11 @@ from .graph import (
     ResultQaModelOutput,
 )
 from .trace import ModelUsage, TraceRecorder
+from .router import (
+    _is_explicit_analysis_request as _router_is_explicit_analysis_request,
+    _is_explicit_job_status_request as _router_is_explicit_job_status_request,
+    _is_explicit_jobs_listing as _router_is_explicit_jobs_listing,
+)
 
 if TYPE_CHECKING:
     from .context import (
@@ -609,7 +614,7 @@ def _normalize_explicit_jobs_tool(payload: object, context: MainModelContext) ->
     decision = payload.get("decision")
     if not isinstance(decision, dict) or decision.get("action") != "tool_call":
         return
-    if not _is_explicit_jobs_listing(context.user_message):
+    if not _router_is_explicit_jobs_listing(context.user_message):
         return
     if decision.get("tool") != "list_jobs":
         decision["tool"] = "list_jobs"
@@ -668,7 +673,7 @@ def _normalize_explicit_business_actions(payload: object, context: MainModelCont
         arguments = {}
     tool = decision.get("tool")
     if tool == "get_jobs_status":
-        if not _is_explicit_job_status_request(context.user_message):
+        if not _router_is_explicit_job_status_request(context.user_message):
             return
         job_id = decision.get("job_id") or arguments.get("job_id")
         decision["action"] = "get_job"
@@ -676,7 +681,7 @@ def _normalize_explicit_business_actions(payload: object, context: MainModelCont
         decision["tool"] = None
         decision["arguments"] = {}
         return
-    if tool == "list_jobs" and _is_explicit_job_status_request(context.user_message):
+    if tool == "list_jobs" and _router_is_explicit_job_status_request(context.user_message):
         if len(context.conversation_memory.recent_job_ids) > 1:
             decision["action"] = "get_job"
             decision["job_id"] = None
@@ -695,7 +700,7 @@ def _normalize_explicit_business_actions(payload: object, context: MainModelCont
             analysis_type = "DEM"
         elif "gene" in message or "expression" in message:
             analysis_type = "DEG"
-    if analysis_type is None or not _is_explicit_analysis_request(message):
+    if analysis_type is None or not _router_is_explicit_analysis_request(message):
         return
     proposal_values: dict[str, object] = {"analysis_type": analysis_type}
     fields = context.fact_index.metadata_fields
@@ -720,38 +725,6 @@ def _normalize_explicit_business_actions(payload: object, context: MainModelCont
     decision["proposal"] = proposal_values
     decision["tool"] = None
     decision["arguments"] = {}
-
-
-def _is_explicit_analysis_request(message: str) -> bool:
-    return any(
-        marker in message
-        for marker in (
-            "run ", "analyze", "compare ", "plan ",
-            "execute", "perform ", "start ", "分析", "运行", "比较", "计划",
-        )
-    )
-
-
-def _is_explicit_job_status_request(message: str) -> bool:
-    text = message.casefold()
-    if any(marker in text for marker in ("unavailable", "internal", "attempt")):
-        return False
-    return any(marker in text for marker in ("status", "progress", "running", "queued", "job"))
-
-
-def _is_explicit_jobs_listing(message: str) -> bool:
-    text = message.casefold().strip()
-    markers = (
-        "list available jobs",
-        "list jobs",
-        "show available jobs",
-        "show jobs",
-        "available jobs",
-        "\u5217\u51fa\u4efb\u52a1",
-        "\u53ef\u7528\u4efb\u52a1",
-        "\u6709\u54ea\u4e9b\u4efb\u52a1",
-    )
-    return any(marker in text for marker in markers)
 
 
 def _chat_completions_url(base_url: str) -> str:

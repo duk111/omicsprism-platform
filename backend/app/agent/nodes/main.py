@@ -24,6 +24,7 @@ from ..context import ContextAssembler, MainModelContext
 from ..schemas import AgentEvidenceBlock, GroundedAnswer, ToolName, ToolResult
 from ..message_blocks import text_block
 from ..trace import TraceRecorder, stable_hash
+from ..router import _is_explicit_jobs_listing as _router_is_explicit_jobs_listing
 
 
 _MODEL_FALLBACK_QUESTION = (
@@ -714,19 +715,4 @@ def _should_force_list_jobs(
         return False
     if decision.action == "tool_call" and decision.tool is ToolName.LIST_JOBS:
         return False
-    return _is_explicit_jobs_listing(context.user_message)
-
-
-def _is_explicit_jobs_listing(message: str) -> bool:
-    text = message.casefold().strip()
-    markers = (
-        "list available jobs",
-        "list jobs",
-        "show available jobs",
-        "show jobs",
-        "available jobs",
-        "\u5217\u51fa\u4efb\u52a1",
-        "\u53ef\u7528\u4efb\u52a1",
-        "\u6709\u54ea\u4e9b\u4efb\u52a1",
-    )
-    return any(marker in text for marker in markers)
+    return _router_is_explicit_jobs_listing(context.user_message)

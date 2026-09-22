@@ -63,6 +63,7 @@ from .tools import (
 )
 from .mcp_adapter import CapabilityMCPServer, MCPTraceContext, build_readonly_mcp_server
 from .capabilities import openai_tool_definitions, readonly_openai_tool_definitions
+from .router import route
 from .readonly_tools import (
     ArtifactDescription,
     ArtifactDescriptionResult,
@@ -147,6 +148,7 @@ __all__ = [
     "build_readonly_mcp_server",
     "openai_tool_definitions",
     "readonly_openai_tool_definitions",
+    "route",
     "ArtifactDescription",
     "ArtifactDescriptionResult",
     "ArtifactSchema",
