@@ -31,6 +31,7 @@ def test_pending_short_clarification_stays_with_analysis() -> None:
 
 def test_pending_other_question_with_do_not_words_goes_to_qa() -> None:
     assert route(_state("\u4e0d\u8981\u53ea\u770b\u7ed3\u679c\uff0c\u4ec0\u4e48\u662f FDR\uff1f")) is AgentRole.QA
+    assert route(_state("\u4e0d\u8981\u53ea\u770b\u7ed3\u679c\uff0c\u7ee7\u7eed\u5206\u6790")) is AgentRole.ANALYSIS
 
 
 def test_pending_knowledge_question_then_continue_routes_correctly() -> None:

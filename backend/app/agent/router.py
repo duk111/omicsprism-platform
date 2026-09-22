@@ -42,7 +42,8 @@ def _is_explicit_result_request(message: str) -> bool:
             marker in text
             for marker in (
                 "result", "artifact", "evidence", "fold change", "log2fc", "padj",
-                "\u7ed3\u679c", "\u4ea7\u7269", "\u8bc1\u636e",
+                "\u67e5\u8be2\u7ed3\u679c", "\u67e5\u770b\u7ed3\u679c", "\u7ed3\u679c\u662f",
+                "\u7ed3\u679c\u4e2d", "\u4ea7\u7269", "\u8bc1\u636e",
             )
         )
     )
