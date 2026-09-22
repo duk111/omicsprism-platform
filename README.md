@@ -20,6 +20,8 @@ For the current cloud/compute handoff and deployment contract, see
 The current production split between the cloud API and compute-server Agent
 runtime is recorded in [`AGENT_RUNTIME_DEPLOYMENT.md`](AGENT_RUNTIME_DEPLOYMENT.md)
 and [`ADR_0001_AGENT_RUNTIME_BOUNDARY.md`](ADR_0001_AGENT_RUNTIME_BOUNDARY.md).
+The Chinese current deployment guide is in
+[`wiki/OMICS_PRISM_SERVER_DEPLOYMENT_MODE_FROZEN_ZH.md`](wiki/OMICS_PRISM_SERVER_DEPLOYMENT_MODE_FROZEN_ZH.md).
 The implemented topology and its security assumptions are summarized in
 [`ARCHITECTURE.md`](ARCHITECTURE.md) and [`THREAT_MODEL.md`](THREAT_MODEL.md).
 

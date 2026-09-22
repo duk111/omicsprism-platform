@@ -1,7 +1,7 @@
 services:
   postgres:
     ports:
-      - "${DATA_BIND_HOST:-0.0.0.0}:${POSTGRES_PUBLIC_PORT:-25432}:5432"
+      - "${DATA_BIND_HOST:-0.0.0.0}:${POSTGRES_PUBLIC_PORT:-15432}:5432"
 
   redis:
     ports:

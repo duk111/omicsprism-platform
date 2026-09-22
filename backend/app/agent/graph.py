@@ -3,6 +3,7 @@ from __future__ import annotations
 from copy import deepcopy
 from collections.abc import Callable
 from datetime import datetime
+from enum import Enum
 from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -102,6 +103,50 @@ class NodeCapabilityError(ValueError):
 
 class PlanVersionConflict(ValueError):
     """A confirmation resume references a plan other than the current one."""
+
+
+class AgentRole(str, Enum):
+    """Model-facing roles used by the multi-agent protocol split."""
+
+    QA = "qa"
+    ANALYSIS = "analysis"
+    RESULT_QA = "result_qa"
+
+
+class QaDecision(BaseModel):
+    """Narrow action contract for the general question-answering agent."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    action: Literal["answer", "ask_user", "reroute"]
+
+
+class AnalysisDecision(BaseModel):
+    """Narrow action contract for the analysis agent."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    action: Literal[
+        "inspect_dataset",
+        "propose_plan",
+        "run_analysis",
+        "ask_user",
+        "reroute",
+    ]
+
+
+class ResultDecision(BaseModel):
+    """Narrow action contract for the result question-answering agent."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    action: Literal[
+        "query_result",
+        "get_job",
+        "grounded_answer",
+        "ask_user",
+        "reroute",
+    ]
 
 
 class StepBudget(BaseModel):
@@ -543,6 +588,7 @@ class GraphState(BaseModel):
         context_version="memory.v1:empty"
     ))
     active_input_bundle_id: str | None = Field(default=None, min_length=1, max_length=200)
+    reroute_count: int = Field(default=0, ge=0, le=2)
     dataset_profiles: list[DatasetProfileRef] = Field(default_factory=list, max_length=6)
     current_job: JobRef | None = None
     recent_jobs: list[JobRef] = Field(default_factory=list, max_length=20)
