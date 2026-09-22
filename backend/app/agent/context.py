@@ -70,6 +70,31 @@ class FactIndex(BaseModel):
     analysis_capabilities: dict[str, list[str]] = Field(default_factory=dict, max_length=3)
 
 
+class QaFactIndex(BaseModel):
+    """Dataset facts visible to the general QA agent."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    dataset_roles: list[str] = Field(default_factory=list, max_length=6)
+
+
+class JobContextRef(BaseModel):
+    """Bounded job reference visible to the result QA agent."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    job_id: str = Field(min_length=1, max_length=200)
+    owner_id: str = Field(min_length=1, max_length=200)
+
+
+class ResultFocusContext(BaseModel):
+    """Job scope facts visible to the result QA agent."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    in_scope_job_ids: list[str] = Field(default_factory=list, max_length=20)
+
+
 class DecisionLedger(BaseModel):
     """Non-summarized record of decisions already made in the current thread."""
 
@@ -150,6 +175,39 @@ class MainModelContext(BaseModel):
     )
 
 
+class QaModelContext(BaseModel):
+    """Narrow prompt context for general question answering."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    user_message: str = Field(min_length=1, max_length=4000)
+    recent_messages: RecentMessages = Field(default_factory=lambda: RecentMessages(
+        context_version="messages.v1:empty"
+    ))
+    fact_index: QaFactIndex
+
+
+class AnalysisModelContext(BaseModel):
+    """Narrow prompt context for analysis planning and submission."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    fact_index: FactIndex
+    pending_analysis: dict[str, object] | None = None
+    decision_ledger: DecisionLedger
+
+
+class ResultQaModelContext(BaseModel):
+    """Narrow prompt context for ownership-bound result questions."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    current_job: JobContextRef | None = None
+    recent_jobs: list[JobContextRef] = Field(default_factory=list, max_length=20)
+    focus: ResultFocusContext = Field(default_factory=ResultFocusContext)
+    job_artifacts: dict[str, list[str]] = Field(default_factory=dict, max_length=20)
+
+
 class ContextAssembler:
     """Build the sole prompt context from GraphState without raw dataset payloads."""
 
@@ -202,6 +260,70 @@ class ContextAssembler:
             ),
             tool_observations=observations,
         )
+
+    def assemble_for_qa(self, state: object) -> QaModelContext:
+        """Build the minimal context needed for general question answering."""
+
+        fact_index = self._fact_index(state)
+        recent_messages = getattr(state, "recent_messages", None)
+        if not isinstance(recent_messages, RecentMessages):
+            recent_messages = RecentMessages(context_version="messages.v1:empty")
+        return QaModelContext(
+            user_message=str(getattr(state, "user_message", "")),
+            recent_messages=recent_messages,
+            fact_index=QaFactIndex(
+                dataset_roles=list(fact_index.dataset_roles),
+            ),
+        )
+
+    def assemble_for_analysis(self, state: object) -> AnalysisModelContext:
+        """Build the full bounded context needed for analysis decisions."""
+
+        pending_analysis = getattr(state, "pending_analysis", None)
+        pending_payload = (
+            pending_analysis.model_dump(mode="json")
+            if pending_analysis is not None and hasattr(pending_analysis, "model_dump")
+            else None
+        )
+        return AnalysisModelContext(
+            fact_index=self._fact_index(state),
+            pending_analysis=pending_payload,
+            decision_ledger=self._decision_ledger(state),
+        )
+
+    def assemble_for_result_qa(self, state: object) -> ResultQaModelContext:
+        """Build the ownership-bound job and artifact context for result QA."""
+
+        current_job = self._job_context_ref(getattr(state, "current_job", None))
+        recent_jobs = [
+            item
+            for item in (
+                self._job_context_ref(job)
+                for job in (getattr(state, "recent_jobs", []) or [])
+            )
+            if item is not None
+        ][-20:]
+        focus = getattr(state, "focus", None)
+        in_scope_job_ids = [
+            str(job_id)
+            for job_id in (getattr(focus, "in_scope_job_ids", []) or [])
+            if str(job_id)
+        ][:20]
+        fact_index = self._fact_index(state)
+        return ResultQaModelContext(
+            current_job=current_job,
+            recent_jobs=recent_jobs,
+            focus=ResultFocusContext(in_scope_job_ids=in_scope_job_ids),
+            job_artifacts=dict(fact_index.job_artifacts),
+        )
+
+    @staticmethod
+    def _job_context_ref(value: object) -> JobContextRef | None:
+        job_id = str(getattr(value, "job_id", ""))
+        owner_id = str(getattr(value, "owner_id", ""))
+        if not job_id or not owner_id:
+            return None
+        return JobContextRef(job_id=job_id, owner_id=owner_id)
 
     def _fact_index(self, state: object) -> FactIndex:
         roles: list[str] = []

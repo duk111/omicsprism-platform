@@ -1,11 +1,18 @@
 from __future__ import annotations
 
+import json
 from types import SimpleNamespace
 
-from backend.app.agent.context import ContextAssembler, build_recent_messages
+from backend.app.agent.context import (
+    ContextAssembler,
+    RecentMessage,
+    RecentMessages,
+    build_recent_messages,
+)
 from backend.app.agent.dataset_profile import MetadataProfile, MatrixProfile
 from backend.app.agent.graph import DatasetProfileRef, GraphState, JobRef, JobSummary
 from backend.app.agent.param_resolver import ContrastSpec, DEGParams, ResolvedRequest, ScopeSpec
+from backend.app.agent.schemas import RunFocus
 
 
 def _state() -> GraphState:
@@ -84,6 +91,58 @@ def test_context_assembler_exposes_bounded_facts_and_decisions() -> None:
         mode="fixed", fixed_filters={"line": "WT"}
     )
     assert all("rows" not in item for item in context.model_dump().values() if isinstance(item, dict))
+
+
+def test_context_assembler_builds_narrow_agent_projections() -> None:
+    state = _state().model_copy(update={
+        "current_job": JobRef(job_id="job-4", owner_id="user-1"),
+        "focus": RunFocus(
+            in_scope_job_ids=["job-4"],
+            resolved_entities={},
+            last_citation=None,
+        ),
+        "recent_messages": RecentMessages(
+            context_version="messages.v1:test",
+            messages=[
+                RecentMessage(
+                    role="user" if index % 2 == 0 else "assistant",
+                    turn_id=f"turn-{index}",
+                    text=f"message {index}",
+                )
+                for index in range(8)
+            ],
+        ),
+    })
+    assembler = ContextAssembler()
+
+    qa = assembler.assemble_for_qa(state)
+    analysis = assembler.assemble_for_analysis(state)
+    result_qa = assembler.assemble_for_result_qa(state)
+    main = assembler.assemble(state)
+
+    assert qa.fact_index.dataset_roles == ["metadata", "counts"]
+    qa_payload = qa.model_dump(mode="json")
+    assert set(qa_payload) == {"user_message", "recent_messages", "fact_index"}
+    assert set(qa_payload["fact_index"]) == {"dataset_roles"}
+
+    analysis_payload = analysis.model_dump(mode="json")
+    assert set(analysis_payload) == {"fact_index", "pending_analysis", "decision_ledger"}
+    assert analysis.fact_index.metadata_fields == ["line", "timepoint", "treatment"]
+    assert analysis.fact_index.metadata_levels["treatment"] == {"control": 2, "salt": 2}
+
+    result_payload = result_qa.model_dump(mode="json")
+    assert result_qa.current_job is not None
+    assert result_qa.current_job.job_id == "job-4"
+    assert result_qa.focus.in_scope_job_ids == ["job-4"]
+    assert result_qa.job_artifacts == {
+        "job-4": ["differential_gene_counts.csv"]
+    }
+    assert "metadata_fields" not in json.dumps(result_payload)
+    assert "metadata_levels" not in json.dumps(result_payload)
+
+    qa_size = len(json.dumps(qa_payload, ensure_ascii=False))
+    main_size = len(json.dumps(main.model_dump(mode="json"), ensure_ascii=False))
+    assert qa_size < main_size
 
 
 def test_context_assembler_limits_working_set_and_marks_truncation() -> None:
