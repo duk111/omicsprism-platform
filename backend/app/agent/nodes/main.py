@@ -49,12 +49,18 @@ LOG = logging.getLogger("omicsprism.platform.agent_main")
 _TOOL_SUMMARY_MAX_CHARS = 3900
 
 
-def main_node(
+def _run_agent_loop(
+    role: object,
     model: MainDecisionModel,
     tool_executor: ToolExecutor | None = None,
     trace_recorder: TraceRecorder | None = None,
+    context_builder: Callable[[GraphState], object] | None = None,
+    output_model: type[BaseModel] = MainModelOutput,
+    allowed_tools: set[ToolName] | None = None,
 ) -> Callable[[GraphState], dict[str, object]]:
-    def run(state: GraphState) -> dict[str, object]:
+    del role, allowed_tools
+
+    def loop_run(state: GraphState) -> dict[str, object]:
         budget = state.step_budget
         observations = list(state.tool_observations)
         working_state = state
@@ -72,7 +78,11 @@ def main_node(
                     budget,
                     observations,
                 )
-            context = _main_context(working_state)
+            context = (
+                context_builder(working_state)
+                if context_builder is not None
+                else _main_context(working_state)
+            )
             if repetition_guidance is not None:
                 context = context.model_copy(update={
                     "tool_repetition_guidance": repetition_guidance,
@@ -99,7 +109,7 @@ def main_node(
                                 if summary else retry_instruction
                             )[:1200],
                         })
-                    candidate = MainModelOutput.model_validate(model(attempt_context))
+                    candidate = output_model.model_validate(model(attempt_context))
                 except (Exception, ValidationError) as exc:
                     LOG.warning(
                         "model decision rejected",
@@ -344,31 +354,8 @@ def main_node(
                 "step_budget": budget,
             })
 
-    return run
-
-
-def _run_agent_loop(
-    role: object,
-    model: MainDecisionModel,
-    tool_executor: ToolExecutor | None,
-    trace_recorder: TraceRecorder | None,
-    context_builder: Callable[[GraphState], object],
-    output_model: type[BaseModel],
-    allowed_tools: set[ToolName],
-) -> Callable[[GraphState], dict[str, object]]:
-    """Shared bounded loop factory used by the role-specific graph nodes.
-
-    The current compatibility loop remains centralized in ``main_node`` while
-    role nodes provide their context/schema/tool contract at this boundary.
-    Subsequent protocol tightening can replace the legacy adapter here without
-    duplicating budget, retry, and transcript handling.
-    """
-
-    del context_builder, output_model, allowed_tools
-    legacy = main_node(model, tool_executor, trace_recorder)
-
     def run(state: GraphState) -> dict[str, object]:
-        result = legacy(state)
+        result = loop_run(state)
         decision = result.get("decision")
         if isinstance(decision, AgentDecision) and decision.action == "reroute":
             next_count = state.reroute_count + 1
@@ -378,6 +365,24 @@ def _run_agent_loop(
         return result
 
     return run
+
+
+def main_node(
+    model: MainDecisionModel,
+    tool_executor: ToolExecutor | None = None,
+    trace_recorder: TraceRecorder | None = None,
+) -> Callable[[GraphState], dict[str, object]]:
+    """Backward-compatible main-node factory using the shared loop."""
+
+    return _run_agent_loop(
+        None,
+        model,
+        tool_executor,
+        trace_recorder,
+        _main_context,
+        MainModelOutput,
+        set(ToolName),
+    )
 
 
 def route_node(state: GraphState) -> dict[str, object]:
