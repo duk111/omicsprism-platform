@@ -62,8 +62,6 @@ def _run_agent_loop(
     output_model: type[BaseModel] = MainModelOutput,
     allowed_tools: set[ToolName] | None = None,
 ) -> Callable[[GraphState], dict[str, object]]:
-    del role
-
     def loop_run(state: GraphState) -> dict[str, object]:
         budget = state.step_budget
         observations = list(state.tool_observations)
