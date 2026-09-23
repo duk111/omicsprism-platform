@@ -747,8 +747,19 @@ def _run_graph_trial(
                 terminal = "interrupt"
                 final_state = None
             else:
-                terminal = "completed"
                 final_state = GraphState.model_validate(result)
+                if (
+                    final_state.pending_analysis is not None
+                    and final_state.pending_analysis.status == "active"
+                ):
+                    # Step 4 replaced the old public clarification interrupt
+                    # with ordinary chat plus durable pending_analysis state.
+                    # Keep the evaluator's clarification metric stable without
+                    # reviving the removed API contract.
+                    terminal = "interrupt"
+                    interrupt_kind = "clarification"
+                else:
+                    terminal = "completed"
             if turn.kind == "message":
                 conversation_history.append(RecentMessage(
                     role="user",

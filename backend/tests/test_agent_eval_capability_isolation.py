@@ -91,5 +91,5 @@ def test_main_route_enters_analysis_validation_before_job_submission() -> None:
         {"configurable": {"thread_id": "agent-capability"}},
     )
 
-    assert result["__interrupt__"][0].value["kind"] == "clarification"
+    assert result["pending_analysis"].status == "active"
     assert submitter.calls == []

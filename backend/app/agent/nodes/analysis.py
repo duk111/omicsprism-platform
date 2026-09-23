@@ -10,6 +10,7 @@ from langgraph.graph import END
 from langgraph.types import Command, interrupt
 
 from ..fingerprint import compute_input_fingerprint
+from ..clarification_resolver import ClarificationOption, stable_option_id
 from ..message_blocks import job_block, text_block
 from ..graph import (
     AnalysisExecutionRequest,
@@ -121,9 +122,15 @@ def analysis_node(
             analysis_type=resolved.analysis_type,
             question=_clarification_question(resolved, report),
             missing=[item.field for item in resolved.missing[:3]],
-            options=[option for item in resolved.missing[:3] for option in item.options[:20]],
+            options=[
+                _clarification_option(item.field, option, state)
+                for item in resolved.missing[:3]
+                for option in item.options[:20]
+            ][:20],
             source_message=state.user_message,
             input_bundle_id=state.active_input_bundle_id,
+            source_action=state.decision.action,
+            proposal=_analysis_proposal(state),
         )
         return Command(
             update={
@@ -447,3 +454,33 @@ def _clarification_question(
         details = "；".join(item.message[:500] for item in report.blocking[:3])
         question = f"分析请求未通过校验，请处理后继续：{details}"
     return question[:1200]
+
+
+def _clarification_option(
+    field: str,
+    label: str,
+    state: GraphState,
+) -> ClarificationOption:
+    """Attach a stable, deterministic proposal patch to a visible option."""
+
+    patch: dict[str, object] = {}
+    text = str(label).strip()
+    if field == "contrast":
+        # ``_ambiguous_request`` emits ``field: tested vs reference``.  Keep
+        # this parser deliberately strict; an unparsed label remains a visible
+        # option but cannot be executed without another deterministic check.
+        if ":" in text and " vs " in text:
+            compare_field, pair = text.split(":", 1)
+            tested, reference = pair.split(" vs ", 1)
+            reference = reference.split("，", 1)[0].split(",", 1)[0].strip()
+            patch.update({
+                "compare_field": compare_field.strip(),
+                "tested_level": tested.strip(),
+                "reference_level": reference.strip(),
+            })
+    elif field in {"compare_field", "tested_level", "reference_level"}:
+        patch[field] = text
+    elif field == "scope" and text in {"all", "stratified", "fixed"}:
+        patch["scope_mode"] = text
+    option_id = stable_option_id(text, patch)
+    return ClarificationOption(option_id=option_id, label=text, proposal_patch=patch)

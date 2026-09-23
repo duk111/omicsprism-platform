@@ -32,9 +32,11 @@ describe("agentApi.resumeTurn", () => {
     vi.stubGlobal("fetch", fetchMock);
 
     await agentApi.resumeTurn("thread-1", "turn-1", {
-      kind: "clarification",
+      kind: "confirmation",
       interrupt_id: "interrupt-1",
-      answer: "salt",
+      plan_id: "plan-1",
+      plan_version: 1,
+      message: "set padj cutoff to 0.01",
     });
 
     const init = fetchMock.mock.calls[0][1] as RequestInit;

@@ -72,6 +72,7 @@ class MetadataDescription(ReadOnlyToolModel):
 
 
 class ContrastCandidate(ReadOnlyToolModel):
+    option_id: str = Field(min_length=1, max_length=160)
     compare_field: str = Field(min_length=1, max_length=200)
     tested_level: str = Field(min_length=1, max_length=200)
     reference_level: str = Field(min_length=1, max_length=200)

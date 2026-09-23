@@ -125,7 +125,7 @@ def test_eval_multiturn_live_adapter_receives_recent_user_and_assistant_messages
     ]
 
 
-def test_confirmation_uses_checkpoint_plan_values_and_detects_fingerprint_change() -> None:
+def test_confirmation_uses_checkpoint_plan_values_and_rejects_fingerprint_change() -> None:
     cases = _quality_cases()
     approve = next(case for case in cases if case.case_id == "confirmation-approve-001")
     changed = next(case for case in cases if case.case_id == "confirmation-fingerprint-change-004")
@@ -134,8 +134,8 @@ def test_confirmation_uses_checkpoint_plan_values_and_detects_fingerprint_change
 
     assert approve_trial.matched and approve_trial.job_count == 1
     assert changed_trial.matched
-    assert changed_trial.terminal == "interrupt"
-    assert changed_trial.interrupt_kind == "clarification"
+    assert changed_trial.terminal == "completed"
+    assert changed_trial.interrupt_kind is None
     assert changed_trial.job_count == 0
 
 

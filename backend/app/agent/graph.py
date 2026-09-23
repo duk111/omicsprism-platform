@@ -8,6 +8,7 @@ from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from .clarification_resolver import ClarificationOption, stable_option_id
 from .dataset_profile import DatasetProfile
 from .param_resolver import (
     AnalysisParams,
@@ -121,6 +122,13 @@ class QaDecision(BaseModel):
 
     action: Literal["answer", "ask_user", "reroute"]
     question: str | None = Field(default=None, max_length=1000)
+    reroute_to: Literal["qa", "analysis", "result_qa"] | None = None
+
+    @model_validator(mode="after")
+    def _reroute_target_matches_action(self) -> "QaDecision":
+        if self.action != "reroute" and self.reroute_to is not None:
+            raise ValueError("reroute_to is only valid for reroute")
+        return self
 
 
 class AnalysisDecision(BaseModel):
@@ -138,6 +146,13 @@ class AnalysisDecision(BaseModel):
     analysis_type: AnalysisTypeName | None = None
     proposal: AnalysisProposal | None = None
     question: str | None = Field(default=None, max_length=1000)
+    reroute_to: Literal["qa", "analysis", "result_qa"] | None = None
+
+    @model_validator(mode="after")
+    def _reroute_target_matches_action(self) -> "AnalysisDecision":
+        if self.action != "reroute" and self.reroute_to is not None:
+            raise ValueError("reroute_to is only valid for reroute")
+        return self
 
 
 class ResultDecision(BaseModel):
@@ -156,6 +171,13 @@ class ResultDecision(BaseModel):
     result_query: ResultQuerySpec | None = None
     grounded_answer: GroundedAnswer | None = None
     question: str | None = Field(default=None, max_length=1000)
+    reroute_to: Literal["qa", "analysis", "result_qa"] | None = None
+
+    @model_validator(mode="after")
+    def _reroute_target_matches_action(self) -> "ResultDecision":
+        if self.action != "reroute" and self.reroute_to is not None:
+            raise ValueError("reroute_to is only valid for reroute")
+        return self
 
 
 class QaModelOutput(BaseModel):
@@ -420,13 +442,40 @@ class PendingAnalysisClarification(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    status: Literal["active", "consumed", "superseded", "expired"] = "active"
+    status: Literal["active", "consumed", "superseded", "expired", "cancelled"] = "active"
     analysis_type: AnalysisTypeName | None = None
     question: str = Field(min_length=1, max_length=1200)
     missing: list[str] = Field(default_factory=list, max_length=3)
-    options: list[str] = Field(default_factory=list, max_length=20)
+    options: list[ClarificationOption] = Field(default_factory=list, max_length=20)
     source_message: str = Field(min_length=1, max_length=4000)
     input_bundle_id: str | None = Field(default=None, max_length=200)
+    source_action: Literal["inspect_dataset", "propose_plan", "run_analysis"] = "propose_plan"
+    proposal: AnalysisProposal | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def _normalize_legacy_options(cls, value: object) -> object:
+        """Convert pre-Step5 string options into stable option records."""
+
+        if not isinstance(value, dict) or not isinstance(value.get("options"), list):
+            return value
+        normalized: list[object] = []
+        for item in value["options"]:
+            if isinstance(item, str):
+                normalized.append({
+                    "option_id": stable_option_id(item),
+                    "label": item,
+                })
+            elif isinstance(item, dict) and "option_id" not in item and "id" in item:
+                normalized.append({
+                    **item,
+                    "option_id": item["id"],
+                })
+            else:
+                normalized.append(item)
+        result = dict(value)
+        result["options"] = normalized
+        return result
 
 
 class AgentStreamEvent(BaseModel):
@@ -503,6 +552,7 @@ class AgentDecision(BaseModel):
     question: str | None = Field(default=None, max_length=1000)
     decision_note: str | None = Field(default=None, max_length=240)
     grounded_answer: GroundedAnswer | None = None
+    reroute_to: Literal["qa", "analysis", "result_qa"] | None = None
     tool: ToolName | None = None
     arguments: dict[str, Any] = Field(default_factory=dict, max_length=16)
 
@@ -528,6 +578,8 @@ class AgentDecision(BaseModel):
                 raise ValueError("tool_call action requires a read-only tool")
         elif self.tool is not None or self.arguments:
             raise ValueError("tool and arguments are only valid for tool_call")
+        if self.action != "reroute" and self.reroute_to is not None:
+            raise ValueError("reroute_to is only valid for reroute")
         return self
 
 
@@ -692,6 +744,7 @@ def build_agent_graph(
     checkpointer: object | None = None,
     tool_executor: ToolExecutor | None = None,
     trace_recorder: object | None = None,
+    clarification_resolver: object | None = None,
 ):
     """Compile the v3 graph around injected model and deterministic data boundaries."""
 
@@ -710,7 +763,12 @@ def build_agent_graph(
     builder.add_node("qa_agent", qa_agent_node(model, tool_executor, trace_recorder))
     builder.add_node(
         "analysis_agent",
-        analysis_agent_node(model, tool_executor, trace_recorder),
+        analysis_agent_node(
+            model,
+            tool_executor,
+            trace_recorder,
+            clarification_resolver,
+        ),
     )
     builder.add_node(
         "result_qa_agent",

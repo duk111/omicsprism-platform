@@ -6,7 +6,6 @@ from pydantic import ValidationError
 from backend.app.agent.dataset_profile import MatrixProfile
 from backend.app.agent.graph import (
     AgentDecision,
-    ClarificationPayload,
     ConfirmationPayload,
     DatasetProfileRef,
     GraphState,
@@ -16,6 +15,7 @@ from backend.app.agent.graph import (
     ResultQuerySpec,
     StepBudget,
     StratumSummary,
+    PendingAnalysisClarification,
 )
 from backend.app.agent.param_resolver import ContrastSpec, DEGParams, ScopeSpec
 from backend.app.agent.schemas import Citation, GroundedAnswer, GroundedClaim
@@ -140,20 +140,23 @@ def test_step_budget_defaults_to_a_loop_safety_valve() -> None:
     assert StepBudget().max_tokens == 16384
 
 
-def test_pending_interrupt_is_discriminated_and_typed() -> None:
-    clarification = ClarificationPayload(
-        missing=[{"field": "compare_field", "options": ["condition"], "reason": "Choose a factor"}],
-        question="Which factor should be compared?",
-    )
+def test_pending_analysis_clarification_is_structured_and_typed() -> None:
     state = GraphState(
         thread_id="thread-1",
         user_id="user-1",
         user_message="Run DEG",
-        pending_interrupt=clarification,
+        pending_analysis=PendingAnalysisClarification(
+            question="Which factor should be compared?",
+            missing=["compare_field"],
+            options=["condition"],
+            source_message="Run DEG",
+        ),
     )
 
-    assert state.pending_interrupt is not None
-    assert state.pending_interrupt.kind == "clarification"
+    assert state.pending_analysis is not None
+    assert state.pending_analysis.status == "active"
+    assert state.pending_analysis.options[0].label == "condition"
+    assert state.pending_analysis.options[0].option_id.startswith("contrast-")
 
 
 def test_confirmation_payload_uses_resolved_params_not_a_dict() -> None:

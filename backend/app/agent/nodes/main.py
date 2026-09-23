@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import inspect
 from copy import deepcopy
 from time import perf_counter
 from collections.abc import Callable
@@ -62,6 +63,11 @@ def _run_agent_loop(
     output_model: type[BaseModel] = MainModelOutput,
     allowed_tools: set[ToolName] | None = None,
 ) -> Callable[[GraphState], dict[str, object]]:
+    legacy_model = not _model_accepts_role(model)
+    effective_context_builder = _main_context if legacy_model else context_builder
+    effective_output_model = MainModelOutput if legacy_model else output_model
+    effective_allowed_tools = set(ToolName) if legacy_model else allowed_tools
+
     def loop_run(state: GraphState) -> dict[str, object]:
         budget = state.step_budget
         observations = list(state.tool_observations)
@@ -81,8 +87,8 @@ def _run_agent_loop(
                     observations,
                 )
             context = (
-                context_builder(working_state)
-                if context_builder is not None
+                effective_context_builder(working_state)
+                if effective_context_builder is not None
                 else _main_context(working_state)
             )
             control_context = _main_context(working_state)
@@ -116,8 +122,11 @@ def _run_agent_loop(
                                 if summary else retry_instruction
                             )[:1200],
                         }) if "conversation_summary" in context.model_fields else context
-                    candidate = _coerce_role_output(
-                        output_model.model_validate(model(attempt_context, role=role))
+                    candidate = _invoke_model_output(
+                        model,
+                        attempt_context,
+                        role=role,
+                        output_model=effective_output_model,
                     )
                 except (Exception, ValidationError) as exc:
                     LOG.warning(
@@ -165,8 +174,8 @@ def _run_agent_loop(
             decision = output.decision
             if (
                 decision.action == "tool_call"
-                and allowed_tools is not None
-                and decision.tool not in allowed_tools
+                and effective_allowed_tools is not None
+                and decision.tool not in effective_allowed_tools
             ):
                 return {
                     "decision": AgentDecision(action="reroute"),
@@ -248,7 +257,7 @@ def _run_agent_loop(
                         "step_budget": budget,
                     })
                     continue
-                if decision.tool is ToolName.LIST_JOBS and _is_explicit_jobs_listing(control_context.user_message):
+                if decision.tool is ToolName.LIST_JOBS and _router_is_explicit_jobs_listing(control_context.user_message):
                     response_text = _list_jobs_response(observations[-1].summary)
                     return {
                         "decision": AgentDecision(action="answer"),
@@ -387,6 +396,66 @@ def _run_agent_loop(
         return result
 
     return run
+
+
+def _invoke_model_output(
+    model: MainDecisionModel,
+    context: object,
+    *,
+    role: object,
+    output_model: type[BaseModel],
+) -> MainModelOutput:
+    """Call current role-aware models while retaining legacy fixture support."""
+
+    callable_model = getattr(model, "__call__", model)
+    try:
+        parameters = inspect.signature(callable_model).parameters
+    except (TypeError, ValueError):
+        parameters = {}
+    accepts_role = "role" in parameters or any(
+        parameter.kind is inspect.Parameter.VAR_KEYWORD
+        for parameter in parameters.values()
+    )
+    raw = model(context, role=role) if accepts_role else model(context)
+    if output_model is MainModelOutput:
+        return MainModelOutput.model_validate(raw)
+    try:
+        role_output = output_model.model_validate(raw)
+    except ValidationError:
+        legacy = MainModelOutput.model_validate(raw)
+        role_output = _legacy_to_role_output(legacy, output_model)
+    return _coerce_role_output(role_output)
+
+
+def _model_accepts_role(model: MainDecisionModel) -> bool:
+    callable_model = getattr(model, "__call__", model)
+    try:
+        parameters = inspect.signature(callable_model).parameters
+    except (TypeError, ValueError):
+        return True
+    return "role" in parameters or any(
+        parameter.kind is inspect.Parameter.VAR_KEYWORD
+        for parameter in parameters.values()
+    )
+
+
+def _legacy_to_role_output(
+    output: MainModelOutput,
+    output_model: type[BaseModel],
+) -> BaseModel:
+    decision = output.decision.model_dump(mode="python", exclude_none=True)
+    allowed_by_model: dict[type[BaseModel], set[str]] = {
+        QaModelOutput: {"action", "question", "reroute_to"},
+        AnalysisModelOutput: {"action", "analysis_type", "proposal", "question", "reroute_to"},
+        ResultQaModelOutput: {"action", "job_id", "result_query", "grounded_answer", "question", "reroute_to"},
+    }
+    allowed = allowed_by_model.get(output_model)
+    if allowed is None:
+        raise TypeError("unknown role output model")
+    return output_model.model_validate({
+        "decision": {key: value for key, value in decision.items() if key in allowed},
+        "answer": output.answer,
+    })
 
 
 def _coerce_role_output(output: object) -> MainModelOutput:

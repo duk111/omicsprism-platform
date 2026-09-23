@@ -12,7 +12,7 @@ from fastapi.testclient import TestClient
 from backend.app.agent.api import create_agent_router, project_stream_events
 from backend.app.agent.bootstrap import AgentApiContext
 from backend.app.agent.graph import (
-    ClarificationPayload,
+    ConfirmationPayload,
     GraphInterrupt,
     GraphPendingInterrupt,
     GraphState,
@@ -407,7 +407,20 @@ def test_stream_projection_includes_public_pending_interrupt() -> None:
         checkpoint_turn_id="turn-1",
         interrupt=GraphInterrupt(
             interrupt_id="interrupt-1",
-            payload=ClarificationPayload(question="Choose a treatment"),
+            payload=ConfirmationPayload(
+                analysis_type="DEG",
+                resolved_params={
+                    "analysis_type": "DEG",
+                    "contrast": {
+                        "compare_field": "condition",
+                        "tested_level": "salt",
+                        "reference_level": "control",
+                    },
+                },
+                input_fingerprint="sha256:" + "a" * 64,
+                plan_id="plan-1",
+                plan_version=1,
+            ),
         ),
     )
     event = project_stream_events([], [], pending)[0]

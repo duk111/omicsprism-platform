@@ -11,10 +11,7 @@ from backend.app.agent.bootstrap import AgentApiContext
 from backend.app.agent.graph import (
     AgentDecision,
     AnalysisExecutionRequest,
-    ClarificationPayload,
     DatasetLoadRequest,
-    GraphInterrupt,
-    GraphPendingInterrupt,
     JobRef,
     MainModelOutput,
     build_agent_graph,
@@ -42,7 +39,7 @@ class _Model:
     def __init__(self, proposal: AnalysisProposal) -> None:
         self.proposal = proposal
 
-    def __call__(self, _context):
+    def __call__(self, _context, *, role=None):
         decision = AgentDecision(
             action="run_analysis", analysis_type="DEG", proposal=self.proposal)
         return MainModelOutput(decision=decision)
@@ -199,39 +196,14 @@ def test_confirmation_resume_uses_header_and_persists_completed_turn() -> None:
     assert len(submitter.requests) == 1
 
 
-def test_clarification_resume_checks_ownership_and_preserves_missing_semantics() -> None:
-    client, _context, thread, submitter = _setup(AnalysisProposal(
-        analysis_type="DEG", compare_field="condition", scope=ScopeSpec(mode="all")
-    ))
-    body = _start(client, thread, "clarify-1").json()
-    _drain(_context)
-    interrupt = _interrupt_body(_context, thread)
-    assert interrupt["payload"]["kind"] == "clarification"
-    url = _resume_url(thread, body)
-    request = {
-        "kind": "clarification", "interrupt_id": interrupt["interrupt_id"],
-        "answer": "compare salt and control",
-    }
-    client.cookies.clear()
-    client.cookies.set(COOKIE, "user-b")
-    assert client.post(url, json=request).status_code == 404
-    client.cookies.clear()
-    client.cookies.set(COOKIE, "user-a")
-    resumed = client.post(url, json=request)
-    _drain(_context)
-    assert resumed.status_code == 200
-    assert resumed.json()["turn"]["status"] == "queued"
-    assert not submitter.requests
-
-
-def test_openapi_exposes_typed_graph_resume_contract() -> None:
+def test_openapi_exposes_confirmation_resume_contract() -> None:
     client, _context, _thread, _submitter = _setup(AnalysisProposal(analysis_type="DEG", scope=ScopeSpec(mode="all")))
     schema = client.get("/openapi.json").json()
     path = "/api/agent/threads/{thread_id}/turns/{checkpoint_turn_id}/resume"
     request_schema = schema["paths"][path]["post"]["requestBody"]["content"][
         "application/json"]["schema"]
-    assert request_schema["discriminator"]["propertyName"] == "kind"
-    assert set(request_schema["discriminator"]["mapping"]) == {"clarification", "confirmation"}
+    assert request_schema["$ref"] == "#/components/schemas/GraphConfirmationResumeRequest"
+    assert schema["components"]["schemas"]["GraphConfirmationResumeRequest"]["properties"]["kind"]["const"] == "confirmation"
 
 
 def test_new_turn_rejects_when_previous_turn_is_queued() -> None:

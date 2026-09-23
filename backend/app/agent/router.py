@@ -12,6 +12,11 @@ def route(state: GraphState) -> AgentRole:
     has_jobs = bool(state.current_job or state.recent_jobs)
     pending = state.pending_analysis
 
+    if state.decision is not None and state.decision.action == "reroute":
+        target = state.decision.reroute_to
+        if target is not None:
+            return AgentRole(target)
+
     if state.turn_origin == "job_continuation":
         return AgentRole.RESULT_QA
 

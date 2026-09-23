@@ -40,6 +40,15 @@ from .context import (
     ResultQaModelContext,
     WorkingSet,
 )
+from .clarification_resolver import (
+    ClarificationOption,
+    ClarificationResolver,
+    ClarificationResolverInput,
+    ClarificationResolverOutput,
+    ParamFieldSpec,
+    build_param_spec,
+    param_specs_for_analysis,
+)
 from .queue import AgentTurnInput
 from .graph import (
     AgentRole,
@@ -111,6 +120,10 @@ __all__ = [
     "compute_input_fingerprint",
     "VllmGraphModel",
     "AgentRole",
+    "ClarificationOption",
+    "ClarificationResolver",
+    "ClarificationResolverInput",
+    "ClarificationResolverOutput",
     "QaDecision",
     "AnalysisDecision",
     "ResultDecision",
@@ -132,6 +145,9 @@ __all__ = [
     "RecentMessages",
     "ResultFocusContext",
     "ResultQaModelContext",
+    "ParamFieldSpec",
+    "build_param_spec",
+    "param_specs_for_analysis",
     "AgentTurnInput",
     "PendingPlan",
     "PlanVersionConflict",

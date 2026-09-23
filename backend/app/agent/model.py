@@ -428,6 +428,66 @@ class VllmGraphModel:
             self._record_call(context, started, outcome="rejected", error_code=type(exc).__name__)
             raise
 
+    def resolve_clarification(self, context: object) -> object:
+        """Run the bounded clarification sub-agent without tools or graph state."""
+
+        from .clarification_resolver import ClarificationResolverInput, ClarificationResolverOutput
+
+        request = ClarificationResolverInput.model_validate(context)
+        system_prompt = (
+            "You are the OmicsPrism clarification resolver. Classify only the user's "
+            "reply to the active analysis clarification as edit_params, confirm, cancel, "
+            "param_question, or unrelated. Map edits only to the supplied option IDs or "
+            "parameter names. Never invent a dataset fact, option, or parameter. Return "
+            "the strict ClarificationResolverOutput schema and use the user's language."
+        )
+        payload: dict[str, object] = {
+            "model": self.model_name,
+            "temperature": 0,
+            "max_tokens": 512,
+            "chat_template_kwargs": {"enable_thinking": False},
+            "tool_choice": "none",
+            "tools": [],
+            "messages": [
+                {"role": "system", "content": system_prompt},
+                {
+                    "role": "user",
+                    "content": json.dumps(request.model_dump(mode="json"), ensure_ascii=False),
+                },
+            ],
+        }
+        if self.structured_tool_response and self._structured_tools_supported is not False:
+            payload["response_format"] = {
+                "type": "json_schema",
+                "json_schema": {
+                    "name": "clarification_resolver_output",
+                    "strict": True,
+                    "schema": ClarificationResolverOutput.model_json_schema(),
+                },
+            }
+        headers = {"Content-Type": "application/json"}
+        if self.api_key:
+            headers["Authorization"] = f"Bearer {self.api_key}"
+        self.last_request_payload = payload
+        response = self.client.post(self.endpoint, headers=headers, json=payload)
+        if (
+            response.status_code == 400
+            and "response_format" in payload
+            and _response_mentions_unsupported_response_format(response)
+        ):
+            fallback = dict(payload)
+            fallback.pop("response_format", None)
+            self._structured_tools_supported = False
+            response = self.client.post(self.endpoint, headers=headers, json=fallback)
+        self.last_usage = _usage_from_response(response)
+        response.raise_for_status()
+        try:
+            content = response.json()["choices"][0]["message"]["content"]
+            result = json.loads(content) if isinstance(content, str) else content
+            return ClarificationResolverOutput.model_validate(result)
+        except (KeyError, IndexError, TypeError, ValueError, ValidationError) as exc:
+            raise ModelBoundaryError("clarification resolver response is invalid") from exc
+
     def _record_call(
         self,
         context: object,
@@ -825,7 +885,7 @@ _GRAPH_MAIN_SYSTEM_PROMPT = (
     "treat the latest user message as a possible answer to that analysis clarification "
     "unless the user changes the dataset or asks an unrelated question; in the first "
     "case return the same analysis action with a completed proposal. Pending records "
-    "with status=consumed, superseded, or expired are historical context only and "
+    "with status=consumed, superseded, expired, or cancelled are historical context only and "
     "must not trigger analysis recovery. "
     "If tool_repetition_guidance is present, treat it as the latest tool result: do not "
     "select tool_call; choose only answer, ask_user, or grounded_answer. "

@@ -29,6 +29,7 @@ from .readonly_tools import (
     MetadataFieldDescription,
     QueryArtifactRequest,
 )
+from .clarification_resolver import stable_option_id
 from .dataset_profile import DatasetProfile, MatrixProfile, MetadataProfile, build_dataset_profiles
 from .schemas import ToolName, ToolResult
 
@@ -254,6 +255,16 @@ class AgentToolRuntime:
                                 f"observed {tested_count} tested and {reference_count} reference"
                             )
                             candidates.append(ContrastCandidate(
+                                option_id=stable_option_id(
+                                    f"{field_name}: {tested} vs {reference}",
+                                    {
+                                        "compare_field": field_name,
+                                        "tested_level": tested,
+                                        "reference_level": reference,
+                                        "scope": scope.model_dump(mode="python"),
+                                        "stratum": dict(stratum),
+                                    },
+                                ),
                                 compare_field=field_name,
                                 tested_level=tested,
                                 reference_level=reference,
