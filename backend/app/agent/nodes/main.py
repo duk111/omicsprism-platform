@@ -118,11 +118,13 @@ def _run_agent_loop(
                                 if summary else retry_instruction
                             )[:1200],
                         }) if "conversation_summary" in context.model_fields else context
-                    candidate = _coerce_role_output(
-                        output_model.model_validate(
-                            _invoke_role_model(model, attempt_context, role)
+                    raw_output = _invoke_role_model(model, attempt_context, role)
+                    if isinstance(raw_output, MainModelOutput):
+                        candidate = raw_output
+                    else:
+                        candidate = _coerce_role_output(
+                            output_model.model_validate(raw_output)
                         )
-                    )
                 except (Exception, ValidationError) as exc:
                     LOG.warning(
                         "model decision rejected",
