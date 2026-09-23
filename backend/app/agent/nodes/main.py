@@ -116,7 +116,12 @@ def _run_agent_loop(
                                 if summary else retry_instruction
                             )[:1200],
                         }) if "conversation_summary" in context.model_fields else context
-                    raw_output = _invoke_role_model(model, attempt_context, role)
+                    raw_output = _invoke_role_model(
+                        model,
+                        attempt_context,
+                        role,
+                        legacy_context=control_context,
+                    )
                     if isinstance(raw_output, MainModelOutput):
                         candidate = raw_output
                     else:
@@ -393,7 +398,13 @@ def _run_agent_loop(
     return run
 
 
-def _invoke_role_model(model: MainDecisionModel, context: object, role: object) -> object:
+def _invoke_role_model(
+    model: MainDecisionModel,
+    context: object,
+    role: object,
+    *,
+    legacy_context: MainModelContext,
+) -> object:
     """Call role-aware models while retaining old callable-model compatibility."""
 
     try:
@@ -401,7 +412,7 @@ def _invoke_role_model(model: MainDecisionModel, context: object, role: object) 
     except TypeError as exc:
         if "unexpected keyword" not in str(exc) and "positional argument" not in str(exc):
             raise
-        return model(context)
+        return model(legacy_context)
 
 
 def _coerce_role_output(output: object) -> MainModelOutput:

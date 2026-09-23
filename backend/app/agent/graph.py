@@ -120,6 +120,7 @@ class QaDecision(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     action: Literal["answer", "ask_user", "reroute"]
+    question: str | None = Field(default=None, max_length=1000)
 
 
 class AnalysisDecision(BaseModel):
@@ -136,6 +137,7 @@ class AnalysisDecision(BaseModel):
     ]
     analysis_type: AnalysisTypeName | None = None
     proposal: AnalysisProposal | None = None
+    question: str | None = Field(default=None, max_length=1000)
 
 
 class ResultDecision(BaseModel):
@@ -153,6 +155,7 @@ class ResultDecision(BaseModel):
     job_id: str | None = Field(default=None, max_length=200)
     result_query: ResultQuerySpec | None = None
     grounded_answer: GroundedAnswer | None = None
+    question: str | None = Field(default=None, max_length=1000)
 
 
 class QaModelOutput(BaseModel):

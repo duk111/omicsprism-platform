@@ -439,7 +439,10 @@ class AgentRuntime:
             "run_id": run_id,
             "trace_id": item.trace_id,
             "turn_origin": "job_continuation",
-            "user_message": "A Job completion fact is ready for result QA.",
+            # ``turn_origin`` is the authoritative route discriminator. Keep
+            # the bounded legacy text for compatibility with older model
+            # adapters; no routing decision relies on this string.
+            "user_message": f"System Job event: {event.job_id} reached {event.status.value}.",
             "job_continuation": JobContinuationFact(
                 job_id=event.job_id,
                 owner_id=event.user_id,
