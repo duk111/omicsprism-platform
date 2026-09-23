@@ -126,7 +126,14 @@ def test_context_assembler_builds_narrow_agent_projections() -> None:
     assert set(qa_payload["fact_index"]) == {"dataset_roles"}
 
     analysis_payload = analysis.model_dump(mode="json")
-    assert set(analysis_payload) == {"fact_index", "pending_analysis", "decision_ledger"}
+    assert set(analysis_payload) == {
+        "user_message",
+        "recent_messages",
+        "fact_index",
+        "pending_analysis",
+        "decision_ledger",
+        "tool_repetition_guidance",
+    }
     assert analysis.fact_index.metadata_fields == ["line", "timepoint", "treatment"]
     assert analysis.fact_index.metadata_levels["treatment"] == {"control": 2, "salt": 2}
 

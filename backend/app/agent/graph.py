@@ -126,6 +126,8 @@ class QaDecision(BaseModel):
 
     @model_validator(mode="after")
     def _reroute_target_matches_action(self) -> "QaDecision":
+        if self.action == "reroute" and self.reroute_to not in {"analysis", "result_qa"}:
+            raise ValueError("QA reroute must target analysis or result_qa")
         if self.action != "reroute" and self.reroute_to is not None:
             raise ValueError("reroute_to is only valid for reroute")
         return self
@@ -141,15 +143,29 @@ class AnalysisDecision(BaseModel):
         "propose_plan",
         "run_analysis",
         "ask_user",
+        "tool_call",
         "reroute",
     ]
     analysis_type: AnalysisTypeName | None = None
     proposal: AnalysisProposal | None = None
     question: str | None = Field(default=None, max_length=1000)
     reroute_to: Literal["qa", "analysis", "result_qa"] | None = None
+    tool: ToolName | None = None
+    arguments: dict[str, Any] = Field(default_factory=dict, max_length=16)
 
     @model_validator(mode="after")
     def _reroute_target_matches_action(self) -> "AnalysisDecision":
+        if self.action == "reroute" and self.reroute_to not in {"qa", "result_qa"}:
+            raise ValueError("analysis reroute must target qa or result_qa")
+        if self.action == "tool_call" and self.tool not in {
+            ToolName.DESCRIBE_METADATA,
+            ToolName.ENUMERATE_CONTRASTS,
+        }:
+            raise ValueError("analysis tool_call requires an analysis read-only tool")
+        if self.action == "tool_call" and self.reroute_to is not None:
+            raise ValueError("tool_call cannot include reroute_to")
+        if self.action != "tool_call" and (self.tool is not None or self.arguments):
+            raise ValueError("tool and arguments are only valid for tool_call")
         if self.action != "reroute" and self.reroute_to is not None:
             raise ValueError("reroute_to is only valid for reroute")
         return self
@@ -165,6 +181,7 @@ class ResultDecision(BaseModel):
         "get_job",
         "grounded_answer",
         "ask_user",
+        "tool_call",
         "reroute",
     ]
     job_id: str | None = Field(default=None, max_length=200)
@@ -172,9 +189,23 @@ class ResultDecision(BaseModel):
     grounded_answer: GroundedAnswer | None = None
     question: str | None = Field(default=None, max_length=1000)
     reroute_to: Literal["qa", "analysis", "result_qa"] | None = None
+    tool: ToolName | None = None
+    arguments: dict[str, Any] = Field(default_factory=dict, max_length=16)
 
     @model_validator(mode="after")
     def _reroute_target_matches_action(self) -> "ResultDecision":
+        if self.action == "reroute" and self.reroute_to not in {"qa", "analysis"}:
+            raise ValueError("result QA reroute must target qa or analysis")
+        if self.action == "tool_call" and self.tool not in {
+            ToolName.LIST_JOBS,
+            ToolName.DESCRIBE_ARTIFACTS,
+            ToolName.QUERY_ARTIFACT,
+        }:
+            raise ValueError("result QA tool_call requires a result read-only tool")
+        if self.action == "tool_call" and self.reroute_to is not None:
+            raise ValueError("tool_call cannot include reroute_to")
+        if self.action != "tool_call" and (self.tool is not None or self.arguments):
+            raise ValueError("tool and arguments are only valid for tool_call")
         if self.action != "reroute" and self.reroute_to is not None:
             raise ValueError("reroute_to is only valid for reroute")
         return self

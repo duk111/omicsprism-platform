@@ -191,11 +191,19 @@ class QaModelContext(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
+    trace_id: str = Field(default="trace-local", max_length=200, exclude=True)
+    thread_id: str = Field(default="thread-local", max_length=200, exclude=True)
+    turn_id: str = Field(default="turn-local", max_length=200, exclude=True)
+    run_id: str = Field(default="run-local", max_length=200, exclude=True)
+    user_id: str = Field(default="user-local", max_length=200, exclude=True)
     user_message: str = Field(min_length=1, max_length=4000)
     recent_messages: RecentMessages = Field(default_factory=lambda: RecentMessages(
         context_version="messages.v1:empty"
     ))
     fact_index: QaFactIndex
+    tool_observations: list[ToolObservationContext] = Field(
+        default_factory=list, max_length=12, exclude=True
+    )
 
 
 class AnalysisModelContext(BaseModel):
@@ -203,9 +211,22 @@ class AnalysisModelContext(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
+    trace_id: str = Field(default="trace-local", max_length=200, exclude=True)
+    thread_id: str = Field(default="thread-local", max_length=200, exclude=True)
+    turn_id: str = Field(default="turn-local", max_length=200, exclude=True)
+    run_id: str = Field(default="run-local", max_length=200, exclude=True)
+    user_id: str = Field(default="user-local", max_length=200, exclude=True)
+    user_message: str = Field(min_length=1, max_length=4000)
+    recent_messages: RecentMessages = Field(default_factory=lambda: RecentMessages(
+        context_version="messages.v1:empty"
+    ))
     fact_index: FactIndex
     pending_analysis: dict[str, object] | None = None
     decision_ledger: DecisionLedger
+    tool_repetition_guidance: str | None = Field(default=None, max_length=5000)
+    tool_observations: list[ToolObservationContext] = Field(
+        default_factory=list, max_length=12, exclude=True
+    )
 
 
 class ResultQaModelContext(BaseModel):
@@ -213,11 +234,24 @@ class ResultQaModelContext(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
+    trace_id: str = Field(default="trace-local", max_length=200, exclude=True)
+    thread_id: str = Field(default="thread-local", max_length=200, exclude=True)
+    turn_id: str = Field(default="turn-local", max_length=200, exclude=True)
+    run_id: str = Field(default="run-local", max_length=200, exclude=True)
+    user_id: str = Field(default="user-local", max_length=200, exclude=True)
+    user_message: str = Field(min_length=1, max_length=4000)
+    recent_messages: RecentMessages = Field(default_factory=lambda: RecentMessages(
+        context_version="messages.v1:empty"
+    ))
     current_job: JobContextRef | None = None
     recent_jobs: list[JobContextRef] = Field(default_factory=list, max_length=20)
     focus: ResultFocusContext = Field(default_factory=ResultFocusContext)
     job_artifacts: dict[str, list[str]] = Field(default_factory=dict, max_length=20)
     job_continuation: JobContinuationContext | None = None
+    tool_repetition_guidance: str | None = Field(default=None, max_length=5000)
+    tool_observations: list[ToolObservationContext] = Field(
+        default_factory=list, max_length=12, exclude=True
+    )
 
 
 class ContextAssembler:
@@ -286,11 +320,17 @@ class ContextAssembler:
         if not isinstance(recent_messages, RecentMessages):
             recent_messages = RecentMessages(context_version="messages.v1:empty")
         return QaModelContext(
-            user_message=str(getattr(state, "user_message", "")),
+            trace_id=str(getattr(state, "trace_id", "") or "trace-local"),
+            thread_id=str(getattr(state, "thread_id", "") or "thread-local"),
+            turn_id=str(getattr(state, "turn_id", "") or "turn-local"),
+            run_id=str(getattr(state, "run_id", "") or "run-local"),
+            user_id=str(getattr(state, "user_id", "") or "user-local"),
+            user_message=str(getattr(state, "user_message", "") or " "),
             recent_messages=recent_messages,
             fact_index=QaFactIndex(
                 dataset_roles=list(fact_index.dataset_roles),
             ),
+            tool_observations=self._tool_observations(state),
         )
 
     def assemble_for_analysis(self, state: object) -> AnalysisModelContext:
@@ -303,9 +343,21 @@ class ContextAssembler:
             else None
         )
         return AnalysisModelContext(
+            trace_id=str(getattr(state, "trace_id", "") or "trace-local"),
+            thread_id=str(getattr(state, "thread_id", "") or "thread-local"),
+            turn_id=str(getattr(state, "turn_id", "") or "turn-local"),
+            run_id=str(getattr(state, "run_id", "") or "run-local"),
+            user_id=str(getattr(state, "user_id", "") or "user-local"),
+            user_message=str(getattr(state, "user_message", "") or " "),
+            recent_messages=(
+                getattr(state, "recent_messages", None)
+                if isinstance(getattr(state, "recent_messages", None), RecentMessages)
+                else RecentMessages(context_version="messages.v1:empty")
+            ),
             fact_index=self._fact_index(state),
             pending_analysis=pending_payload,
             decision_ledger=self._decision_ledger(state),
+            tool_observations=self._tool_observations(state),
         )
 
     def assemble_for_result_qa(self, state: object) -> ResultQaModelContext:
@@ -329,6 +381,17 @@ class ContextAssembler:
         fact_index = self._fact_index(state)
         continuation = getattr(state, "job_continuation", None)
         return ResultQaModelContext(
+            trace_id=str(getattr(state, "trace_id", "") or "trace-local"),
+            thread_id=str(getattr(state, "thread_id", "") or "thread-local"),
+            turn_id=str(getattr(state, "turn_id", "") or "turn-local"),
+            run_id=str(getattr(state, "run_id", "") or "run-local"),
+            user_id=str(getattr(state, "user_id", "") or "user-local"),
+            user_message=str(getattr(state, "user_message", "") or " "),
+            recent_messages=(
+                getattr(state, "recent_messages", None)
+                if isinstance(getattr(state, "recent_messages", None), RecentMessages)
+                else RecentMessages(context_version="messages.v1:empty")
+            ),
             current_job=current_job,
             recent_jobs=recent_jobs,
             focus=ResultFocusContext(in_scope_job_ids=in_scope_job_ids),
@@ -342,7 +405,22 @@ class ContextAssembler:
                 if continuation is not None
                 else None
             ),
+            tool_observations=self._tool_observations(state),
         )
+
+    @staticmethod
+    def _tool_observations(state: object) -> list[ToolObservationContext]:
+        return [
+            ToolObservationContext(
+                tool=str(getattr(getattr(observation, "tool", "tool"), "value", getattr(observation, "tool", "tool"))),
+                call_id=str(getattr(observation, "call_id", "")),
+                arguments=dict(getattr(observation, "arguments", {}) or {}),
+                assistant_message=dict(getattr(observation, "assistant_message", {}) or {}),
+                summary=str(getattr(observation, "summary", ""))[:4000],
+            )
+            for observation in (getattr(state, "tool_observations", []) or [])
+            if str(getattr(observation, "summary", ""))
+        ]
 
     @staticmethod
     def _job_context_ref(value: object) -> JobContextRef | None:

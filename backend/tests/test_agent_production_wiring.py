@@ -445,6 +445,7 @@ def test_vllm_graph_model_uses_main_output_schema_and_returns_typed_output() -> 
         (
             AgentRole.ANALYSIS,
             AnalysisModelContext(
+                user_message="Which analyses can these data support?",
                 fact_index=FactIndex(
                     context_version="facts.v1:test",
                     dataset_roles=["metadata", "counts"],
@@ -462,12 +463,13 @@ def test_vllm_graph_model_uses_main_output_schema_and_returns_typed_output() -> 
         (
             AgentRole.RESULT_QA,
             ResultQaModelContext(
+                user_message="What happened to job-1?",
                 current_job=JobContextRef(job_id="job-1", owner_id="user-1"),
                 focus=ResultFocusContext(in_scope_job_ids=["job-1"]),
                 job_artifacts={"job-1": ["result.csv"]},
             ),
             ResultQaModelOutput(
-                decision=ResultDecision(action="reroute"),
+                decision=ResultDecision(action="reroute", reroute_to="qa"),
             ),
             {"list_jobs", "describe_artifacts", "query_artifact"},
             "result_qa_model_output",
@@ -578,6 +580,38 @@ def test_vllm_graph_model_emits_native_tool_calls_and_replays_tool_result() -> N
         "tool_call_id": call_id,
         "content": '{"ok":true,"fields":[]}',
     }
+
+
+def test_vllm_graph_model_accepts_native_tool_calls_for_analysis_role() -> None:
+    def handle(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"choices": [{"message": {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [{
+                "id": "analysis-call-1",
+                "type": "function",
+                "function": {
+                    "name": "describe_metadata",
+                    "arguments": '{"fields":["treatment"]}',
+                },
+            }],
+        }}]})
+
+    model = VllmGraphModel(
+        base_url="http://model-host:8000",
+        model="Qwen3",
+        client=httpx.Client(transport=httpx.MockTransport(handle)),
+        structured_tool_response=False,
+    )
+    result = model(AnalysisModelContext(
+        user_message="Which analyses can these data support?",
+        fact_index=FactIndex(context_version="facts.v1:test"),
+        decision_ledger=DecisionLedger(context_version="ledger.v1:test"),
+    ), role=AgentRole.ANALYSIS)
+
+    assert isinstance(result, AnalysisModelOutput)
+    assert result.decision.action == "tool_call"
+    assert result.decision.tool is ToolName.DESCRIBE_METADATA
 
 
 @pytest.mark.parametrize("tool", [None, "get_jobs_status"])

@@ -141,6 +141,10 @@ Agent Runtime 还需要：
 ```text
 OMICS_PRISM_AGENT_MODEL_URL=http://127.0.0.1:18000/v1
 OMICS_PRISM_AGENT_MODEL_NAME=Qwen3-14B-AWQ
+# 可选：不配置时，澄清参数解析子 Agent 复用上面的主 Agent 模型。
+OMICS_PRISM_CLARIFICATION_MODEL_URL=
+OMICS_PRISM_CLARIFICATION_MODEL_NAME=
+OMICS_PRISM_CLARIFICATION_MODEL_API_KEY=
 ```
 
 `.env`、`.env.worker`、模型访问密钥和数据库密码只保存在服务器，不提交 Git。

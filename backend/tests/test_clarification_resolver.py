@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import pytest
+
 from backend.app.agent.clarification_resolver import (
     ClarificationOption,
     ClarificationResolver,
@@ -126,6 +128,16 @@ def test_role_reroute_contract_accepts_an_explicit_target() -> None:
     decision = AnalysisDecision(action="reroute", reroute_to="qa")
 
     assert decision.reroute_to == "qa"
+
+
+def test_role_reroute_contract_rejects_same_role_or_missing_target() -> None:
+    from pydantic import ValidationError
+    from backend.app.agent.graph import QaDecision
+
+    with pytest.raises(ValidationError):
+        QaDecision(action="reroute", reroute_to="qa")
+    with pytest.raises(ValidationError):
+        QaDecision(action="reroute")
 
 
 def test_cancel_marks_pending_terminal_without_submission_action() -> None:

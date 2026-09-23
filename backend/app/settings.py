@@ -42,6 +42,9 @@ class AppSettings:
     agent_model_url: str | None = None
     agent_model_name: str | None = None
     agent_model_api_key: str | None = None
+    clarification_model_url: str | None = None
+    clarification_model_name: str | None = None
+    clarification_model_api_key: str | None = None
     agent_turn_timeout_seconds: float = 90.0
     agent_model_request_timeout_seconds: float = 30.0
     agent_max_transient_retries: int = 1
@@ -90,6 +93,9 @@ def load_settings() -> AppSettings:
         agent_model_url=os.getenv("OMICS_PRISM_AGENT_MODEL_URL") or None,
         agent_model_name=os.getenv("OMICS_PRISM_AGENT_MODEL_NAME") or None,
         agent_model_api_key=os.getenv("OMICS_PRISM_AGENT_MODEL_API_KEY") or None,
+        clarification_model_url=os.getenv("OMICS_PRISM_CLARIFICATION_MODEL_URL") or None,
+        clarification_model_name=os.getenv("OMICS_PRISM_CLARIFICATION_MODEL_NAME") or None,
+        clarification_model_api_key=os.getenv("OMICS_PRISM_CLARIFICATION_MODEL_API_KEY") or None,
         agent_turn_timeout_seconds=float(os.getenv("OMICS_PRISM_AGENT_TURN_TIMEOUT_SECONDS", "90")),
         agent_model_request_timeout_seconds=float(os.getenv("OMICS_PRISM_AGENT_MODEL_REQUEST_TIMEOUT_SECONDS", "30")),
         agent_max_transient_retries=int(os.getenv("OMICS_PRISM_AGENT_MAX_TRANSIENT_RETRIES", "1")),

@@ -128,6 +128,21 @@ def create_agent_api_context(
         # ``tools`` and ``response_format`` can coexist reliably.
         structured_tool_response=False,
     )
+    clarification_model = None
+    if settings.clarification_model_url or settings.clarification_model_name:
+        if not settings.clarification_model_url or not settings.clarification_model_name:
+            raise RuntimeError(
+                "OMICS_PRISM_CLARIFICATION_MODEL_URL and "
+                "OMICS_PRISM_CLARIFICATION_MODEL_NAME must be configured together"
+            )
+        clarification_model = VllmGraphModel(
+            base_url=settings.clarification_model_url,
+            model=settings.clarification_model_name,
+            api_key=settings.clarification_model_api_key,
+            timeout_seconds=settings.agent_model_request_timeout_seconds,
+            trace_recorder=trace_recorder,
+            structured_tool_response=False,
+        )
 
     def load_datasets(request: DatasetLoadRequest) -> list[DatasetRef]:
         refs: list[DatasetRef] = []
@@ -352,6 +367,7 @@ def create_agent_api_context(
             checkpointer=checkpointer,
             tool_executor=execute_tool,
             trace_recorder=trace_recorder,
+            clarification_resolver=clarification_model,
         )
     except Exception:
         checkpointer.conn.close()

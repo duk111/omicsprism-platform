@@ -177,8 +177,12 @@ def _run_agent_loop(
                 and effective_allowed_tools is not None
                 and decision.tool not in effective_allowed_tools
             ):
+                reroute_target = {
+                    "analysis": "qa",
+                    "result_qa": "qa",
+                }.get(str(getattr(role, "value", role)), "qa")
                 return {
-                    "decision": AgentDecision(action="reroute"),
+                    "decision": AgentDecision(action="reroute", reroute_to=reroute_target),
                     "response_text": None,
                     "response_blocks": [],
                     "grounded_answer": None,
@@ -446,8 +450,8 @@ def _legacy_to_role_output(
     decision = output.decision.model_dump(mode="python", exclude_none=True)
     allowed_by_model: dict[type[BaseModel], set[str]] = {
         QaModelOutput: {"action", "question", "reroute_to"},
-        AnalysisModelOutput: {"action", "analysis_type", "proposal", "question", "reroute_to"},
-        ResultQaModelOutput: {"action", "job_id", "result_query", "grounded_answer", "question", "reroute_to"},
+        AnalysisModelOutput: {"action", "analysis_type", "proposal", "question", "reroute_to", "tool", "arguments"},
+        ResultQaModelOutput: {"action", "job_id", "result_query", "grounded_answer", "question", "reroute_to", "tool", "arguments"},
     }
     allowed = allowed_by_model.get(output_model)
     if allowed is None:

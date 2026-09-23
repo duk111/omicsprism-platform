@@ -391,8 +391,6 @@ class VllmGraphModel:
                     _normalize_explicit_business_actions(payload, context)
                 if role is None:
                     _drop_irrelevant_action_fields(payload)
-                elif native_tool_call:
-                    raise ValueError("role-specific native tool calls are not supported")
                 result = output_model.model_validate(payload)
             except (KeyError, IndexError, TypeError, ValueError, ValidationError) as exc:
                 if self._debug_raw_output:
@@ -917,16 +915,20 @@ _QA_SYSTEM_PROMPT = (
 
 _ANALYSIS_SYSTEM_PROMPT = (
     "You are the OmicsPrism analysis agent. Use the bounded fact_index metadata fields, "
-    "metadata levels, dataset roles, pending_analysis, and decision_ledger to propose "
+    "the current user_message, recent_messages, metadata levels, dataset roles, "
+    "pending_analysis, and decision_ledger to propose "
     "analysis decisions. Infer compare_field and scope only from observed metadata and "
-    "explicit user language. Return inspect_dataset, propose_plan, or run_analysis for "
-    "analysis work, ask_user for a missing requirement, or reroute for a general or "
-    "result question. Do not claim validation or submit a Job. Use the user's language."
+    "explicit user language. Use tool_call with describe_metadata or enumerate_contrasts "
+    "when the bounded facts are insufficient. Return inspect_dataset, propose_plan, or "
+    "run_analysis for analysis work, ask_user for a missing requirement, or reroute for "
+    "a general or result question. Do not claim validation or submit a Job. Use the user's language."
 )
 
 _RESULT_QA_SYSTEM_PROMPT = (
     "You are the OmicsPrism result QA agent. Use only the supplied ownership-bound Job "
-    "references, in-scope Job IDs, and artifact index. Return query_result for an "
+    "references, current user_message, recent_messages, in-scope Job IDs, and artifact index. "
+    "Use tool_call with list_jobs, describe_artifacts, or query_artifact when evidence is "
+    "needed. Return query_result for an "
     "evidence request, get_job for Job status, grounded_answer only when evidence is "
     "available, ask_user when a Job must be selected, or reroute for analysis or general "
     "questions. Never invent artifacts, citations, or numeric values. Use the user's language."
