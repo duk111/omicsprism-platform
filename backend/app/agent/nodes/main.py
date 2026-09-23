@@ -116,18 +116,9 @@ def _run_agent_loop(
                                 if summary else retry_instruction
                             )[:1200],
                         }) if "conversation_summary" in context.model_fields else context
-                    raw_output = _invoke_role_model(
-                        model,
-                        attempt_context,
-                        role,
-                        legacy_context=control_context,
+                    candidate = _coerce_role_output(
+                        output_model.model_validate(model(attempt_context, role=role))
                     )
-                    if isinstance(raw_output, MainModelOutput):
-                        candidate = raw_output
-                    else:
-                        candidate = _coerce_role_output(
-                            output_model.model_validate(raw_output)
-                        )
                 except (Exception, ValidationError) as exc:
                     LOG.warning(
                         "model decision rejected",
@@ -398,26 +389,7 @@ def _run_agent_loop(
     return run
 
 
-def _invoke_role_model(
-    model: MainDecisionModel,
-    context: object,
-    role: object,
-    *,
-    legacy_context: MainModelContext,
-) -> object:
-    """Call role-aware models while retaining old callable-model compatibility."""
-
-    try:
-        return model(context, role=role)  # type: ignore[call-arg]
-    except TypeError as exc:
-        if "unexpected keyword" not in str(exc) and "positional argument" not in str(exc):
-            raise
-        return model(legacy_context)
-
-
 def _coerce_role_output(output: object) -> MainModelOutput:
-    if isinstance(output, MainModelOutput):
-        return output
     if isinstance(output, (QaModelOutput, AnalysisModelOutput, ResultQaModelOutput)):
         return MainModelOutput(
             decision=AgentDecision(**output.decision.model_dump(mode="python")),
