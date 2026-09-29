@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 import logging
-import inspect
 from copy import deepcopy
 from time import perf_counter
 from collections.abc import Callable
@@ -18,15 +17,16 @@ from ..graph import (
     AnalysisModelOutput,
     GraphState,
     MainDecisionModel,
-    MainModelOutput,
+    AgentLoopOutput,
     QaModelOutput,
     ResultQaModelOutput,
+    RouteTarget,
     StepBudget,
     ToolCallRequest,
     ToolExecutor,
     ToolObservation,
 )
-from ..context import ContextAssembler, MainModelContext
+from ..context import ContextAssembler, AgentControlContext
 from ..schemas import AgentEvidenceBlock, GroundedAnswer, ToolName, ToolResult
 from ..message_blocks import text_block
 from ..trace import TraceRecorder, stable_hash
@@ -60,13 +60,12 @@ def _run_agent_loop(
     tool_executor: ToolExecutor | None = None,
     trace_recorder: TraceRecorder | None = None,
     context_builder: Callable[[GraphState], object] | None = None,
-    output_model: type[BaseModel] = MainModelOutput,
+    output_model: type[BaseModel] = AgentLoopOutput,
     allowed_tools: set[ToolName] | None = None,
 ) -> Callable[[GraphState], dict[str, object]]:
-    legacy_model = not _model_accepts_role(model)
-    effective_context_builder = _main_context if legacy_model else context_builder
-    effective_output_model = MainModelOutput if legacy_model else output_model
-    effective_allowed_tools = set(ToolName) if legacy_model else allowed_tools
+    effective_context_builder = context_builder
+    effective_output_model = output_model
+    effective_allowed_tools = allowed_tools or set()
 
     def loop_run(state: GraphState) -> dict[str, object]:
         budget = state.step_budget
@@ -89,9 +88,9 @@ def _run_agent_loop(
             context = (
                 effective_context_builder(working_state)
                 if effective_context_builder is not None
-                else _main_context(working_state)
+                else _control_context(working_state)
             )
-            control_context = _main_context(working_state)
+            control_context = _control_context(working_state)
             if repetition_guidance is not None:
                 if "tool_repetition_guidance" in context.model_fields:
                     context = context.model_copy(update={
@@ -101,6 +100,7 @@ def _run_agent_loop(
                     "tool_repetition_guidance": repetition_guidance,
                 })
             output = None
+            model_failure_code = "model_unavailable"
             for _attempt in range(2):
                 if (
                     budget.used_model_steps >= budget.max_model_steps
@@ -129,6 +129,8 @@ def _run_agent_loop(
                         output_model=effective_output_model,
                     )
                 except (Exception, ValidationError) as exc:
+                    if isinstance(exc, ValidationError):
+                        model_failure_code = "role_schema_validation_failed"
                     LOG.warning(
                         "model decision rejected",
                         extra={
@@ -152,7 +154,13 @@ def _run_agent_loop(
                     )
                     if _attempt == 0:
                         continue
-                    return _ask_user_update(_MODEL_FALLBACK_QUESTION, budget, observations)
+                    return _ask_user_update(
+                        _MODEL_FALLBACK_QUESTION,
+                        budget,
+                        observations,
+                        outcome="unresolved",
+                        failure_code="route_ambiguous",
+                    )
                 if (
                     _attempt == 0
                     and candidate.decision.action == "ask_user"
@@ -169,7 +177,13 @@ def _run_agent_loop(
                 output = candidate
                 break
             if output is None:
-                return _ask_user_update(_MODEL_FALLBACK_QUESTION, budget, observations)
+                return _ask_user_update(
+                    _MODEL_FALLBACK_QUESTION,
+                    budget,
+                    observations,
+                    outcome="failed",
+                    failure_code=model_failure_code,
+                )
 
             decision = output.decision
             if (
@@ -177,18 +191,13 @@ def _run_agent_loop(
                 and effective_allowed_tools is not None
                 and decision.tool not in effective_allowed_tools
             ):
-                reroute_target = {
-                    "analysis": "qa",
-                    "result_qa": "qa",
-                }.get(str(getattr(role, "value", role)), "qa")
-                return {
-                    "decision": AgentDecision(action="reroute", reroute_to=reroute_target),
-                    "response_text": None,
-                    "response_blocks": [],
-                    "grounded_answer": None,
-                    "step_budget": budget,
-                    "tool_observations": observations,
-                }
+                return _ask_user_update(
+                    "The requested tool is not available for this agent role.",
+                    budget,
+                    observations,
+                    outcome="failed",
+                    failure_code="tool_call_rejected",
+                )
             native_call_id = _native_tool_call_id(model, decision) or f"call-{len(observations) + 1}"
             native_assistant_message = getattr(model, "last_assistant_message", None) or {}
             if (
@@ -250,6 +259,16 @@ def _run_agent_loop(
                     ))
                     observations = observations[-12:]
                     budget = _advance_tool_budget(budget)
+                    if tool_outcome == "failed" and (
+                        not retryable or observations[-1].retry_count >= 1
+                    ):
+                        return _ask_user_update(
+                            "The requested data tool failed and could not be retried.",
+                            budget,
+                            observations,
+                            outcome="failed",
+                            failure_code="tool_execution_failed",
+                        )
                     if budget.used_tool_calls >= budget.max_tool_calls:
                         return _ask_user_update(
                             _budget_question(observations),
@@ -329,6 +348,18 @@ def _run_agent_loop(
                     "step_budget": budget,
                     "tool_observations": observations,
                 }
+            if (
+                decision.action != "tool_call"
+                and observations
+                and observations[-1].outcome == "failed"
+            ):
+                return _ask_user_update(
+                    "The requested data tool failed before a verified answer could be produced.",
+                    budget,
+                    observations,
+                    outcome="failed",
+                    failure_code="tool_execution_failed",
+                )
             if decision.action != "tool_call":
                 response_text = _response_text(output)
                 return {
@@ -338,6 +369,22 @@ def _run_agent_loop(
                         [text_block(response_text)] if response_text is not None else []
                     ),
                     "grounded_answer": decision.grounded_answer,
+                    "outcome": (
+                        "needs_input"
+                        if decision.action == "ask_user"
+                        and getattr(role, "value", role) == "analysis"
+                        else "unresolved"
+                        if decision.action == "ask_user"
+                        else "completed"
+                    ),
+                    "failure_code": (
+                        "missing_analysis_parameter"
+                        if decision.action == "ask_user"
+                        and getattr(role, "value", role) == "analysis"
+                        else "route_ambiguous"
+                        if decision.action == "ask_user"
+                        else None
+                    ),
                     "step_budget": budget,
                     "tool_observations": observations,
                 }
@@ -346,6 +393,8 @@ def _run_agent_loop(
                     "I cannot access the requested read-only data tool in this runtime.",
                     budget,
                     observations,
+                    outcome="failed",
+                    failure_code="tool_call_rejected",
                 )
             if budget.used_tool_calls >= budget.max_tool_calls:
                 return _ask_user_update(
@@ -378,6 +427,14 @@ def _run_agent_loop(
             ))
             observations = observations[-12:]
             budget = _advance_tool_budget(budget)
+            if tool_outcome == "failed" and not retryable:
+                return _ask_user_update(
+                    "The requested data tool failed.",
+                    budget,
+                    observations,
+                    outcome="failed",
+                    failure_code="tool_execution_failed",
+                )
             if budget.used_tool_calls >= budget.max_tool_calls:
                 return _ask_user_update(
                     _budget_question(observations),
@@ -390,14 +447,7 @@ def _run_agent_loop(
             })
 
     def run(state: GraphState) -> dict[str, object]:
-        result = loop_run(state)
-        decision = result.get("decision")
-        if isinstance(decision, AgentDecision) and decision.action == "reroute":
-            next_count = state.reroute_count + 1
-            if next_count > 2:
-                return _ask_user_update(_MODEL_FALLBACK_QUESTION, state.step_budget)
-            result["reroute_count"] = next_count
-        return result
+        return loop_run(state)
 
     return run
 
@@ -408,97 +458,152 @@ def _invoke_model_output(
     *,
     role: object,
     output_model: type[BaseModel],
-) -> MainModelOutput:
-    """Call current role-aware models while retaining legacy fixture support."""
+) -> AgentLoopOutput:
+    """Call a role-specific model and enforce that role's output schema."""
 
-    callable_model = getattr(model, "__call__", model)
-    try:
-        parameters = inspect.signature(callable_model).parameters
-    except (TypeError, ValueError):
-        parameters = {}
-    accepts_role = "role" in parameters or any(
-        parameter.kind is inspect.Parameter.VAR_KEYWORD
-        for parameter in parameters.values()
-    )
-    raw = model(context, role=role) if accepts_role else model(context)
-    if output_model is MainModelOutput:
-        return MainModelOutput.model_validate(raw)
-    try:
-        role_output = output_model.model_validate(raw)
-    except ValidationError:
-        legacy = MainModelOutput.model_validate(raw)
-        role_output = _legacy_to_role_output(legacy, output_model)
+    role_output = output_model.model_validate(model(context, role=role))
     return _coerce_role_output(role_output)
 
 
-def _model_accepts_role(model: MainDecisionModel) -> bool:
-    callable_model = getattr(model, "__call__", model)
-    try:
-        parameters = inspect.signature(callable_model).parameters
-    except (TypeError, ValueError):
-        return True
-    return "role" in parameters or any(
-        parameter.kind is inspect.Parameter.VAR_KEYWORD
-        for parameter in parameters.values()
-    )
-
-
-def _legacy_to_role_output(
-    output: MainModelOutput,
-    output_model: type[BaseModel],
-) -> BaseModel:
-    decision = output.decision.model_dump(mode="python", exclude_none=True)
-    allowed_by_model: dict[type[BaseModel], set[str]] = {
-        QaModelOutput: {"action", "question", "reroute_to"},
-        AnalysisModelOutput: {"action", "analysis_type", "proposal", "question", "reroute_to", "tool", "arguments"},
-        ResultQaModelOutput: {"action", "job_id", "result_query", "grounded_answer", "question", "reroute_to", "tool", "arguments"},
-    }
-    allowed = allowed_by_model.get(output_model)
-    if allowed is None:
-        raise TypeError("unknown role output model")
-    return output_model.model_validate({
-        "decision": {key: value for key, value in decision.items() if key in allowed},
-        "answer": output.answer,
-    })
-
-
-def _coerce_role_output(output: object) -> MainModelOutput:
+def _coerce_role_output(output: object) -> AgentLoopOutput:
     if isinstance(output, (QaModelOutput, AnalysisModelOutput, ResultQaModelOutput)):
-        return MainModelOutput(
+        return AgentLoopOutput(
             decision=AgentDecision(**output.decision.model_dump(mode="python")),
             answer=output.answer,
         )
-    return MainModelOutput.model_validate(output)
+    return AgentLoopOutput.model_validate(output)
 
 
-def main_node(
-    model: MainDecisionModel,
-    tool_executor: ToolExecutor | None = None,
-    trace_recorder: TraceRecorder | None = None,
-) -> Callable[[GraphState], dict[str, object]]:
-    """Backward-compatible main-node factory using the shared loop."""
+def route_node(state: GraphState, route_model: MainDecisionModel | None = None) -> dict[str, object]:
+    """Resolve one route target, classify only uncertain data-related requests."""
 
-    return _run_agent_loop(
-        None,
-        model,
-        tool_executor,
-        trace_recorder,
-        _main_context,
-        MainModelOutput,
-        set(ToolName),
-    )
-
-
-def route_node(state: GraphState) -> dict[str, object]:
-    """No-op graph node; conditional edges perform the role selection."""
-
-    return {}
-
-
-def route_after_route(state: GraphState) -> Literal["qa", "analysis", "result_qa"]:
     from ..router import route
+    from ..graph import RouteClassification, RouteDecision, RouteTarget
 
-    return route(state).value  # type: ignore[return-value]
+    target = route(state)
+    source = "reroute" if state.decision is not None and state.decision.action == "reroute" else "rule"
+    reason = "deterministic route rule"
+    if target is None:
+        source = "classifier"
+        reason = "semantic classification required"
+        try:
+            if route_model is None:
+                raise ValueError("route classifier is unavailable")
+            classification_context = ContextAssembler().assemble_for_router(state)
+            classification = RouteClassification.model_validate(
+                route_model(classification_context, role=AgentRole.ROUTER)
+            )
+            if classification.confidence < 0.72:
+                target = RouteTarget.AMBIGUOUS
+                reason = "classifier confidence below threshold"
+            else:
+                target = RouteTarget(classification.target)
+        except ValidationError:
+            return _route_terminal(
+                state,
+                outcome="failed",
+                failure_code="role_schema_validation_failed",
+                question="我无法可靠判断这条请求的处理路径，请重新说明你的目标。",
+                source=source,
+                reason="classifier output failed schema validation",
+            )
+        except Exception:
+            return _route_terminal(
+                state,
+                outcome="failed",
+                failure_code="model_unavailable",
+                question="意图分类服务暂时不可用，请稍后重试。",
+                source=source,
+                reason="classifier invocation failed",
+            )
+    if target is None:
+        target = RouteTarget.AMBIGUOUS
+    else:
+        target = RouteTarget(target.value if isinstance(target, AgentRole) else target)
+    route_decision = RouteDecision(
+        target=target,
+        source=source,
+        reason=reason,
+    )
+    if target is RouteTarget.AMBIGUOUS:
+        return _route_terminal(
+            state,
+            outcome="unresolved",
+            failure_code="route_ambiguous",
+            question="我还不能可靠判断这条请求属于哪类操作。你可以说明是解释概念、评估数据能力、开始分析，还是查询已有结果。",
+            source=source,
+            reason=reason,
+            route_decision=route_decision,
+        )
+    if target is RouteTarget.UNSUPPORTED:
+        return _route_terminal(
+            state,
+            outcome="unsupported",
+            failure_code="unsupported_request",
+            question="当前平台不支持这类请求。",
+            source=source,
+            reason=reason,
+            route_decision=route_decision,
+        )
+    role = AgentRole(target.value)
+    visited = list(state.visited_roles)
+    if role in visited or len(visited) >= 3:
+        text = "我暂时无法可靠完成这次请求，请重新描述你要解释、分析或查询的内容。"
+        return {
+            "decision": AgentDecision(action="ask_user", question=text),
+            "response_text": text,
+            "response_blocks": [text_block(text)],
+            "outcome": "unresolved",
+            "failure_code": "route_exhausted",
+            "route_decision": RouteDecision(
+                target=RouteTarget.AMBIGUOUS,
+                source=source,
+                reason="route target already visited or hop limit reached",
+            ),
+        }
+    visited.append(role)
+    return {
+        "visited_roles": visited,
+        "route_decision": route_decision,
+    }
+
+
+def _route_terminal(
+    state: GraphState,
+    *,
+    outcome: Literal["failed", "unsupported", "unresolved"],
+    failure_code: str,
+    question: str,
+    source: str,
+    reason: str,
+    route_decision: object | None = None,
+) -> dict[str, object]:
+    from ..graph import RouteDecision, RouteTarget
+
+    return {
+        "decision": AgentDecision(action="ask_user", question=question),
+        "response_text": question,
+        "response_blocks": [text_block(question)],
+        "outcome": outcome,
+        "failure_code": failure_code,
+        "route_decision": route_decision or RouteDecision(
+            target=(
+                RouteTarget.UNSUPPORTED if outcome == "unsupported"
+                else RouteTarget.AMBIGUOUS
+            ),
+            source=source,  # type: ignore[arg-type]
+            reason=reason,
+        ),
+    }
+
+
+def route_after_route(state: GraphState) -> Literal["qa", "analysis", "result_qa", "end"]:
+    if state.route_decision is None or state.route_decision.target in {
+        RouteTarget.AMBIGUOUS,
+        RouteTarget.UNSUPPORTED,
+    }:
+        return "end"
+    return state.route_decision.target.value  # type: ignore[return-value]
 
 
 def route_after_agent(
@@ -516,18 +621,8 @@ def route_after_agent(
     return "end"
 
 
-def route_after_main(state: GraphState) -> Literal["analysis", "result_qa", "end"]:
-    if state.decision is None:
-        return "end"
-    if state.decision.action in {"inspect_dataset", "run_analysis", "propose_plan"}:
-        return "analysis"
-    if state.decision.action in {"get_job", "query_result"}:
-        return "result_qa"
-    return "end"
-
-
-def _main_context(state: GraphState) -> MainModelContext:
-    return ContextAssembler().assemble(state)
+def _control_context(state: GraphState) -> AgentControlContext:
+    return ContextAssembler().assemble_control(state)
 
 
 def _arguments_hash(arguments: dict[str, object]) -> str:
@@ -594,7 +689,7 @@ def _execute_tool_request(
             tool_schema_hash=stable_hash(ToolCallRequest.model_json_schema()),
             latency_ms=round((perf_counter() - tool_started) * 1000, 3),
             outcome=tool_outcome,
-            error_code=tool_error_code,
+            failure_code="tool_execution_failed" if tool_outcome == "failed" else None,
         )
     return summary, tool_outcome, retryable, tool_error_code, evidence
 
@@ -628,7 +723,17 @@ def _ask_user_update(
     question: str,
     budget: StepBudget,
     observations: list[ToolObservation] | None = None,
+    *,
+    outcome: Literal["needs_input", "unsupported", "unresolved", "failed"] = "needs_input",
+    failure_code: str | None = None,
 ) -> dict[str, object]:
+    if failure_code is None:
+        failure_code = {
+            "needs_input": "missing_analysis_parameter",
+            "unsupported": "unsupported_request",
+            "unresolved": "route_ambiguous",
+            "failed": "tool_execution_failed",
+        }[outcome]
     return {
         "decision": AgentDecision(
             action="ask_user",
@@ -638,12 +743,14 @@ def _ask_user_update(
         "grounded_answer": None,
         "response_text": question,
         "response_blocks": [text_block(question)],
+        "outcome": outcome,
+        "failure_code": failure_code,
         "step_budget": budget,
         "tool_observations": observations or [],
     }
 
 
-def _response_text(output: MainModelOutput) -> str | None:
+def _response_text(output: AgentLoopOutput) -> str | None:
     if output.decision.action == "answer":
         return output.answer
     if output.decision.action == "ask_user":
@@ -849,7 +956,7 @@ def _read_only_observation_response(tool: ToolName, summary: str) -> str:
     return "No valid contrasts were available."
 
 
-def _should_retry_followup(context: MainModelContext) -> bool:
+def _should_retry_followup(context: AgentControlContext) -> bool:
     """Identify an explicit rewrite/correction of an existing answer."""
 
     if not any(message.role == "assistant" for message in context.recent_messages.messages):
@@ -875,7 +982,7 @@ def _should_retry_followup(context: MainModelContext) -> bool:
 
 
 def _should_force_list_jobs(
-    context: MainModelContext,
+    context: AgentControlContext,
     decision: AgentDecision,
     tool_executor: ToolExecutor | None,
 ) -> bool:

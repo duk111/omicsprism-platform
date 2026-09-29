@@ -21,15 +21,19 @@ from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.types import Command
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from .context import MainModelContext, RecentMessage, RecentMessages
+from .context import RecentMessage, RecentMessages
 from .dataset_profile import build_dataset_profiles
 from .graph import (
+    AgentRole,
+    AnalysisModelOutput,
     DatasetProfileRef,
     GraphState,
     JobLookupRequest,
     JobRef,
     JobSummary,
     ResultEvidenceRequest,
+    QaModelOutput,
+    ResultQaModelOutput,
     ToolCallRequest,
     build_agent_graph,
 )
@@ -785,9 +789,7 @@ def _run_graph_trial(
     prior_context_available = None
     if len(contexts) > 1:
         prior_context_available = any(
-            context.conversation_summary
-            or any(item.kind == "message" for item in context.working_set.items)
-            for context in contexts[1:]
+            _has_prior_context(context) for context in contexts[1:]
         )
     decision = final_state.decision.action if final_state and final_state.decision else None
     grounded = final_state.grounded_answer if final_state else None
@@ -866,6 +868,18 @@ def _run_graph_trial(
         prompt_tokens=sum(event.prompt_tokens or 0 for event in model_events),
         completion_tokens=sum(event.completion_tokens or 0 for event in model_events),
     )
+
+
+def _has_prior_context(context: object) -> bool:
+    if getattr(context, "conversation_summary", None):
+        return True
+    working_set = getattr(context, "working_set", None)
+    if working_set is not None and any(
+        item.kind == "message" for item in working_set.items
+    ):
+        return True
+    recent_messages = getattr(context, "recent_messages", None)
+    return bool(recent_messages and recent_messages.messages)
 
 
 def _graph_environment(spec: EvalEnvironment) -> _GraphEnvironment:
@@ -1119,10 +1133,10 @@ class _RecordedEvalModel:
     def __init__(self, responses: list[dict[str, Any]], recorder: TraceRecorder) -> None:
         self.responses = list(responses)
         self.recorder = recorder
-        self.contexts: list[MainModelContext] = []
+        self.contexts: list[object] = []
         self.last_usage = ModelUsage()
 
-    def __call__(self, context: MainModelContext) -> object:
+    def __call__(self, context: object, *, role: AgentRole) -> object:
         self.contexts.append(context)
         self.last_usage = ModelUsage(
             prompt_tokens=32, completion_tokens=16, total_tokens=48, status="reported"
@@ -1132,7 +1146,12 @@ class _RecordedEvalModel:
             model_name="recorded-ci-model",
             model_provider="recorded-fixture",
             system_prompt="eval-v2-recorded-boundary",
-            schema_version="main-model-output.v1",
+            schema_version={
+                AgentRole.QA: "qa-model-output.v1",
+                AgentRole.ANALYSIS: "analysis-model-output.v2",
+                AgentRole.RESULT_QA: "result-qa-model-output.v1",
+                AgentRole.ROUTER: "route-classification.v1",
+            }[role],
             usage=self.last_usage,
             latency_ms=0,
             retry_count=0,
@@ -1140,7 +1159,14 @@ class _RecordedEvalModel:
         )
         if not self.responses:
             raise ValueError("recorded model response exhausted")
-        return self.responses.pop(0)
+        output_model = {
+            AgentRole.QA: QaModelOutput,
+            AgentRole.ANALYSIS: AnalysisModelOutput,
+            AgentRole.RESULT_QA: ResultQaModelOutput,
+        }.get(role)
+        if output_model is None:
+            raise ValueError("route classifier fixtures must use an explicit route response")
+        return output_model.model_validate(self.responses.pop(0))
 
 
 class _NoopTraceObserver:

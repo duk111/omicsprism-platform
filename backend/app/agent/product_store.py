@@ -127,11 +127,14 @@ class AgentProductStore(Protocol):
 
     def finish_turn(
         self, *, turn_id: str, user_id: str, status: AgentTurnStatus, now: datetime,
-        message: AgentMessageRecord | None = None, error_code: str | None = None,
+        message: AgentMessageRecord | None = None,
+        outcome: str | None = None,
+        failure_code: str | None = None,
+        attempted_roles: list[str] | None = None,
     ) -> AgentTurnRecord:
         ...
 
-    def cancel_turn(self, *, turn_id: str, user_id: str, now: datetime, error_code: str) -> AgentTurnRecord:
+    def cancel_turn(self, *, turn_id: str, user_id: str, now: datetime) -> AgentTurnRecord:
         ...
 
     def save_input_bundle(self, bundle: AgentInputBundleRecord) -> None:
@@ -526,7 +529,9 @@ class InMemoryAgentProductStore:
             turn.attempt += 1
             turn.started_at = now
             turn.updated_at = now
-            turn.error_code = None
+            turn.outcome = None
+            turn.failure_code = None
+            turn.attempted_roles = []
             self._turns[turn.turn_id] = turn.model_dump(mode="json")
         return turn.model_copy(deep=True)
 
@@ -538,7 +543,9 @@ class InMemoryAgentProductStore:
         turn.updated_at = now
         turn.started_at = None
         turn.completed_at = None
-        turn.error_code = None
+        turn.outcome = None
+        turn.failure_code = None
+        turn.attempted_roles = []
         self._turns[turn.turn_id] = turn.model_dump(mode="json")
         return turn.model_copy(deep=True)
 
@@ -555,10 +562,16 @@ class InMemoryAgentProductStore:
 
     def finish_turn(
         self, *, turn_id: str, user_id: str, status: AgentTurnStatus, now: datetime,
-        message: AgentMessageRecord | None = None, error_code: str | None = None,
+        message: AgentMessageRecord | None = None,
+        outcome: str | None = None,
+        failure_code: str | None = None,
+        attempted_roles: list[str] | None = None,
     ) -> AgentTurnRecord:
         if status not in {AgentTurnStatus.COMPLETED, AgentTurnStatus.FAILED}:
             raise ValueError("turn may only finish as completed or failed")
+        outcome = outcome or ("failed" if status is AgentTurnStatus.FAILED else "completed")
+        if status is AgentTurnStatus.FAILED and failure_code is None:
+            failure_code = "tool_execution_failed"
         turn = self.get_turn(turn_id=turn_id, user_id=user_id)
         if turn.status is not AgentTurnStatus.RUNNING:
             raise TurnConflict(turn_id)
@@ -569,18 +582,21 @@ class InMemoryAgentProductStore:
                 raise ValueError("turn message does not match ownership")
             self.append_message(message)
         turn.status = status
-        turn.error_code = error_code
+        turn.outcome = outcome
+        turn.failure_code = failure_code
+        turn.attempted_roles = list(attempted_roles or [])
         turn.completed_at = now
         turn.updated_at = now
         self._turns[turn.turn_id] = turn.model_dump(mode="json")
         return turn.model_copy(deep=True)
 
-    def cancel_turn(self, *, turn_id: str, user_id: str, now: datetime, error_code: str) -> AgentTurnRecord:
+    def cancel_turn(self, *, turn_id: str, user_id: str, now: datetime) -> AgentTurnRecord:
         turn = self.get_turn(turn_id=turn_id, user_id=user_id)
         if turn.status not in {AgentTurnStatus.QUEUED, AgentTurnStatus.RUNNING}:
             raise TurnConflict(turn_id)
         turn.status = AgentTurnStatus.CANCELLED
-        turn.error_code = error_code
+        turn.outcome = None
+        turn.failure_code = None
         turn.completed_at = now
         turn.updated_at = now
         self._turns[turn.turn_id] = turn.model_dump(mode="json")
@@ -882,11 +898,11 @@ class PostgresAgentProductStore:
                     prompt_version, prompt_hash, model_provider, model_name,
                     tool_name, tool_schema_hash, job_id, outcome, latency_ms,
                     prompt_tokens, completion_tokens, total_tokens, cached_tokens,
-                    usage_status, retry_count, error_code, created_at
+                    usage_status, retry_count, failure_code, attempted_roles, created_at
                 ) values (
                     %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
                     %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
-                    %s, %s
+                    %s, %s, %s
                 ) on conflict (event_id) do nothing
                 """,
                 (
@@ -897,7 +913,8 @@ class PostgresAgentProductStore:
                     event.model_name, event.tool_name, event.tool_schema_hash,
                     event.job_id, event.outcome, event.latency_ms, event.prompt_tokens,
                     event.completion_tokens, event.total_tokens, event.cached_tokens,
-                    event.usage_status, event.retry_count, event.error_code,
+                    event.usage_status, event.retry_count, event.failure_code,
+                    Jsonb(event.attempted_roles),
                     event.created_at,
                 ),
             )
@@ -914,7 +931,7 @@ class PostgresAgentProductStore:
                        prompt_version, prompt_hash, model_provider, model_name,
                        tool_name, tool_schema_hash, job_id, outcome, latency_ms,
                        prompt_tokens, completion_tokens, total_tokens, cached_tokens,
-                       usage_status, retry_count, error_code, created_at
+                       usage_status, retry_count, failure_code, attempted_roles, created_at
                 from agent_trace_events
                 where trace_id = %s and user_id = %s
                 order by created_at desc, event_id desc
@@ -935,7 +952,8 @@ class PostgresAgentProductStore:
                     m.role, m.blocks, m.created_at,
                     t.turn_id, t.thread_id, t.run_id, t.user_id, t.trace_id,
                     t.idempotency_key, t.request_hash, t.status, t.attempt,
-                    t.error_code, t.created_at, t.updated_at, t.started_at,
+                    t.outcome, t.failure_code, t.attempted_roles,
+                    t.created_at, t.updated_at, t.started_at,
                     t.completed_at
                 from agent_messages m
                 join agent_turns t
@@ -1267,7 +1285,7 @@ class PostgresAgentProductStore:
                 existing_row = conn.execute(
                     """
                     select turn_id, thread_id, run_id, user_id, trace_id, idempotency_key, request_hash,
-                           status, attempt, error_code,
+                           status, attempt, outcome, failure_code, attempted_roles,
                            created_at, updated_at, started_at, completed_at
                     from agent_turns where user_id = %s and idempotency_key = %s
                     """,
@@ -1286,9 +1304,9 @@ class PostgresAgentProductStore:
                     """
                     insert into agent_turns (
                         turn_id, thread_id, run_id, user_id, trace_id, idempotency_key, request_hash,
-                        status, attempt, error_code,
+                        status, attempt, outcome, failure_code, attempted_roles,
                         created_at, updated_at, started_at, completed_at
-                    ) values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    ) values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                     on conflict (user_id, idempotency_key) do nothing
                     returning turn_id
                     """,
@@ -1298,7 +1316,7 @@ class PostgresAgentProductStore:
                     existing_row = conn.execute(
                         """
                         select turn_id, thread_id, run_id, user_id, trace_id, idempotency_key, request_hash,
-                               status, attempt, error_code,
+                               status, attempt, outcome, failure_code, attempted_roles,
                                created_at, updated_at, started_at, completed_at
                         from agent_turns where user_id = %s and idempotency_key = %s
                         """,
@@ -1347,7 +1365,7 @@ class PostgresAgentProductStore:
             row = conn.execute(
                 """
                 select turn_id, thread_id, run_id, user_id, trace_id, idempotency_key, request_hash,
-                       status, attempt, error_code,
+                       status, attempt, outcome, failure_code, attempted_roles,
                        created_at, updated_at, started_at, completed_at
                 from agent_turns where turn_id = %s and user_id = %s
                 """,
@@ -1362,10 +1380,11 @@ class PostgresAgentProductStore:
             row = conn.execute(
                 """
                 update agent_turns set status = 'running', attempt = attempt + 1,
-                    started_at = %s, updated_at = %s, error_code = null
+                    started_at = %s, updated_at = %s, outcome = null, failure_code = null,
+                    attempted_roles = '[]'::jsonb
                 where turn_id = %s and user_id = %s and status in ('queued', 'running')
                 returning turn_id, thread_id, run_id, user_id, trace_id, idempotency_key,
-                          request_hash, status, attempt, error_code,
+                          request_hash, status, attempt, outcome, failure_code, attempted_roles,
                           created_at, updated_at, started_at, completed_at
                 """,
                 (now, now, turn_id, user_id),
@@ -1378,11 +1397,12 @@ class PostgresAgentProductStore:
         with self._connect() as conn:
             row = conn.execute(
                 """
-                update agent_turns set status = 'queued', error_code = null,
+                update agent_turns set status = 'queued', outcome = null, failure_code = null,
+                    attempted_roles = '[]'::jsonb,
                     started_at = null, completed_at = null, updated_at = %s
                 where turn_id = %s and user_id = %s and status = 'running'
                 returning turn_id, thread_id, run_id, user_id, trace_id, idempotency_key,
-                          request_hash, status, attempt, error_code,
+                          request_hash, status, attempt, outcome, failure_code, attempted_roles,
                           created_at, updated_at, started_at, completed_at
                 """,
                 (now, turn_id, user_id),
@@ -1398,7 +1418,7 @@ class PostgresAgentProductStore:
             rows = conn.execute(
                 """
                 select turn_id, thread_id, run_id, user_id, trace_id, idempotency_key, request_hash,
-                       status, attempt, error_code,
+                       status, attempt, outcome, failure_code, attempted_roles,
                        created_at, updated_at, started_at, completed_at
                 from agent_turns
                 where thread_id = %s and user_id = %s
@@ -1410,23 +1430,40 @@ class PostgresAgentProductStore:
 
     def finish_turn(
         self, *, turn_id: str, user_id: str, status: AgentTurnStatus, now: datetime,
-        message: AgentMessageRecord | None = None, error_code: str | None = None,
+        message: AgentMessageRecord | None = None,
+        outcome: str | None = None,
+        failure_code: str | None = None,
+        attempted_roles: list[str] | None = None,
     ) -> AgentTurnRecord:
         if status not in {AgentTurnStatus.COMPLETED, AgentTurnStatus.FAILED}:
             raise ValueError("turn may only finish as completed or failed")
+        outcome = outcome or ("failed" if status is AgentTurnStatus.FAILED else "completed")
+        if status is AgentTurnStatus.FAILED and failure_code is None:
+            failure_code = "tool_execution_failed"
         Jsonb = _jsonb_type()
         with self._connect() as conn:
             row = conn.execute(
                 """
-                update agent_turns set status = %s, error_code = %s,
+                update agent_turns set status = %s, outcome = %s, failure_code = %s,
+                    attempted_roles = %s,
                     completed_at = %s, updated_at = %s
                 where turn_id = %s and user_id = %s
                   and status = 'running'
                 returning turn_id, thread_id, run_id, user_id, trace_id, idempotency_key,
                           request_hash, status, attempt,
-                          error_code, created_at, updated_at, started_at, completed_at
+                          outcome, failure_code, attempted_roles,
+                          created_at, updated_at, started_at, completed_at
                 """,
-                (status.value, error_code, now, now, turn_id, user_id),
+                (
+                    status.value,
+                    outcome,
+                    failure_code,
+                    Jsonb(attempted_roles or []),
+                    now,
+                    now,
+                    turn_id,
+                    user_id,
+                ),
             ).fetchone()
             if row is None:
                 raise TurnConflict(turn_id)
@@ -1449,19 +1486,20 @@ class PostgresAgentProductStore:
                 )
         return turn
 
-    def cancel_turn(self, *, turn_id: str, user_id: str, now: datetime, error_code: str) -> AgentTurnRecord:
+    def cancel_turn(self, *, turn_id: str, user_id: str, now: datetime) -> AgentTurnRecord:
         with self._connect() as conn:
             row = conn.execute(
                 """
-                update agent_turns set status = 'cancelled', error_code = %s,
+                update agent_turns set status = 'cancelled', outcome = null,
+                    failure_code = null,
                     completed_at = %s, updated_at = %s
                 where turn_id = %s and user_id = %s
                   and status in ('queued', 'running')
                 returning turn_id, thread_id, run_id, user_id, trace_id, idempotency_key,
-                          request_hash, status, attempt, error_code,
+                          request_hash, status, attempt, outcome, failure_code, attempted_roles,
                           created_at, updated_at, started_at, completed_at
                 """,
-                (error_code, now, now, turn_id, user_id),
+                (now, now, turn_id, user_id),
             ).fetchone()
         if row is None:
             raise TurnConflict(turn_id)
@@ -1933,7 +1971,8 @@ class PostgresAgentProductStore:
                         """
                         select turn_id, thread_id, run_id, user_id, trace_id,
                                idempotency_key, request_hash, status, attempt,
-                               error_code, created_at, updated_at, started_at, completed_at
+                               outcome, failure_code, attempted_roles,
+                               created_at, updated_at, started_at, completed_at
                         from agent_turns where turn_id = %s and user_id = %s
                         """,
                         (continuation_id, event.user_id),
@@ -1946,13 +1985,15 @@ class PostgresAgentProductStore:
                     """
                     insert into agent_turns (
                         turn_id, thread_id, run_id, user_id, trace_id,
-                        idempotency_key, request_hash, status, attempt, error_code,
+                        idempotency_key, request_hash, status, attempt,
+                        outcome, failure_code, attempted_roles,
                         created_at, updated_at, started_at, completed_at
-                    ) values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    ) values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                     on conflict (user_id, idempotency_key) do nothing
                     returning turn_id, thread_id, run_id, user_id, trace_id,
                               idempotency_key, request_hash, status, attempt,
-                              error_code, created_at, updated_at, started_at, completed_at
+                              outcome, failure_code, attempted_roles,
+                              created_at, updated_at, started_at, completed_at
                     """,
                     _turn_values(turn),
                 ).fetchone()
@@ -1961,7 +2002,8 @@ class PostgresAgentProductStore:
                         """
                         select turn_id, thread_id, run_id, user_id, trace_id,
                                idempotency_key, request_hash, status, attempt,
-                               error_code, created_at, updated_at, started_at, completed_at
+                               outcome, failure_code, attempted_roles,
+                               created_at, updated_at, started_at, completed_at
                         from agent_turns
                         where user_id = %s and idempotency_key = %s
                         """,
@@ -2140,7 +2182,9 @@ def _continuation_turn(
         request_hash=request_hash,
         status=AgentTurnStatus.QUEUED,
         attempt=0,
-        error_code=None,
+        outcome=None,
+        failure_code=None,
+        attempted_roles=[],
         created_at=now,
         updated_at=now,
         started_at=None,
@@ -2159,7 +2203,9 @@ def _turn_values(turn: AgentTurnRecord) -> tuple[Any, ...]:
         turn.request_hash,
         turn.status.value,
         turn.attempt,
-        turn.error_code,
+        turn.outcome,
+        turn.failure_code,
+        _jsonb_type()(turn.attempted_roles),
         turn.created_at,
         turn.updated_at,
         turn.started_at,
@@ -2170,7 +2216,7 @@ def _turn_values(turn: AgentTurnRecord) -> tuple[Any, ...]:
 def _turn_from_row(row) -> AgentTurnRecord:
     fields = (
         "turn_id", "thread_id", "run_id", "user_id", "trace_id", "idempotency_key", "request_hash",
-        "status", "attempt", "error_code",
+        "status", "attempt", "outcome", "failure_code", "attempted_roles",
         "created_at", "updated_at", "started_at", "completed_at",
     )
     return AgentTurnRecord.model_validate(dict(zip(fields, row)))
@@ -2183,7 +2229,7 @@ def _trace_event_from_row(row) -> AgentTraceEvent:
         "prompt_version", "prompt_hash", "model_provider", "model_name",
         "tool_name", "tool_schema_hash", "job_id", "outcome", "latency_ms",
         "prompt_tokens", "completion_tokens", "total_tokens", "cached_tokens",
-        "usage_status", "retry_count", "error_code", "created_at",
+        "usage_status", "retry_count", "failure_code", "attempted_roles", "created_at",
     )
     return AgentTraceEvent.model_validate(dict(zip(fields, row)))
 

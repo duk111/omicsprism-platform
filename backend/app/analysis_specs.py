@@ -1,9 +1,37 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any
+from collections.abc import Iterable
+from typing import Any, Literal
+
+from pydantic import BaseModel, ConfigDict, Field
 
 from .models import AnalysisType
+
+
+CANONICAL_ROLE_ALIASES: dict[str, str] = {
+    "metabs": "metabolome",
+}
+CANONICAL_INPUT_ROLES = frozenset({
+    "counts", "metabolome", "transcriptome", "metadata", "group",
+})
+
+
+def canonical_input_role(role: str) -> str:
+    """Normalize dataset roles before capability or execution decisions."""
+
+    normalized = str(role).strip().casefold()
+    return CANONICAL_ROLE_ALIASES.get(normalized, normalized)
+
+
+def analysis_engine_role(role: str) -> str:
+    """Map canonical roles to the existing analysis engine's file keys."""
+
+    canonical = canonical_input_role(role)
+    return next(
+        (alias for alias, target in CANONICAL_ROLE_ALIASES.items() if target == canonical),
+        canonical,
+    )
 
 
 @dataclass(frozen=True)
@@ -25,6 +53,28 @@ class AnalysisSpec:
     display_label: str
     input_rules: tuple[InputRule, ...]
     parameter_rules: tuple[ParameterRule, ...]
+
+
+class CapabilityItem(BaseModel):
+    """Deterministic input-role capability for one registered analysis."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    analysis_type: Literal["DEG", "DEM", "GMA"]
+    supported: bool = True
+    present_roles: list[str] = Field(default_factory=list, max_length=8)
+    missing_roles: list[str] = Field(default_factory=list, max_length=8)
+    next_step: Literal[
+        "ready_for_parameter_resolution", "missing_input_role"
+    ]
+
+
+class CapabilityReport(BaseModel):
+    """Bounded report returned by the capability query action."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    items: list[CapabilityItem] = Field(default_factory=list, max_length=3)
 
 
 _ANALYSIS_ORDER = (
@@ -55,7 +105,7 @@ _DEFAULT_SPECS = {
     AnalysisType.DEM: AnalysisSpec(
         analysis_type=AnalysisType.DEM,
         display_label="DEM",
-        input_rules=(InputRule("metabs"), InputRule("metadata")),
+        input_rules=(InputRule("metabolome"), InputRule("metadata")),
         parameter_rules=(
             ParameterRule("compare_field", required=True),
             ParameterRule("tested_levels", required=True),
@@ -100,6 +150,42 @@ class AnalysisSpecRegistry:
 
     def analysis_types(self) -> tuple[AnalysisType, ...]:
         return tuple(item for item in _ANALYSIS_ORDER if item in self._specs)
+
+    def canonical_role(self, role: str) -> str:
+        return canonical_input_role(role)
+
+    def engine_role(self, role: str) -> str:
+        return analysis_engine_role(role)
+
+    def accepted_input_roles(self) -> frozenset[str]:
+        return CANONICAL_INPUT_ROLES | frozenset(CANONICAL_ROLE_ALIASES)
+
+    def required_roles(self, analysis_type: AnalysisType | str) -> tuple[str, ...]:
+        return tuple(
+            self.canonical_role(rule.name)
+            for rule in self.get(analysis_type).input_rules
+            if rule.required
+        )
+
+    def capability_report(self, roles: Iterable[str]) -> CapabilityReport:
+        present = {
+            self.canonical_role(role)
+            for role in roles
+            if self.canonical_role(role) in CANONICAL_INPUT_ROLES
+        }
+        items: list[CapabilityItem] = []
+        for analysis_type in self.analysis_types():
+            missing = sorted(set(self.required_roles(analysis_type)) - present)
+            items.append(CapabilityItem(
+                analysis_type=analysis_type.name,
+                present_roles=sorted(present & set(self.required_roles(analysis_type))),
+                missing_roles=missing,
+                next_step=(
+                    "ready_for_parameter_resolution"
+                    if not missing else "missing_input_role"
+                ),
+            ))
+        return CapabilityReport(items=items)
 
     def get(self, analysis_type: AnalysisType | str) -> AnalysisSpec:
         return self._specs[AnalysisType(analysis_type)]

@@ -113,6 +113,8 @@ def analysis_node(
                     ),
                     "pending_interrupt": payload,
                     "response_text": None,
+                    "outcome": None,
+                    "failure_code": None,
                     "step_budget": next_budget,
                 },
                 goto="analysis",
@@ -138,12 +140,27 @@ def analysis_node(
                 "resolved_request": resolved,
                 "validation_report": report,
                 "pending_analysis": pending,
+                "outcome": "needs_input" if resolved.missing else "failed",
+                "failure_code": (
+                    "missing_analysis_parameter"
+                    if resolved.missing
+                    else _validation_failure_code(report)
+                ),
                 "step_budget": next_budget,
             },
             goto=END,
         )
 
     return run
+
+
+def _validation_failure_code(report: ValidationReport) -> str:
+    codes = {item.code for item in report.blocking}
+    if "checksum_mismatch" in codes:
+        return "checksum_mismatch"
+    if "ownership_mismatch" in codes:
+        return "ownership_validation_failed"
+    return "unsupported_request"
 
 
 def _handle_confirmation(
@@ -164,6 +181,8 @@ def _handle_confirmation(
                 "pending_interrupt": None,
                 "pending_plan": None,
                 "response_text": "Analysis plan rejected.",
+                "outcome": "completed",
+                "failure_code": None,
             },
             goto=END,
         )
@@ -177,7 +196,7 @@ def _handle_confirmation(
                 "user_message": resumed.message,
                 "response_text": None,
             },
-            goto="main",
+            goto="analysis_agent",
         )
 
     if state.step_budget.used_model_steps >= state.step_budget.max_model_steps:
@@ -185,6 +204,8 @@ def _handle_confirmation(
             update={
                 "pending_interrupt": None,
                 "response_text": "Analysis was not submitted because the step budget was exhausted.",
+                "outcome": "needs_input",
+                "failure_code": "missing_analysis_parameter",
             },
             goto=END,
         )
@@ -205,6 +226,8 @@ def _handle_confirmation(
                     f"{str(exc)[:400]}). Please review the current datasets and "
                     "start the analysis again."
                 ),
+                "outcome": "failed",
+                "failure_code": "checksum_mismatch",
                 "step_budget": next_budget,
             },
             goto=END,
@@ -222,6 +245,8 @@ def _handle_confirmation(
             "pending_interrupt": None,
             "pending_plan": None,
             "response_text": f"Analysis job {job_ref.job_id} was submitted.",
+            "outcome": "completed",
+            "failure_code": None,
             "response_blocks": [
                 text_block(f"Analysis job {job_ref.job_id} was submitted."),
                 job_block(job_ref.job_id, JobStatus.QUEUED),

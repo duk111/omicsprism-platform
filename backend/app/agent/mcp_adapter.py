@@ -193,7 +193,13 @@ class CapabilityMCPServer(MCPServer):
                     tool_schema_hash=schema_hash,
                     latency_ms=round((perf_counter() - started) * 1000, 3),
                     outcome=f"mcp:{self.principal.transport}:{outcome}",
-                    error_code=error_code,
+                    failure_code=(
+                        "tool_call_rejected"
+                        if outcome in {"not_visible", "invalid_arguments"}
+                        else "tool_execution_failed"
+                        if outcome in {"error", "tool_error"}
+                        else None
+                    ),
                 )
 
 

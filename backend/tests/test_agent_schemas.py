@@ -5,7 +5,8 @@ from copy import deepcopy
 import pytest
 from pydantic import ValidationError
 
-from backend.app.agent.graph import AgentDecision
+from backend.app.agent.graph import AgentDecision, AnalysisDecision, CapabilityQueryInput
+from backend.app.agent.schemas import AgentTurnRecord, AgentTurnStatus
 from backend.app.agent.schemas import (
     GroundedAnswer,
     RunState,
@@ -106,3 +107,35 @@ def test_graph_agent_decision_is_the_single_dispatch_contract() -> None:
 
     assert decision.action == "get_job"
     assert not hasattr(decision, "requires_approval")
+
+
+def test_capability_query_has_a_narrow_analysis_only_input() -> None:
+    decision = AnalysisDecision(
+        action="capability_query",
+        capability_query=CapabilityQueryInput(analysis_type="DEM"),
+    )
+
+    assert decision.capability_query.analysis_type == "DEM"
+    with pytest.raises(ValidationError):
+        CapabilityQueryInput.model_validate({"analysis_type": "DEM", "job_id": "job-1"})
+
+
+def test_turn_outcome_contract_rejects_inconsistent_terminal_states() -> None:
+    from datetime import datetime, timezone
+
+    common = dict(
+        turn_id="turn-1", thread_id="thread-1", run_id="run-1", user_id="user-1",
+        idempotency_key="key-1", request_hash="sha256:request", attempt=1,
+        created_at=datetime.now(timezone.utc), updated_at=datetime.now(timezone.utc),
+        started_at=None, completed_at=None,
+    )
+    with pytest.raises(ValueError):
+        AgentTurnRecord.model_validate({
+            **common, "status": AgentTurnStatus.FAILED,
+            "outcome": "failed", "failure_code": None, "attempted_roles": [],
+        })
+    with pytest.raises(ValueError):
+        AgentTurnRecord.model_validate({
+            **common, "status": AgentTurnStatus.COMPLETED,
+            "outcome": "completed", "failure_code": "route_ambiguous", "attempted_roles": [],
+        })

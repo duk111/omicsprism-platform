@@ -7,6 +7,7 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from ..analysis_specs import AnalysisSpecRegistry, canonical_input_role
 from .dataset_profile import MetadataProfile
 from .param_resolver import ScopeSpec
 
@@ -153,8 +154,8 @@ class ToolObservationContext(BaseModel):
     summary: str = Field(min_length=1, max_length=4000)
 
 
-class MainModelContext(BaseModel):
-    """Prompt-safe context assembled from bounded state and deterministic facts."""
+class AgentControlContext(BaseModel):
+    """Bounded non-model control projection for tools and memory accounting."""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -206,6 +207,25 @@ class QaModelContext(BaseModel):
     )
 
 
+class RouterModelContext(BaseModel):
+    """Minimal no-tool context used only for uncertain role classification."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    trace_id: str = Field(default="trace-local", max_length=200, exclude=True)
+    thread_id: str = Field(default="thread-local", max_length=200, exclude=True)
+    turn_id: str = Field(default="turn-local", max_length=200, exclude=True)
+    run_id: str = Field(default="run-local", max_length=200, exclude=True)
+    user_id: str = Field(default="user-local", max_length=200, exclude=True)
+    user_message: str = Field(min_length=1, max_length=4000)
+    recent_messages: RecentMessages = Field(default_factory=lambda: RecentMessages(
+        context_version="messages.v1:empty"
+    ))
+    dataset_roles: list[str] = Field(default_factory=list, max_length=6)
+    has_jobs: bool = False
+    active_pending_analysis: bool = False
+
+
 class AnalysisModelContext(BaseModel):
     """Narrow prompt context for analysis planning and submission."""
 
@@ -255,7 +275,7 @@ class ResultQaModelContext(BaseModel):
 
 
 class ContextAssembler:
-    """Build the sole prompt context from GraphState without raw dataset payloads."""
+    """Build bounded role projections and the non-model control projection."""
 
     _MAX_METADATA_FIELDS = 20
     _MAX_LEVELS_PER_FIELD = 12
@@ -263,7 +283,7 @@ class ContextAssembler:
     _MAX_WORKING_ITEMS = 3
     _MAX_WORKING_ITEM_CHARS = 1000
 
-    def assemble(self, state: object) -> MainModelContext:
+    def assemble_control(self, state: object) -> AgentControlContext:
         fact_index = self._fact_index(state)
         ledger = self._decision_ledger(state)
         working_set = self._working_set(state)
@@ -285,7 +305,7 @@ class ContextAssembler:
         summary = getattr(state, "conversation_summary", None)
         if summary:
             summary = str(summary)[:1200]
-        return MainModelContext(
+        return AgentControlContext(
             trace_id=str(getattr(state, "trace_id", "") or "trace-local"),
             thread_id=str(getattr(state, "thread_id", "") or "thread-local"),
             turn_id=str(getattr(state, "turn_id", "") or "turn-local"),
@@ -331,6 +351,37 @@ class ContextAssembler:
                 dataset_roles=list(fact_index.dataset_roles),
             ),
             tool_observations=self._tool_observations(state),
+        )
+
+    def assemble_for_router(self, state: object) -> RouterModelContext:
+        """Expose only bounded routing signals, never metadata or Job ids."""
+
+        recent_messages = getattr(state, "recent_messages", None)
+        if not isinstance(recent_messages, RecentMessages):
+            recent_messages = RecentMessages(context_version="messages.v1:empty")
+        roles: list[str] = []
+        for item in getattr(state, "dataset_profiles", []) or []:
+            profile = getattr(item, "profile", item)
+            role = canonical_input_role(str(getattr(profile, "role", "")))
+            if role and role not in roles and len(roles) < 6:
+                roles.append(role)
+        pending = getattr(state, "pending_analysis", None)
+        return RouterModelContext(
+            trace_id=str(getattr(state, "trace_id", "") or "trace-local"),
+            thread_id=str(getattr(state, "thread_id", "") or "thread-local"),
+            turn_id=str(getattr(state, "turn_id", "") or "turn-local"),
+            run_id=str(getattr(state, "run_id", "") or "run-local"),
+            user_id=str(getattr(state, "user_id", "") or "user-local"),
+            user_message=str(getattr(state, "user_message", "") or " "),
+            recent_messages=recent_messages,
+            dataset_roles=roles,
+            has_jobs=bool(
+                getattr(state, "current_job", None)
+                or getattr(state, "recent_jobs", [])
+            ),
+            active_pending_analysis=(
+                pending is not None and getattr(pending, "status", None) == "active"
+            ),
         )
 
     def assemble_for_analysis(self, state: object) -> AnalysisModelContext:
@@ -439,7 +490,7 @@ class ContextAssembler:
         truncated = False
         for item in getattr(state, "dataset_profiles", []) or []:
             profile = getattr(item, "profile", item)
-            role = str(getattr(profile, "role", ""))
+            role = canonical_input_role(str(getattr(profile, "role", "")))
             if role and role not in roles and len(roles) < 6:
                 roles.append(role)
             if not isinstance(profile, MetadataProfile):
@@ -466,15 +517,10 @@ class ContextAssembler:
                 artifacts = [str(item) for item in getattr(summary, "artifacts", [])]
                 job_artifacts[job_id] = artifacts[: self._MAX_JOB_ARTIFACTS]
                 truncated = truncated or len(artifacts) > self._MAX_JOB_ARTIFACTS
-        canonical_roles = {"metabolome" if role == "metabs" else role for role in roles}
-        requirements = {
-            "DEG": {"counts", "metadata"},
-            "DEM": {"metabolome", "metadata"},
-            "GMA": {"transcriptome", "metabolome", "group"},
-        }
+        capability_report = AnalysisSpecRegistry().capability_report(roles)
         analysis_capabilities = {
-            name: sorted(required - canonical_roles)
-            for name, required in requirements.items()
+            item.analysis_type: item.missing_roles
+            for item in capability_report.items
         }
         payload = {
             "roles": roles,

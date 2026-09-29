@@ -11,18 +11,15 @@ from fastapi.testclient import TestClient
 
 from backend.app.agent.api import create_agent_router
 from backend.app.agent.bootstrap import AgentApiContext
-from backend.app.agent.context import DecisionLedger, FactIndex, MainModelContext, WorkingSet
+from backend.app.agent.context import QaFactIndex, QaModelContext, RecentMessages
 from backend.app.agent.graph import (
     AnalysisExecutionRequest,
-    AgentDecision,
+    AgentRole,
     GraphState,
-    MainModelOutput,
+    QaDecision,
+    QaModelOutput,
 )
-from backend.app.agent.model import (
-    ModelBoundaryError,
-    VllmGraphModel,
-    _GRAPH_MAIN_SYSTEM_PROMPT,
-)
+from backend.app.agent.model import ModelBoundaryError, VllmGraphModel
 from backend.app.agent.product_store import InMemoryAgentProductStore
 from backend.app.agent.queue import AgentTurnWorkItem, InMemoryAgentTurnQueue
 from backend.app.agent.runtime import AgentRuntime
@@ -32,17 +29,6 @@ from backend.app.agent.param_resolver import ContrastSpec, DEGParams
 
 
 COOKIE = "omicsprism_session"
-
-
-def test_main_system_prompt_has_complete_safety_and_language_instructions() -> None:
-    prompt = _GRAPH_MAIN_SYSTEM_PROMPT
-
-    assert (
-        "Never claim a dataset fact, Job, artifact, entity, or numeric result that is absent "
-        "from the bounded context."
-    ) in prompt
-    assert "Always respond in the same language as the user's most recent message." in prompt
-    assert "numeric values. Never When action" not in prompt
 
 
 class _Graph:
@@ -100,17 +86,16 @@ def _context() -> tuple[AgentApiContext, InMemoryAgentProductStore, InMemoryAgen
     return context, store, queue, events
 
 
-def _model_context() -> MainModelContext:
-    return MainModelContext(
+def _model_context() -> QaModelContext:
+    return QaModelContext(
         trace_id="trace-model",
         thread_id="thread-model",
         turn_id="turn-model",
         run_id="run-model",
         user_id="user-a",
         user_message="hello",
-        fact_index=FactIndex(context_version="facts.v1:test"),
-        decision_ledger=DecisionLedger(context_version="ledger.v1:test"),
-        working_set=WorkingSet(context_version="working.v1:test"),
+        fact_index=QaFactIndex(),
+        recent_messages=RecentMessages(context_version="messages.v1:test"),
     )
 
 
@@ -172,7 +157,9 @@ def test_duplicate_delivery_keeps_trace_and_does_not_rerun_completed_turn() -> N
         request_hash="sha256:" + "1" * 64,
         status="queued",
         attempt=0,
-        error_code=None,
+        outcome=None,
+        failure_code=None,
+        attempted_roles=[],
         created_at=now,
         updated_at=now,
         started_at=None,
@@ -223,9 +210,9 @@ def test_vllm_usage_is_recorded_without_raw_prompt() -> None:
         client=httpx.Client(transport=httpx.MockTransport(handle)),
         trace_recorder=TraceRecorder(events.append),
     )
-    result = model(context)
+    result = model(context, role=AgentRole.QA)
 
-    assert isinstance(result, MainModelOutput)
+    assert isinstance(result, QaModelOutput)
     assert model.last_usage.prompt_tokens == 31
     assert model.last_usage.completion_tokens == 7
     assert model.last_usage.total_tokens == 38
@@ -253,7 +240,7 @@ def test_vllm_missing_usage_is_unknown_and_null() -> None:
         client=httpx.Client(transport=httpx.MockTransport(handle)),
         trace_recorder=TraceRecorder(events.append),
     )
-    model(_model_context())
+    model(_model_context(), role=AgentRole.QA)
 
     usage = model.last_usage
     assert usage.status == "unknown"
@@ -283,7 +270,7 @@ def test_rejected_model_output_is_not_written_to_logs(caplog) -> None:
     )
     with caplog.at_level(logging.WARNING, logger="omicsprism.platform.agent_model"):
         try:
-            model(_model_context())
+            model(_model_context(), role=AgentRole.QA)
         except ModelBoundaryError:
             pass
         else:  # pragma: no cover - assertion guard

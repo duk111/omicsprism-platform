@@ -10,10 +10,12 @@ from backend.app.agent.api import create_agent_router
 from backend.app.agent.bootstrap import AgentApiContext
 from backend.app.agent.graph import (
     AgentDecision,
+    AgentRole,
+    AnalysisDecision,
+    AnalysisModelOutput,
     AnalysisExecutionRequest,
     DatasetLoadRequest,
     JobRef,
-    MainModelOutput,
     build_agent_graph,
 )
 from backend.app.agent.param_resolver import AnalysisProposal, ScopeSpec
@@ -39,10 +41,11 @@ class _Model:
     def __init__(self, proposal: AnalysisProposal) -> None:
         self.proposal = proposal
 
-    def __call__(self, _context, *, role=None):
-        decision = AgentDecision(
+    def __call__(self, _context, *, role: AgentRole):
+        assert role is AgentRole.ANALYSIS
+        return AnalysisModelOutput(decision=AnalysisDecision(
             action="run_analysis", analysis_type="DEG", proposal=self.proposal)
-        return MainModelOutput(decision=decision)
+        )
 
 
 class _Submitter:

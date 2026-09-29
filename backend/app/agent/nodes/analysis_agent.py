@@ -5,6 +5,7 @@ from typing import Any
 
 from pydantic import ValidationError
 
+from ...analysis_specs import AnalysisSpecRegistry, CapabilityReport
 from ..clarification_resolver import (
     ClarificationResolver,
     ClarificationResolverInput,
@@ -12,7 +13,15 @@ from ..clarification_resolver import (
     param_specs_for_analysis,
 )
 from ..context import ContextAssembler
-from ..graph import AgentDecision, AgentRole, AnalysisModelOutput, GraphState, MainDecisionModel, ToolExecutor
+from ..graph import (
+    AgentDecision,
+    AgentRole,
+    AnalysisModelOutput,
+    CapabilityQueryInput,
+    GraphState,
+    MainDecisionModel,
+    ToolExecutor,
+)
 from ..message_blocks import text_block
 from ..param_resolver import AnalysisProposal, ContrastSpec, GMAParams, DEGParams, DEMParams, ScopeSpec
 from ..schemas import ToolName
@@ -47,11 +56,78 @@ def analysis_agent_node(
     )
 
     def run(state: GraphState) -> dict[str, object]:
-        if state.pending_analysis is None or state.pending_analysis.status != "active":
-            return loop(state)
+        if (
+            state.pending_analysis is None
+            or state.pending_analysis.status != "active"
+            or _looks_like_capability_query(state.user_message)
+        ):
+            result = loop(state)
+            if (
+                isinstance(result.get("decision"), AgentDecision)
+                and result["decision"].action == "capability_query"
+            ):
+                return _complete_capability_query(state, result)
+            return result
         return _resolve_pending_turn(state, resolver)
 
     return run
+
+
+def _looks_like_capability_query(message: str) -> bool:
+    text = message.casefold().strip()
+    return any(marker in text for marker in (
+        "能做什么", "可以做什么", "能分析什么", "可以分析什么",
+        "能做差异分析", "可以做差异分析", "what can", "what analyses",
+        "can i do", "supported analysis",
+    ))
+
+
+def _complete_capability_query(
+    state: GraphState,
+    result: dict[str, object],
+) -> dict[str, object]:
+    decision = result.get("decision")
+    if not isinstance(decision, AgentDecision):
+        return result
+    query = decision.capability_query or CapabilityQueryInput()
+    report = AnalysisSpecRegistry().capability_report(
+        getattr(profile.profile, "role", "")
+        for profile in state.dataset_profiles
+    )
+    items = report.items
+    if query.analysis_type is not None:
+        items = [item for item in items if item.analysis_type == query.analysis_type]
+    report = CapabilityReport(items=items)
+    chinese = any("\u4e00" <= char <= "\u9fff" for char in state.user_message)
+    if chinese:
+        lines = ["当前数据的分析能力："]
+        for item in report.items:
+            if item.missing_roles:
+                lines.append(
+                    f"{item.analysis_type}：缺少输入角色 {', '.join(item.missing_roles)}。"
+                )
+            else:
+                lines.append(f"{item.analysis_type}：输入角色满足，可继续解析分析参数。")
+        text = "\n".join(lines) if report.items else "当前没有可评估的分析类型。"
+    else:
+        lines = ["Analysis capabilities for the current inputs:"]
+        for item in report.items:
+            if item.missing_roles:
+                lines.append(
+                    f"{item.analysis_type}: missing input roles {', '.join(item.missing_roles)}."
+                )
+            else:
+                lines.append(f"{item.analysis_type}: inputs are present; parameters still require resolution.")
+        text = "\n".join(lines) if report.items else "No registered analysis is available."
+    result.update({
+        "decision": AgentDecision(action="answer"),
+        "response_text": text[:1200],
+        "response_blocks": [text_block(text[:1200])],
+        "capability_report": report,
+        "outcome": "completed",
+        "failure_code": None,
+    })
+    return result
 
 
 def _resolve_pending_turn(
@@ -80,15 +156,12 @@ def _resolve_pending_turn(
     budget = _advance_model_budget(state.step_budget, getattr(resolver, "last_usage", None))
 
     if result.intent == "unrelated":
-        if state.reroute_count >= 2:
-            return _ask_user_update(_MODEL_FALLBACK_QUESTION, budget)
         return {
             "decision": AgentDecision(action="reroute", reroute_to="qa"),
             "response_text": None,
             "response_blocks": [],
             "grounded_answer": None,
             "pending_analysis": pending,
-            "reroute_count": state.reroute_count + 1,
             "step_budget": budget,
         }
     if result.intent == "cancel":
@@ -100,6 +173,7 @@ def _resolve_pending_turn(
             "response_blocks": [text_block(text)],
             "grounded_answer": None,
             "pending_analysis": cancelled,
+            "outcome": "completed",
             "step_budget": budget,
         }
     if result.intent == "param_question":
@@ -110,6 +184,7 @@ def _resolve_pending_turn(
             "response_blocks": [text_block(text)],
             "grounded_answer": None,
             "pending_analysis": pending,
+            "outcome": "needs_input",
             "step_budget": budget,
         }
 
@@ -124,6 +199,8 @@ def _resolve_pending_turn(
             "response_blocks": [text_block(text)],
             "grounded_answer": None,
             "pending_analysis": pending,
+            "outcome": "needs_input",
+            "failure_code": "missing_analysis_parameter",
             "step_budget": budget,
         }
 

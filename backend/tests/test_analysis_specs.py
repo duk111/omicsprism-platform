@@ -42,3 +42,16 @@ def test_registry_filters_parameters_to_analysis_whitelist() -> None:
     assert "counts" not in effective
     assert "comparison" not in effective
     assert effective["padj_cutoff"] == 0.05
+
+
+def test_registry_normalizes_role_aliases_and_evaluates_capabilities() -> None:
+    registry = AnalysisSpecRegistry()
+
+    assert registry.canonical_role("metabs") == "metabolome"
+    assert registry.required_roles(AnalysisType.DEM) == ("metabolome", "metadata")
+
+    report = registry.capability_report(["metabs", "metadata"])
+    dem = next(item for item in report.items if item.analysis_type == "DEM")
+    assert dem.present_roles == ["metabolome", "metadata"]
+    assert dem.missing_roles == []
+    assert dem.next_step == "ready_for_parameter_resolution"

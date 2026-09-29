@@ -9,6 +9,7 @@ from uuid import uuid4
 
 from fastapi import APIRouter, Depends, File, Form, Header, HTTPException, Query, Request, UploadFile
 from fastapi.responses import StreamingResponse
+from ..analysis_specs import AnalysisSpecRegistry
 from ..observability import LOG
 from ..storage_service import AGENT_BUNDLE_MAX_BYTES
 from .bootstrap import AgentApiContext
@@ -65,7 +66,7 @@ from .schemas import (
 from .trace import AgentTraceEvent
 
 
-ALLOWED_INPUT_FIELDS = {"counts", "metadata", "metabs", "transcriptome", "metabolome", "group"}
+ALLOWED_INPUT_FIELDS = set(AnalysisSpecRegistry().accepted_input_roles())
 
 
 def create_agent_router(
@@ -213,7 +214,6 @@ def create_agent_router(
                         turn_id=continuation.turn_id,
                         user_id=user_id,
                         now=datetime.now(timezone.utc),
-                        error_code="agent_wait_cancelled",
                     )
             except (AgentResourceNotFound, TurnConflict):
                 # The runtime may have claimed or completed the continuation
@@ -514,7 +514,9 @@ def create_agent_router(
             request_hash=_request_hash(thread_id, payload.model_dump(mode="json")),
             status=AgentTurnStatus.QUEUED,
             attempt=0,
-            error_code=None,
+            outcome=None,
+            failure_code=None,
+            attempted_roles=[],
             created_at=now,
             updated_at=now,
             started_at=None,
@@ -677,7 +679,6 @@ def create_agent_router(
                 turn_id=turn_id,
                 user_id=user_id,
                 now=datetime.now(timezone.utc),
-                error_code="cancelled_by_user",
             )
         except AgentResourceNotFound as exc:
             raise _not_found() from exc

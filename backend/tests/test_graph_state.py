@@ -17,6 +17,7 @@ from backend.app.agent.graph import (
     StratumSummary,
     PendingAnalysisClarification,
 )
+from backend.app.agent.clarification_resolver import ClarificationOption, stable_option_id
 from backend.app.agent.param_resolver import ContrastSpec, DEGParams, ScopeSpec
 from backend.app.agent.schemas import Citation, GroundedAnswer, GroundedClaim
 
@@ -148,7 +149,10 @@ def test_pending_analysis_clarification_is_structured_and_typed() -> None:
         pending_analysis=PendingAnalysisClarification(
             question="Which factor should be compared?",
             missing=["compare_field"],
-            options=["condition"],
+            options=[ClarificationOption(
+                option_id=stable_option_id("condition"),
+                label="condition",
+            )],
             source_message="Run DEG",
         ),
     )

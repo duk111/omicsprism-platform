@@ -68,8 +68,15 @@ class AgentTraceEvent(ContractModel):
     cached_tokens: int | None = Field(default=None, ge=0)
     usage_status: Literal["reported", "unknown"] | None = None
     retry_count: int = Field(default=0, ge=0)
-    error_code: str | None = Field(default=None, max_length=100)
+    failure_code: str | None = Field(default=None, max_length=100)
+    attempted_roles: list[Literal["qa", "analysis", "result_qa"]] = Field(default_factory=list, max_length=3)
     created_at: datetime
+
+    @property
+    def error_code(self) -> str | None:
+        """Read-only compatibility view for internal telemetry consumers."""
+
+        return self.failure_code
 
 
 class TraceObserver(Protocol):
@@ -151,7 +158,8 @@ class TraceRecorder:
         outcome: str | None = None,
         latency_ms: float | None = None,
         retry_count: int = 0,
-        error_code: str | None = None,
+        failure_code: str | None = None,
+        attempted_roles: list[str] | None = None,
     ) -> None:
         self.record(AgentTraceEvent(
             event_id=_event_id(),
@@ -167,7 +175,8 @@ class TraceRecorder:
             outcome=outcome,
             latency_ms=latency_ms,
             retry_count=retry_count,
-            error_code=error_code,
+            failure_code=failure_code,
+            attempted_roles=list(attempted_roles or []),
             created_at=datetime.now(timezone.utc),
         ))
 
@@ -179,7 +188,7 @@ class TraceRecorder:
         tool_schema_hash: str,
         latency_ms: float,
         outcome: str,
-        error_code: str | None = None,
+        failure_code: str | None = None,
     ) -> None:
         self.record(AgentTraceEvent(
             event_id=_event_id(),
@@ -196,7 +205,7 @@ class TraceRecorder:
             tool_schema_hash=tool_schema_hash,
             outcome=outcome,
             latency_ms=latency_ms,
-            error_code=error_code,
+            failure_code=failure_code,
             created_at=datetime.now(timezone.utc),
         ))
 
@@ -207,7 +216,7 @@ class TraceRecorder:
         job_id: str,
         latency_ms: float,
         outcome: str,
-        error_code: str | None = None,
+        failure_code: str | None = None,
     ) -> None:
         self.record(AgentTraceEvent(
             event_id=_event_id(),
@@ -223,7 +232,7 @@ class TraceRecorder:
             job_id=job_id,
             outcome=outcome,
             latency_ms=latency_ms,
-            error_code=error_code,
+            failure_code=failure_code,
             created_at=datetime.now(timezone.utc),
         ))
 
@@ -239,7 +248,7 @@ class TraceRecorder:
         latency_ms: float,
         retry_count: int,
         outcome: str,
-        error_code: str | None = None,
+        failure_code: str | None = None,
     ) -> None:
         self.record(AgentTraceEvent(
             event_id=_event_id(),
@@ -264,7 +273,7 @@ class TraceRecorder:
             cached_tokens=usage.cached_tokens,
             usage_status=usage.status,
             retry_count=retry_count,
-            error_code=error_code,
+            failure_code=failure_code,
             created_at=datetime.now(timezone.utc),
         ))
 
@@ -295,7 +304,7 @@ def _telemetry_attributes(event: AgentTraceEvent) -> dict[str, str | int | float
         "omicsprism.tool_name": event.tool_name,
         "omicsprism.job_id": event.job_id,
         "omicsprism.outcome": event.outcome,
-        "omicsprism.error_code": event.error_code,
+        "omicsprism.failure_code": event.failure_code,
         "gen_ai.usage.input_tokens": event.prompt_tokens,
         "gen_ai.usage.output_tokens": event.completion_tokens,
         "gen_ai.usage.total_tokens": event.total_tokens,

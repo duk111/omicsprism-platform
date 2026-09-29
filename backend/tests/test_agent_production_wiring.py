@@ -23,16 +23,14 @@ from backend.app.agent.graph import (
     ResultQaModelOutput,
     ResultDecision,
     ToolCallRequest,
-    MainModelOutput,
 )
 from backend.app.agent.dataset_profile import build_dataset_profiles
-from backend.app.agent.model import VllmGraphModel, _GRAPH_MAIN_SYSTEM_PROMPT
+from backend.app.agent.model import VllmGraphModel
 from backend.app.agent.capabilities import readonly_openai_tool_definitions
 from backend.app.agent.context import (
     AnalysisModelContext,
     DecisionLedger,
     FactIndex,
-    MainModelContext,
     QaFactIndex,
     QaModelContext,
     RecentMessages,
@@ -40,7 +38,6 @@ from backend.app.agent.context import (
     ResultFocusContext,
     JobContextRef,
     ToolObservationContext,
-    WorkingSet,
 )
 from backend.app.agent.param_resolver import ContrastSpec, DEGParams
 from backend.app.agent.product_store import (
@@ -381,50 +378,6 @@ def test_job_submission_persists_an_ownership_bound_wait(
     )
 
 
-def test_vllm_graph_model_uses_main_output_schema_and_returns_typed_output() -> None:
-    captured: dict[str, object] = {}
-
-    def handle(request: httpx.Request) -> httpx.Response:
-        captured["url"] = str(request.url)
-        captured["body"] = json.loads(request.content)
-        output = {
-            "decision": {
-                "action": "ask_user",
-                "question": "Which analysis should I run?",
-            },
-            "answer": None,
-        }
-        return httpx.Response(200, json={
-            "choices": [{"message": {"content": json.dumps(output)}}]
-        })
-
-    model = VllmGraphModel(
-        base_url="http://model-host:8000",
-        model="Qwen3",
-        client=httpx.Client(transport=httpx.MockTransport(handle)),
-    )
-    context = MainModelContext(
-        user_message="analyze my data",
-        fact_index=FactIndex(context_version="facts.v1:test", dataset_roles=["counts"]),
-        decision_ledger=DecisionLedger(context_version="ledger.v1:test"),
-        working_set=WorkingSet(context_version="working.v1:test"),
-    )
-
-    result = model(context)
-
-    assert isinstance(result, MainModelOutput)
-    assert result.decision.action == "ask_user"
-    assert captured["url"] == "http://model-host:8000/v1/chat/completions"
-    body = captured["body"]
-    assert body["response_format"]["json_schema"]["schema"] == (
-        MainModelOutput.model_json_schema()
-    )
-    assert json.loads(body["messages"][1]["content"]) == context.model_dump(
-        mode="json"
-    )
-    assert model.contexts == [context]
-
-
 @pytest.mark.parametrize(
     ("role", "context", "output", "expected_tools", "schema_name"),
     [
@@ -511,7 +464,7 @@ def test_vllm_graph_model_uses_role_specific_prompt_tools_and_schema(
         for item in body["tools"]
     }
     assert tool_names == expected_tools
-    assert body["messages"][0]["content"] != _GRAPH_MAIN_SYSTEM_PROMPT
+    assert body["messages"][0]["content"]
     assert json.loads(body["messages"][1]["content"]) == context.model_dump(mode="json")
 
 
@@ -549,17 +502,16 @@ def test_vllm_graph_model_emits_native_tool_calls_and_replays_tool_result() -> N
         client=httpx.Client(transport=httpx.MockTransport(handle)),
         structured_tool_response=False,
     )
-    context = MainModelContext(
+    context = AnalysisModelContext(
         thread_id="thread-native",
         turn_id="turn-native",
         run_id="run-native",
         user_message="Inspect treatment",
         fact_index=FactIndex(context_version="facts.v1:test"),
         decision_ledger=DecisionLedger(context_version="ledger.v1:test"),
-        working_set=WorkingSet(context_version="working.v1:test"),
     )
 
-    first = model(context)
+    first = model(context, role=AgentRole.ANALYSIS)
     assert first.decision.action == "tool_call"
     assert model.last_tool_calls[0]["id"] == call_id
     observation = ToolObservationContext(
@@ -568,10 +520,15 @@ def test_vllm_graph_model_emits_native_tool_calls_and_replays_tool_result() -> N
         arguments={"fields": ["treatment"]},
         summary='{"ok":true,"fields":[]}',
     )
-    second = model(context.model_copy(update={"tool_observations": [observation]}))
+    second = model(
+        context.model_copy(update={"tool_observations": [observation]}),
+        role=AgentRole.ANALYSIS,
+    )
 
     assert second.decision.action == "answer"
-    assert requests[0]["tools"] == readonly_openai_tool_definitions()
+    assert requests[0]["tools"] == readonly_openai_tool_definitions(
+        names={"describe_metadata", "enumerate_contrasts"}
+    )
     messages = requests[1]["messages"]
     assert messages[-2]["role"] == "assistant"
     assert messages[-2]["tool_calls"][0]["id"] == call_id
@@ -612,308 +569,3 @@ def test_vllm_graph_model_accepts_native_tool_calls_for_analysis_role() -> None:
     assert isinstance(result, AnalysisModelOutput)
     assert result.decision.action == "tool_call"
     assert result.decision.tool is ToolName.DESCRIBE_METADATA
-
-
-@pytest.mark.parametrize("tool", [None, "get_jobs_status"])
-def test_vllm_graph_model_repairs_malformed_jobs_tool_for_explicit_listing(tool: str | None) -> None:
-    def handle(_request: httpx.Request) -> httpx.Response:
-        output = {
-            "decision": {
-                "action": "tool_call",
-                "tool": tool,
-                "arguments": {"unexpected": True},
-            },
-            "answer": None,
-        }
-        return httpx.Response(200, json={
-            "choices": [{"message": {"content": json.dumps(output)}}]
-        })
-
-    model = VllmGraphModel(
-        base_url="http://model-host:8000/v1",
-        model="Qwen3",
-        client=httpx.Client(transport=httpx.MockTransport(handle)),
-    )
-    context = MainModelContext(
-        user_message="List available jobs.",
-        fact_index=FactIndex(context_version="facts.v1:test"),
-        decision_ledger=DecisionLedger(context_version="ledger.v1:test"),
-        working_set=WorkingSet(context_version="working.v1:test"),
-    )
-
-    result = model(context)
-
-    assert result.decision.action == "tool_call"
-    assert result.decision.tool.value == "list_jobs"
-    assert result.decision.arguments == {}
-
-
-def test_vllm_graph_model_maps_internal_evidence_tool_alias() -> None:
-    def handle(_request: httpx.Request) -> httpx.Response:
-        output = {
-            "decision": {
-                "action": "tool_call",
-                "tool": "query_result_evidence",
-                "arguments": {"job_id": "job-1", "artifact": "results.csv"},
-            },
-            "answer": None,
-        }
-        return httpx.Response(200, json={
-            "choices": [{"message": {"content": json.dumps(output)}}]
-        })
-
-    model = VllmGraphModel(
-        base_url="http://model-host:8000/v1",
-        model="Qwen3",
-        client=httpx.Client(transport=httpx.MockTransport(handle)),
-    )
-    context = MainModelContext(
-        user_message="Show the result.",
-        fact_index=FactIndex(
-            context_version="facts.v1:test",
-            job_artifacts={"job-1": ["results.csv"]},
-        ),
-        decision_ledger=DecisionLedger(context_version="ledger.v1:test"),
-        working_set=WorkingSet(context_version="working.v1:test"),
-    )
-
-    result = model(context)
-
-    assert result.decision.action == "query_result"
-    assert result.decision.job_id == "job-1"
-    assert result.decision.result_query is not None
-    assert result.decision.result_query.artifact == "results.csv"
-
-
-def test_main_output_schema_requires_answer_for_answer_action() -> None:
-    schema = MainModelOutput.model_json_schema()
-
-    assert len(schema["oneOf"]) == 2
-    answer_branch, non_answer_branch = schema["oneOf"]
-    assert answer_branch["required"] == ["decision", "answer"]
-    assert non_answer_branch["required"] == ["decision", "answer"]
-    assert answer_branch["properties"]["answer"]["type"] == "string"
-    assert non_answer_branch["properties"]["answer"]["type"] == "null"
-    assert answer_branch["properties"]["decision"]["allOf"][1]["properties"]["action"]["const"] == "answer"
-
-
-def test_vllm_graph_model_ignores_spurious_tool_fields_on_answer() -> None:
-    def handle(_request: httpx.Request) -> httpx.Response:
-        output = {
-            "decision": {
-                "action": "answer",
-                "arguments": {"question": "wrong branch"},
-            },
-            "answer": "A direct answer.",
-        }
-        return httpx.Response(200, json={
-            "choices": [{"message": {"content": json.dumps(output)}}]
-        })
-
-    model = VllmGraphModel(
-        base_url="http://model-host:8000/v1",
-        model="Qwen3",
-        client=httpx.Client(transport=httpx.MockTransport(handle)),
-    )
-    context = MainModelContext(
-        user_message="hello",
-        fact_index=FactIndex(context_version="facts.v1:test"),
-        decision_ledger=DecisionLedger(context_version="ledger.v1:test"),
-        working_set=WorkingSet(context_version="working.v1:test"),
-    )
-
-    result = model(context)
-
-    assert result.decision.action == "answer"
-    assert result.answer == "A direct answer."
-
-
-def test_vllm_graph_model_ignores_spurious_action_fields() -> None:
-    def handle(_request: httpx.Request) -> httpx.Response:
-        output = {
-            "decision": {
-                "action": "answer",
-                "result_query": {
-                    "artifact": "wrong-branch.csv",
-                    "filters": {},
-                    "limit": 1,
-                },
-                "grounded_answer": {
-                    "claims": [],
-                },
-                "job_id": "wrong-job",
-                "question": "wrong question",
-                "proposal": {"analysis_type": "DEG"},
-            },
-            "answer": "A direct answer.",
-        }
-        return httpx.Response(200, json={
-            "choices": [{"message": {"content": json.dumps(output)}}]
-        })
-
-    model = VllmGraphModel(
-        base_url="http://model-host:8000/v1",
-        model="Qwen3",
-        client=httpx.Client(transport=httpx.MockTransport(handle)),
-    )
-    context = MainModelContext(
-        user_message="hello",
-        fact_index=FactIndex(context_version="facts.v1:test"),
-        decision_ledger=DecisionLedger(context_version="ledger.v1:test"),
-        working_set=WorkingSet(context_version="working.v1:test"),
-    )
-
-    result = model(context)
-
-    assert result.decision.action == "answer"
-    assert result.decision.result_query is None
-    assert result.decision.grounded_answer is None
-    assert result.decision.job_id is None
-    assert result.decision.question is None
-    assert result.decision.proposal is None
-
-
-def test_vllm_graph_model_normalizes_bounded_legacy_analysis_arguments() -> None:
-    def handle(_request: httpx.Request) -> httpx.Response:
-        output = {
-            "decision": {
-                "action": "run_analysis",
-                "analysis_type": "DEG",
-                "arguments": {
-                    "compare_field": "treatment",
-                    "tested_level": "salt",
-                    "reference_level": "control",
-                    "scope": {"mode": "all"},
-                },
-            },
-            "answer": None,
-        }
-        return httpx.Response(200, json={
-            "choices": [{"message": {"content": json.dumps(output)}}]
-        })
-
-    model = VllmGraphModel(
-        base_url="http://model-host:8000/v1",
-        model="Qwen3",
-        client=httpx.Client(transport=httpx.MockTransport(handle)),
-    )
-    context = MainModelContext(
-        user_message="run DEG",
-        fact_index=FactIndex(context_version="facts.v1:test"),
-        decision_ledger=DecisionLedger(context_version="ledger.v1:test"),
-        working_set=WorkingSet(context_version="working.v1:test"),
-    )
-
-    result = model(context)
-
-    assert result.decision.proposal is not None
-    assert result.decision.proposal.compare_field == "treatment"
-    assert result.decision.proposal.scope.mode == "all"
-    assert result.decision.arguments == {}
-
-
-def test_vllm_graph_model_normalizes_query_result_arguments_from_single_artifact() -> None:
-    def handle(_request: httpx.Request) -> httpx.Response:
-        output = {
-            "decision": {
-                "action": "query_result",
-                "arguments": {"job_id": "job-1", "query": "GeneA"},
-            },
-            "answer": None,
-        }
-        return httpx.Response(200, json={
-            "choices": [{"message": {"content": json.dumps(output)}}]
-        })
-
-    model = VllmGraphModel(
-        base_url="http://model-host:8000/v1",
-        model="Qwen3",
-        client=httpx.Client(transport=httpx.MockTransport(handle)),
-    )
-    context = MainModelContext(
-        user_message="show GeneA",
-        fact_index=FactIndex(
-            context_version="facts.v1:test",
-            job_artifacts={"job-1": ["differential_gene_counts.csv"]},
-        ),
-        decision_ledger=DecisionLedger(context_version="ledger.v1:test"),
-        working_set=WorkingSet(context_version="working.v1:test"),
-    )
-
-    result = model(context)
-
-    assert result.decision.job_id == "job-1"
-    assert result.decision.result_query is not None
-    assert result.decision.result_query.artifact == "differential_gene_counts.csv"
-    assert result.decision.result_query.resolve_entity == "GeneA"
-
-
-def test_vllm_graph_model_normalizes_entity_in_result_query_artifact() -> None:
-    def handle(_request: httpx.Request) -> httpx.Response:
-        output = {
-            "decision": {
-                "action": "query_result",
-                "job_id": "job-1",
-                "result_query": {"artifact": "GeneC"},
-            },
-            "answer": None,
-        }
-        return httpx.Response(200, json={
-            "choices": [{"message": {"content": json.dumps(output)}}]
-        })
-
-    model = VllmGraphModel(
-        base_url="http://model-host:8000/v1",
-        model="Qwen3",
-        client=httpx.Client(transport=httpx.MockTransport(handle)),
-    )
-    context = MainModelContext(
-        user_message="retrieve GeneC evidence",
-        fact_index=FactIndex(
-            context_version="facts.v1:test",
-            job_artifacts={"job-1": ["differential_gene_counts.csv"]},
-        ),
-        decision_ledger=DecisionLedger(context_version="ledger.v1:test"),
-        working_set=WorkingSet(context_version="working.v1:test"),
-    )
-
-    result = model(context)
-
-    assert result.decision.result_query is not None
-    assert result.decision.result_query.artifact == "differential_gene_counts.csv"
-    assert result.decision.result_query.resolve_entity == "GeneC"
-
-
-def test_vllm_graph_model_infers_single_job_for_result_query() -> None:
-    def handle(_request: httpx.Request) -> httpx.Response:
-        output = {
-            "decision": {
-                "action": "query_result",
-                "result_query": {"artifact": "GeneC", "resolve_entity": "GeneC"},
-            },
-            "answer": None,
-        }
-        return httpx.Response(200, json={
-            "choices": [{"message": {"content": json.dumps(output)}}]
-        })
-
-    model = VllmGraphModel(
-        base_url="http://model-host:8000/v1",
-        model="Qwen3",
-        client=httpx.Client(transport=httpx.MockTransport(handle)),
-    )
-    context = MainModelContext(
-        user_message="retrieve GeneC evidence",
-        fact_index=FactIndex(
-            context_version="facts.v1:test",
-            job_artifacts={"job-1": ["differential_gene_counts.csv"]},
-        ),
-        decision_ledger=DecisionLedger(context_version="ledger.v1:test"),
-        working_set=WorkingSet(context_version="working.v1:test"),
-    )
-
-    result = model(context)
-
-    assert result.decision.job_id == "job-1"
-    assert result.decision.result_query is not None
-    assert result.decision.result_query.artifact == "differential_gene_counts.csv"

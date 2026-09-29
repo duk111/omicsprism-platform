@@ -11,6 +11,7 @@ from langgraph.checkpoint.postgres import PostgresSaver
 from psycopg.rows import dict_row
 from psycopg_pool import ConnectionPool
 
+from ..analysis_specs import AnalysisSpecRegistry, canonical_input_role
 from ..job_execution import JobExecutor
 from ..job_store import JobStorageService
 from ..models import (
@@ -187,18 +188,15 @@ def create_agent_api_context(
         ]
         scoped_by_id = {item.dataset_id: item for item in request.scoped_inputs}
         inputs: list[UploadedFileInfo] = []
-        execution_alias = (
-            lambda field: "metabs"
-            if request.resolved_params.analysis_type == "DEM" and field == "metabolome"
-            else field
-        )
+        spec_registry = AnalysisSpecRegistry()
+        execution_alias = spec_registry.engine_role
         for item in input_records:
             execution_item = item.model_copy(update={"field": execution_alias(item.field)})
             scoped = scoped_by_id.get(item.file_id)
             if scoped is None:
                 inputs.append(files.copy_staged_input(job_id, execution_item))
                 continue
-            if scoped.owner_id != request.user_id or scoped.role != item.field:
+            if scoped.owner_id != request.user_id or scoped.role != canonical_input_role(item.field):
                 raise HTTPException(status_code=409, detail="Scoped dataset ownership or role changed")
             content = scoped.content
             checksum = sha256(content).hexdigest()
@@ -286,7 +284,7 @@ def create_agent_api_context(
                 job_id=job_id,
                 latency_ms=round((perf_counter() - started) * 1000, 3),
                 outcome="failed",
-                error_code=type(exc).__name__,
+                failure_code="tool_execution_failed",
             )
             raise
         trace_recorder.job_submitted(

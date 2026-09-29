@@ -35,7 +35,7 @@ def test_continuous_abundance_profile_is_not_classified_as_counts() -> None:
     )).inspect_dataset()[0]
 
     assert isinstance(profile, MatrixProfile)
-    assert profile.role == "metabs"
+    assert profile.role == "metabolome"
     assert profile.numeric_type == "continuous_abundance"
     assert profile.feature_type == "metabolite"
     assert profile.has_negative is False

@@ -137,3 +137,20 @@ def test_feedback_candidate_migration_is_owned_and_review_gated() -> None:
     assert "pending_review" in sql
     assert "grant select, insert, update on agent_feedback to omics_app" in sql
     assert "grant select, insert, update on agent_eval_candidates to omics_app" in sql
+
+
+def test_agent_turn_outcome_migration_replaces_error_code_contract() -> None:
+    sql = (ROOT / "migrations" / "016_agent_turn_outcomes.sql").read_text(encoding="utf-8").lower()
+
+    assert "drop column error_code" in sql
+    assert "add column outcome" in sql
+    assert "add column failure_code" in sql
+    assert "add column attempted_roles jsonb" in sql
+    assert "'needs_input'" in sql
+
+
+def test_agent_trace_outcome_migration_uses_current_failure_contract() -> None:
+    sql = (ROOT / "migrations" / "017_agent_trace_outcomes.sql").read_text(encoding="utf-8").lower()
+
+    assert "rename column error_code to failure_code" in sql
+    assert "add column attempted_roles jsonb" in sql

@@ -204,7 +204,8 @@ export interface AgentTraceEventResponse {
   cached_tokens?: number | null;
   usage_status?: "reported" | "unknown" | null;
   retry_count?: number;
-  error_code?: string | null;
+  failure_code?: string | null;
+  attempted_roles?: AgentRole[];
   created_at: string;
 }
 
@@ -226,7 +227,9 @@ export interface AgentTurnResponse {
   trace_id?: string;
   status: AgentTurnStatus;
   attempt: number;
-  error_code: string | null;
+  outcome: AgentOutcome | null;
+  failure_code: string | null;
+  attempted_roles: AgentRole[];
   created_at: string;
   updated_at: string;
   started_at: string | null;
@@ -234,6 +237,8 @@ export interface AgentTurnResponse {
 }
 
 export type AgentTurnStatus = "queued" | "running" | "completed" | "failed" | "cancelled";
+export type AgentOutcome = "completed" | "needs_input" | "unsupported" | "unresolved" | "failed";
+export type AgentRole = "qa" | "analysis" | "result_qa";
 
 export type AnalysisType = "deg" | "dem" | "gma";
 

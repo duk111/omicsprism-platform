@@ -7,8 +7,9 @@ from hashlib import sha256
 from typing import Literal
 
 from fastapi import UploadFile
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from ..analysis_specs import analysis_engine_role, canonical_input_role
 from ..models import AnalysisType
 from ..preflight import PreflightService, build_contrast_preview
 from .dataset_profile import DatasetProfile, build_dataset_profiles
@@ -21,11 +22,19 @@ class DatasetRef(BaseModel):
 
     dataset_id: str = Field(min_length=1)
     owner_id: str = Field(min_length=1)
-    role: Literal["counts", "metabs", "transcriptome", "metabolome", "metadata", "group"]
+    role: Literal["counts", "transcriptome", "metabolome", "metadata", "group"]
     filename: str = Field(min_length=1)
     checksum: str = Field(pattern=r"^sha256:[0-9a-fA-F]{64}$")
     content: bytes = Field(exclude=True)
     profile: DatasetProfile | None = Field(default=None, exclude=True)
+
+    @field_validator("role", mode="before")
+    @classmethod
+    def _canonical_role(cls, value: object) -> str:
+        role = canonical_input_role(str(value))
+        if role not in {"counts", "transcriptome", "metabolome", "metadata", "group"}:
+            raise ValueError("unsupported dataset role")
+        return role
 
 
 def derive_scoped_dataset_refs(
@@ -75,11 +84,11 @@ def derive_scoped_dataset_refs(
     for ref in dataset_refs:
         if ref.role in {"metadata", "group"}:
             content = _csv_bytes(list(metadata_rows[0]), selected_rows)
-        elif ref.role in {"counts", "metabs", "transcriptome", "metabolome"}:
+        elif ref.role in {"counts", "transcriptome", "metabolome"}:
             content = _subset_matrix_columns(ref.content, selected)
         else:
             content = ref.content
-        if ref.role in {"counts", "metabs", "transcriptome", "metabolome", "metadata", "group"}:
+        if ref.role in {"counts", "transcriptome", "metabolome", "metadata", "group"}:
             derived_inputs[ref.role] = (ref.filename, content)
         result.append(ref.model_copy(update={
             "content": content,
@@ -220,13 +229,12 @@ def validate_analysis_request(
         analysis_type = _analysis_type(request.params.analysis_type)
         validation_refs = scoped_refs if scope_error is None else dataset_refs
         files = {
-            ref.role: UploadFile(filename=ref.filename, file=io.BytesIO(ref.content))
+            analysis_engine_role(ref.role): UploadFile(
+                filename=ref.filename,
+                file=io.BytesIO(ref.content),
+            )
             for ref in validation_refs
         }
-        # The agent uses the canonical ``metabolome`` role. The legacy
-        # preflight/job contract still calls the DEM matrix ``metabs``.
-        if analysis_type == AnalysisType.DEM and "metabs" not in files and "metabolome" in files:
-            files["metabs"] = files["metabolome"]
         params = request.params.legacy_params()
         response = PreflightService().preflight(analysis_type, params=params, files=files)
         blocking.extend(_issues(response.errors))

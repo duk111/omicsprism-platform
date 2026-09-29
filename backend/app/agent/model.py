@@ -4,7 +4,6 @@ import json
 import logging
 import os
 from time import perf_counter
-from typing import TYPE_CHECKING
 
 import httpx
 from pydantic import ValidationError
@@ -12,33 +11,11 @@ from pydantic import ValidationError
 from .graph import (
     AgentRole,
     AnalysisModelOutput,
-    MainModelOutput,
     QaModelOutput,
+    RouteClassification,
     ResultQaModelOutput,
 )
 from .trace import ModelUsage, TraceRecorder
-from .router import (
-    _is_explicit_analysis_request as _router_is_explicit_analysis_request,
-    _is_explicit_job_status_request as _router_is_explicit_job_status_request,
-    _is_explicit_jobs_listing as _router_is_explicit_jobs_listing,
-)
-
-if TYPE_CHECKING:
-    from .context import (
-        AnalysisModelContext,
-        MainModelContext,
-        QaModelContext,
-        ResultQaModelContext,
-    )
-    from .graph import (
-        AgentRole,
-        MainModelOutput,
-        QaModelOutput,
-        AnalysisModelOutput,
-        ResultQaModelOutput,
-    )
-
-
 class ModelBoundaryError(ValueError):
     """The graph model input or output violated its typed boundary."""
 
@@ -97,23 +74,17 @@ class VllmGraphModel:
         self,
         context: object,
         *,
-        role: AgentRole | None = None,
-    ) -> MainModelOutput | QaModelOutput | AnalysisModelOutput | ResultQaModelOutput:
+        role: AgentRole,
+    ) -> QaModelOutput | AnalysisModelOutput | ResultQaModelOutput | RouteClassification:
         from .context import (
             AnalysisModelContext,
-            MainModelContext,
             QaModelContext,
+            RouterModelContext,
             ResultQaModelContext,
         )
-        from .graph import (
-            AgentRole,
-            AnalysisModelOutput,
-            MainModelOutput,
-            QaModelOutput,
-            ResultQaModelOutput,
-        )
+        from .graph import AgentRole
 
-        if role is not None and not isinstance(role, AgentRole):
+        if not isinstance(role, AgentRole):
             try:
                 role = AgentRole(role)
             except ValueError as exc:
@@ -122,32 +93,25 @@ class VllmGraphModel:
             AgentRole.QA: QaModelContext,
             AgentRole.ANALYSIS: AnalysisModelContext,
             AgentRole.RESULT_QA: ResultQaModelContext,
+            AgentRole.ROUTER: RouterModelContext,
         }
-        if role is None:
-            if not isinstance(context, MainModelContext):
-                raise ModelBoundaryError("graph model context has an invalid type")
-            output_model = MainModelOutput
-            system_prompt = _GRAPH_MAIN_SYSTEM_PROMPT
-            schema_name = "main_model_output"
-            tool_names: set[str] | None = None
-        else:
-            context_type = role_contexts[role]
-            if not isinstance(context, context_type):
-                raise ModelBoundaryError(
-                    f"{role.value} model context has an invalid type"
-                )
-            role_config = _ROLE_CONFIG[role]
-            output_model = role_config["output_model"]
-            system_prompt = role_config["system_prompt"]
-            schema_name = role_config["schema_name"]
-            tool_names = role_config["tool_names"]
+        context_type = role_contexts[role]
+        if not isinstance(context, context_type):
+            raise ModelBoundaryError(
+                f"{role.value} model context has an invalid type"
+            )
+        role_config = _ROLE_CONFIG[role]
+        output_model = role_config["output_model"]
+        system_prompt = role_config["system_prompt"]
+        schema_name = role_config["schema_name"]
+        tool_names = role_config["tool_names"]
         self.contexts.append(context)
-        self.last_role = role.value if role is not None else None
+        self.last_role = role.value
         context_thread_id = str(getattr(context, "thread_id", "thread-local"))
         context_turn_id = str(getattr(context, "turn_id", "turn-local"))
         context_run_id = str(getattr(context, "run_id", "run-local"))
         chat_key = (
-            role.value if role is not None else "main",
+            role.value,
             context_thread_id,
             context_turn_id,
             context_run_id,
@@ -383,14 +347,6 @@ class VllmGraphModel:
                         raw[:4000],
                         extra={"event": "agent.model.raw_output_debug"},
                     )
-                if role is None and not native_tool_call:
-                    _normalize_legacy_action_fields(payload, context)
-                    _normalize_result_query_artifact(payload, context)
-                    _normalize_explicit_jobs_tool(payload, context)
-                    _normalize_result_evidence_tool(payload, context)
-                    _normalize_explicit_business_actions(payload, context)
-                if role is None:
-                    _drop_irrelevant_action_fields(payload)
                 result = output_model.model_validate(payload)
             except (KeyError, IndexError, TypeError, ValueError, ValidationError) as exc:
                 if self._debug_raw_output:
@@ -503,18 +459,17 @@ class VllmGraphModel:
             )
             return
         from .graph import AgentRole
-        active_role = AgentRole(self.last_role) if self.last_role is not None else None
-        role_config = _ROLE_CONFIG.get(active_role) if active_role is not None else None
+        role_config = _ROLE_CONFIG[AgentRole(self.last_role)]
         self.trace_recorder.model_call(
             context=context,
             model_name=self.model_name,
-            system_prompt=(role_config["system_prompt"] if role_config else _GRAPH_MAIN_SYSTEM_PROMPT),
-            schema_version=(role_config["schema_version"] if role_config else "main-model-output.v1"),
+            system_prompt=role_config["system_prompt"],
+            schema_version=role_config["schema_version"],
             usage=self.last_usage,
             latency_ms=round((perf_counter() - started) * 1000, 3),
             retry_count=0,
             outcome=outcome,
-            error_code=error_code,
+            failure_code="model_unavailable" if outcome in {"http_error", "rejected"} else None,
         )
 
     def _tool_call_id(self, chat_key: tuple[str, str, str, str], index: int) -> str:
@@ -528,261 +483,6 @@ class VllmGraphModel:
         while len(ids) <= index:
             ids.append(f"call-{len(ids) + 1}")
         ids[index] = call_id
-
-
-def _drop_irrelevant_action_fields(payload: object) -> None:
-    """Drop semantically incompatible optional fields before typed validation.
-
-    The flat output schema is intentionally shared with vLLM, but the business
-    contract still has action-specific fields. Some models fill optional fields
-    from another branch even when strict JSON generation is enabled.
-    """
-
-    if not isinstance(payload, dict):
-        return
-    decision = payload.get("decision")
-    if not isinstance(decision, dict):
-        return
-    action = decision.get("action")
-    if action != "tool_call":
-        decision["tool"] = None
-        decision["arguments"] = {}
-    if action != "query_result":
-        decision["result_query"] = None
-    if action != "grounded_answer":
-        decision["grounded_answer"] = None
-    if action not in {"get_job", "query_result"}:
-        decision["job_id"] = None
-    if action != "ask_user":
-        decision["question"] = None
-    if action not in {"inspect_dataset", "run_analysis", "propose_plan"}:
-        decision["analysis_type"] = None
-        decision["proposal"] = None
-    if action != "answer":
-        payload["answer"] = None
-
-
-def _normalize_legacy_action_fields(payload: object, context: MainModelContext) -> None:
-    """Translate bounded legacy argument shapes into the typed action fields.
-
-    Some instruct models follow the generic ``arguments`` object even when an
-    action has a dedicated typed field. Only known scalar keys are copied, and
-    the normal Pydantic/domain validation still runs afterwards.
-    """
-
-    if not isinstance(payload, dict):
-        return
-    decision = payload.get("decision")
-    if not isinstance(decision, dict):
-        return
-    arguments = decision.get("arguments")
-    if not isinstance(arguments, dict):
-        return
-    action = decision.get("action")
-
-    if action in {"inspect_dataset", "run_analysis", "propose_plan"}:
-        proposal = decision.get("proposal")
-        if proposal is None:
-            proposal_values: dict[str, object] = {}
-            for key in (
-                "analysis_type",
-                "compare_field",
-                "tested_level",
-                "reference_level",
-                "scope",
-                "requested_params",
-            ):
-                if key in arguments:
-                    proposal_values[key] = arguments[key]
-            if proposal_values:
-                decision["proposal"] = proposal_values
-
-    if action in {"get_job", "query_result"} and not decision.get("job_id"):
-        job_id = arguments.get("job_id")
-        if isinstance(job_id, str) and job_id.strip():
-            decision["job_id"] = job_id.strip()
-
-    if action == "query_result" and decision.get("result_query") is None:
-        artifact = arguments.get("artifact")
-        job_id = decision.get("job_id")
-        if not isinstance(artifact, str) or not artifact.strip():
-            artifacts = context.fact_index.job_artifacts.get(job_id, []) if isinstance(job_id, str) else []
-            if len(artifacts) == 1:
-                artifact = artifacts[0]
-        if isinstance(artifact, str) and artifact.strip():
-            query: dict[str, object] = {"artifact": artifact.strip()}
-            for source, target in (
-                ("field_path", "field_path"),
-                ("filters", "filters"),
-                ("sort", "sort"),
-                ("limit", "limit"),
-                ("resolve_entity", "resolve_entity"),
-            ):
-                if source in arguments:
-                    query[target] = arguments[source]
-            raw_query = arguments.get("query")
-            if isinstance(raw_query, str) and raw_query.strip() and "resolve_entity" not in query:
-                query["resolve_entity"] = raw_query.strip()
-            decision["result_query"] = query
-
-
-def _normalize_result_query_artifact(payload: object, context: MainModelContext) -> None:
-    """Correct an entity accidentally placed in ``result_query.artifact``.
-
-    This is limited to a Job with exactly one known artifact. Unknown names
-    containing an extension remain untouched so genuine artifact errors remain
-    visible to the result boundary.
-    """
-
-    if not isinstance(payload, dict):
-        return
-    decision = payload.get("decision")
-    if not isinstance(decision, dict) or decision.get("action") != "query_result":
-        return
-    query = decision.get("result_query")
-    if not isinstance(query, dict):
-        return
-    job_id = decision.get("job_id")
-    artifact_map = context.fact_index.job_artifacts
-    if not isinstance(job_id, str) and len(artifact_map) == 1:
-        job_id = next(iter(artifact_map))
-        decision["job_id"] = job_id
-    artifacts = artifact_map.get(job_id, []) if isinstance(job_id, str) else []
-    if len(artifacts) != 1:
-        return
-    artifact = query.get("artifact")
-    if not isinstance(artifact, str) or not artifact.strip() or artifact in artifacts:
-        return
-    if query.get("resolve_entity") is not None or "." not in artifact:
-        query["resolve_entity"] = query.get("resolve_entity") or artifact.strip()
-        query["artifact"] = artifacts[0]
-
-
-def _normalize_explicit_jobs_tool(payload: object, context: MainModelContext) -> None:
-    """Repair a malformed tool branch for an explicit jobs-list request.
-
-    Some instruct models emit ``action=tool_call`` with a null or invented
-    tool name despite the constrained schema. For this one unambiguous,
-    read-only intent, selecting ``list_jobs`` is deterministic and preserves
-    the capability boundary. Other malformed tool calls remain rejected.
-    """
-
-    if not isinstance(payload, dict):
-        return
-    decision = payload.get("decision")
-    if not isinstance(decision, dict) or decision.get("action") != "tool_call":
-        return
-    if not _router_is_explicit_jobs_listing(context.user_message):
-        return
-    if decision.get("tool") != "list_jobs":
-        decision["tool"] = "list_jobs"
-        decision["arguments"] = {}
-
-
-def _normalize_result_evidence_tool(payload: object, context: MainModelContext) -> None:
-    """Map internal result tools back to the graph's result business action."""
-
-    if not isinstance(payload, dict):
-        return
-    decision = payload.get("decision")
-    if not isinstance(decision, dict) or decision.get("action") != "tool_call":
-        return
-    if decision.get("tool") not in {"query_result_evidence", "query_artifact"}:
-        return
-    arguments = decision.get("arguments")
-    if not isinstance(arguments, dict):
-        arguments = {}
-    job_id = decision.get("job_id") or arguments.get("job_id")
-    if not isinstance(job_id, str) or not job_id.strip():
-        if len(context.fact_index.job_artifacts) == 1:
-            job_id = next(iter(context.fact_index.job_artifacts))
-    artifact = arguments.get("artifact")
-    if not isinstance(artifact, str) or not artifact.strip():
-        artifacts = context.fact_index.job_artifacts.get(job_id, []) if isinstance(job_id, str) else []
-        if len(artifacts) == 1:
-            artifact = artifacts[0]
-    if not isinstance(job_id, str) or not job_id.strip() or not isinstance(artifact, str) or not artifact.strip():
-        return
-    query: dict[str, object] = {"artifact": artifact.strip()}
-    for key in ("field_path", "filters", "sort", "limit", "resolve_entity"):
-        if key in arguments:
-            query[key] = arguments[key]
-    if "resolve_entity" not in query:
-        raw_query = arguments.get("query")
-        if isinstance(raw_query, str) and raw_query.strip():
-            query["resolve_entity"] = raw_query.strip()
-    decision["action"] = "query_result"
-    decision["job_id"] = job_id.strip()
-    decision["result_query"] = query
-    decision["tool"] = None
-    decision["arguments"] = {}
-
-
-def _normalize_explicit_business_actions(payload: object, context: MainModelContext) -> None:
-    """Recover obvious status/analysis actions that models emit as tools."""
-
-    if not isinstance(payload, dict):
-        return
-    decision = payload.get("decision")
-    if not isinstance(decision, dict) or decision.get("action") != "tool_call":
-        return
-    arguments = decision.get("arguments")
-    if not isinstance(arguments, dict):
-        arguments = {}
-    tool = decision.get("tool")
-    if tool == "get_jobs_status":
-        if not _router_is_explicit_job_status_request(context.user_message):
-            return
-        job_id = decision.get("job_id") or arguments.get("job_id")
-        decision["action"] = "get_job"
-        decision["job_id"] = job_id if isinstance(job_id, str) and job_id.strip() else None
-        decision["tool"] = None
-        decision["arguments"] = {}
-        return
-    if tool == "list_jobs" and _router_is_explicit_job_status_request(context.user_message):
-        if len(context.conversation_memory.recent_job_ids) > 1:
-            decision["action"] = "get_job"
-            decision["job_id"] = None
-            decision["tool"] = None
-            decision["arguments"] = {}
-            return
-    if tool not in {"describe_metadata", "enumerate_contrasts", "list_jobs"}:
-        return
-    message = context.user_message.casefold()
-    analysis_type = next(
-        (name for name in ("DEG", "DEM", "GMA") if name.casefold() in message),
-        None,
-    )
-    if analysis_type is None:
-        if "metabol" in message:
-            analysis_type = "DEM"
-        elif "gene" in message or "expression" in message:
-            analysis_type = "DEG"
-    if analysis_type is None or not _router_is_explicit_analysis_request(message):
-        return
-    proposal_values: dict[str, object] = {"analysis_type": analysis_type}
-    fields = context.fact_index.metadata_fields
-    levels = context.fact_index.metadata_levels
-    compare_field = next(
-        (field for field in fields if field in levels and field != "sample_id"),
-        None,
-    )
-    if compare_field:
-        proposal_values["compare_field"] = compare_field
-        known_levels = list(levels.get(compare_field, {}))
-        mentioned = [
-            level for level in known_levels
-            if level.casefold() in message
-        ]
-        if len(mentioned) >= 2:
-            proposal_values["tested_level"] = mentioned[0]
-            proposal_values["reference_level"] = mentioned[1]
-        proposal_values["scope"] = {"mode": "all"}
-    decision["action"] = "propose_plan" if "plan" in message else "run_analysis"
-    decision["analysis_type"] = analysis_type
-    decision["proposal"] = proposal_values
-    decision["tool"] = None
-    decision["arguments"] = {}
 
 
 def _chat_completions_url(base_url: str) -> str:
@@ -855,55 +555,6 @@ def _standard_assistant_message(message: dict[str, object]) -> dict[str, object]
     return result
 
 
-_GRAPH_MAIN_SYSTEM_PROMPT = (
-    "You are OmicsPrism Copilot. Use the supplied tools for read-only data access "
-    "and return a concise final answer when no tool is needed. A tool call may "
-    "invoke only the read-only tools "
-    "describe_metadata, enumerate_contrasts, list_jobs, describe_artifacts, or "
-    "query_artifact; provide typed arguments and wait for its observation before "
-    "deciding. Use answer, grounded_answer, or ask_user as terminal LoopExit actions. "
-    "Route general knowledge to answer; dataset inspection or DEG/DEM/GMA requests "
-    "to inspect_dataset, run_analysis, or propose_plan; existing Job status "
-    "or evidence questions to get_job or query_result. Do not put action-specific "
-    "For legacy structured final decisions, do not put action-specific "
-    "fields in decision.arguments: arguments is only for tool_call. For analysis "
-    "actions put candidates in decision.proposal, for example run_analysis uses "
-    "{analysis_type: 'DEG', compare_field: 'treatment', tested_level: 'salt', "
-    "reference_level: 'control', scope: {mode: 'all'}}. For get_job put the id in "
-    "decision.job_id. For query_result put job_id and a complete decision.result_query "
-    "with artifact and, when applicable, resolve_entity. AnalysisProposal values are "
-    "candidates only and must use observed dataset roles and explicit user language. "
-    "When discussing supported analyses, use fact_index.analysis_capabilities: "
-    "an analysis is runnable only when its missing-role list is empty. "
-    "When the context has exactly one in-scope Job and one artifact, a request such "
-    "as 'Show GeneA result' or 'What is the GeneB fold change?' must use query_result "
-    "directly; do not ask for clarification. For a follow-up such as 'make it shorter' "
-    "or 'correct that', use recent_messages and answer the follow-up directly. "
-    "Only pending_analysis with status=active is resumable. When it is active, "
-    "treat the latest user message as a possible answer to that analysis clarification "
-    "unless the user changes the dataset or asks an unrelated question; in the first "
-    "case return the same analysis action with a completed proposal. Pending records "
-    "with status=consumed, superseded, expired, or cancelled are historical context only and "
-    "must not trigger analysis recovery. "
-    "If tool_repetition_guidance is present, treat it as the latest tool result: do not "
-    "select tool_call; choose only answer, ask_user, or grounded_answer. "
-    "For 'List available jobs' or equivalent requests, you MUST first return "
-    "{decision: {action: 'tool_call', tool: 'list_jobs', arguments: {}}, answer: null}. "
-    "Never answer the job list from memory or context; the list_jobs observation "
-    "is the only source of truth. "
-    "If several Jobs are in context and the user asks for status without naming one, "
-    "choose get_job with job_id null so the result node can ask which Job. "
-    "A grounded_answer must cite the artifact, checksum, and row IDs from the latest "
-    "successful query observation; never invent citations or numeric values. "
-    "Never claim a dataset fact, Job, artifact, entity, or numeric result that is absent "
-    "from the bounded context. "
-    "Always respond in the same language as the user's most recent message. "
-    "When returning a legacy structured final decision, action=answer requires a "
-    "concise non-empty answer; action=ask_user requires question. "
-    "Do not decide validation, ownership, ambiguity, or "
-    "execution success."
-)
-
 _QA_SYSTEM_PROMPT = (
     "You are the OmicsPrism general QA agent. Answer general questions and use only "
     "the supplied recent messages and dataset role names. Do not infer metadata fields, "
@@ -913,13 +564,23 @@ _QA_SYSTEM_PROMPT = (
     "Use the same language as the user's latest message."
 )
 
+_ROUTER_SYSTEM_PROMPT = (
+    "Classify only the user's requested destination: qa for general knowledge or "
+    "conversation, analysis for dataset capability/planning/execution, result_qa for "
+    "owned Job status or result evidence. Use only user_message, recent_messages, "
+    "dataset_roles, has_jobs, and active_pending_analysis. Return ambiguous with low "
+    "confidence when intent is unclear. Never choose tools, parameters, or execution."
+)
+
 _ANALYSIS_SYSTEM_PROMPT = (
     "You are the OmicsPrism analysis agent. Use the bounded fact_index metadata fields, "
     "the current user_message, recent_messages, metadata levels, dataset roles, "
     "pending_analysis, and decision_ledger to propose "
+    "capability_query for capability requests, using only an optional analysis_type. "
     "analysis decisions. Infer compare_field and scope only from observed metadata and "
     "explicit user language. Use tool_call with describe_metadata or enumerate_contrasts "
-    "when the bounded facts are insufficient. Return inspect_dataset, propose_plan, or "
+    "when the bounded facts are insufficient. Return answer for a bounded read-only explanation, "
+    "capability_query, inspect_dataset, propose_plan, or "
     "run_analysis for analysis work, ask_user for a missing requirement, or reroute for "
     "a general or result question. Do not claim validation or submit a Job. Use the user's language."
 )
@@ -930,7 +591,8 @@ _RESULT_QA_SYSTEM_PROMPT = (
     "Use tool_call with list_jobs, describe_artifacts, or query_artifact when evidence is "
     "needed. Return query_result for an "
     "evidence request, get_job for Job status, grounded_answer only when evidence is "
-    "available, ask_user when a Job must be selected, or reroute for analysis or general "
+    "available, answer for bounded Job/artifact summaries, ask_user when a Job must be selected, "
+    "or reroute for analysis or general "
     "questions. Never invent artifacts, citations, or numeric values. Use the user's language."
 )
 
@@ -946,7 +608,7 @@ _ROLE_CONFIG: dict[AgentRole, dict[str, object]] = {
         "system_prompt": _ANALYSIS_SYSTEM_PROMPT,
         "output_model": AnalysisModelOutput,
         "schema_name": "analysis_model_output",
-        "schema_version": "analysis-model-output.v1",
+        "schema_version": "analysis-model-output.v2",
         "tool_names": {"describe_metadata", "enumerate_contrasts"},
     },
     AgentRole.RESULT_QA: {
@@ -955,6 +617,13 @@ _ROLE_CONFIG: dict[AgentRole, dict[str, object]] = {
         "schema_name": "result_qa_model_output",
         "schema_version": "result-qa-model-output.v1",
         "tool_names": {"list_jobs", "describe_artifacts", "query_artifact"},
+    },
+    AgentRole.ROUTER: {
+        "system_prompt": _ROUTER_SYSTEM_PROMPT,
+        "output_model": RouteClassification,
+        "schema_name": "route_classification",
+        "schema_version": "route-classification.v1",
+        "tool_names": set(),
     },
 }
 

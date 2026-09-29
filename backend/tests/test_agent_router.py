@@ -1,6 +1,17 @@
 from __future__ import annotations
 
-from backend.app.agent.graph import AgentRole, GraphState, JobRef, PendingAnalysisClarification
+from backend.app.agent.clarification_resolver import ClarificationOption, stable_option_id
+from backend.app.agent.dataset_profile import MatrixProfile
+from backend.app.agent.graph import (
+    AgentRole,
+    DatasetProfileRef,
+    GraphState,
+    JobRef,
+    PendingAnalysisClarification,
+    RouteClassification,
+    RouteTarget,
+)
+from backend.app.agent.nodes.main import route_node
 from backend.app.agent.router import route
 
 
@@ -14,7 +25,16 @@ def _state(message: str, *, pending: bool = True, jobs: bool = True) -> GraphSta
                 status="active",
                 question="Which contrast?",
                 missing=["contrast"],
-                options=["control vs salt", "salt vs control"],
+                options=[
+                    ClarificationOption(
+                        option_id=stable_option_id("control vs salt"),
+                        label="control vs salt",
+                    ),
+                    ClarificationOption(
+                        option_id=stable_option_id("salt vs control"),
+                        label="salt vs control",
+                    ),
+                ],
                 source_message="Compare treatment groups",
                 input_bundle_id="bundle-1",
             )
@@ -57,3 +77,77 @@ def test_job_continuation_bypasses_message_rules() -> None:
         update={"turn_origin": "job_continuation"}
     )
     assert route(state) is AgentRole.RESULT_QA
+
+
+def test_capability_questions_route_to_analysis_without_keyword_analysis_request() -> None:
+    assert route(_state("这两个数据能做什么", pending=False, jobs=False)) is AgentRole.ANALYSIS
+    assert route(_state("可以做差异分析吗", pending=False, jobs=False)) is AgentRole.ANALYSIS
+
+
+def test_vague_dataset_request_uses_no_tool_router_classifier() -> None:
+    state = _state("帮我看看这些数据", pending=False, jobs=False).model_copy(update={
+        "dataset_profiles": [DatasetProfileRef(
+            dataset_id="counts-1",
+            owner_id="user-router",
+            filename="counts.csv",
+            checksum="sha256:" + "a" * 64,
+            profile=MatrixProfile(
+                role="counts",
+                shape=(2, 2),
+                sample_ids=["s1", "s2"],
+                feature_type="gene",
+                feature_id_examples=["g1"],
+                numeric_type="integer_counts",
+                has_negative=False,
+                missing_rate=0,
+            ),
+        )],
+    })
+
+    class _Classifier:
+        def __call__(self, context, *, role):
+            assert role is AgentRole.ROUTER
+            assert context.dataset_roles == ["counts"]
+            return RouteClassification(target="analysis", confidence=0.9)
+
+    result = route_node(state, _Classifier())
+
+    assert result["route_decision"].target is RouteTarget.ANALYSIS
+    assert result["route_decision"].source == "classifier"
+    assert result["visited_roles"] == [AgentRole.ANALYSIS]
+
+
+def test_low_confidence_route_classification_is_terminal_ambiguity() -> None:
+    state = _state("帮我看看这些数据", pending=False, jobs=False).model_copy(update={
+        "dataset_profiles": [DatasetProfileRef(
+            dataset_id="counts-1",
+            owner_id="user-router",
+            filename="counts.csv",
+            checksum="sha256:" + "a" * 64,
+            profile=MatrixProfile(
+                role="counts",
+                shape=(2, 2),
+                sample_ids=["s1", "s2"],
+                feature_type="gene",
+                feature_id_examples=["g1"],
+                numeric_type="integer_counts",
+                has_negative=False,
+                missing_rate=0,
+            ),
+        )],
+    })
+
+    class _Classifier:
+        def __call__(self, _context, *, role):
+            return RouteClassification(target="analysis", confidence=0.2)
+
+    result = route_node(state, _Classifier())
+
+    assert result["outcome"] == "unresolved"
+    assert result["failure_code"] == "route_ambiguous"
+
+
+def test_explicitly_unsupported_domain_routes_to_unsupported_target() -> None:
+    state = _state("请做单细胞分析", pending=False, jobs=False)
+
+    assert route(state) is RouteTarget.UNSUPPORTED

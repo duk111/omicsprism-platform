@@ -77,7 +77,7 @@ def _state() -> GraphState:
 
 
 def test_context_assembler_exposes_bounded_facts_and_decisions() -> None:
-    context = ContextAssembler().assemble(_state())
+    context = ContextAssembler().assemble_control(_state())
 
     assert context.fact_index.metadata_fields == ["line", "timepoint", "treatment"]
     assert context.fact_index.metadata_levels["line"] == {"WT": 2, "mutant": 2}
@@ -118,7 +118,7 @@ def test_context_assembler_builds_narrow_agent_projections() -> None:
     qa = assembler.assemble_for_qa(state)
     analysis = assembler.assemble_for_analysis(state)
     result_qa = assembler.assemble_for_result_qa(state)
-    main = assembler.assemble(state)
+    main = assembler.assemble_control(state)
 
     assert qa.fact_index.dataset_roles == ["metadata", "counts"]
     qa_payload = qa.model_dump(mode="json")
@@ -153,7 +153,7 @@ def test_context_assembler_builds_narrow_agent_projections() -> None:
 
 
 def test_context_assembler_limits_working_set_and_marks_truncation() -> None:
-    context = ContextAssembler().assemble(_state())
+    context = ContextAssembler().assemble_control(_state())
 
     assert len(context.working_set.items) <= 3
     assert context.working_set.truncated
@@ -170,7 +170,7 @@ def test_context_assembler_does_not_accept_unbounded_payloads() -> None:
         conversation_summary="x" * 5000,
     )
 
-    context = ContextAssembler().assemble(state)
+    context = ContextAssembler().assemble_control(state)
 
     assert len(context.conversation_summary or "") == 1200
     assert context.fact_index.metadata_fields == []
@@ -190,7 +190,7 @@ def test_context_assembler_truncates_large_metadata_index() -> None:
         recent_jobs=[],
     )
 
-    context = ContextAssembler().assemble(state)
+    context = ContextAssembler().assemble_control(state)
 
     assert len(context.fact_index.metadata_fields) == 20
     assert len(context.fact_index.metadata_levels) == 20

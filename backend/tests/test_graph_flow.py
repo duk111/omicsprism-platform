@@ -7,7 +7,7 @@ from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.types import Command
 
 from backend.app.agent.dataset_profile import build_dataset_profiles
-from backend.app.agent.context import MainModelContext
+from backend.app.agent.context import AgentControlContext
 from backend.app.agent.graph import (
     AnalysisExecutionRequest,
     AgentDecision,
@@ -17,7 +17,7 @@ from backend.app.agent.graph import (
     JobLookupRequest,
     JobRef,
     JobSummary,
-    MainModelOutput,
+    AgentLoopOutput,
     QaModelOutput,
     AnalysisModelOutput,
     ResultQaModelOutput,
@@ -54,17 +54,17 @@ class ScriptedMainModel:
         output = self.outputs.pop(0)
         if isinstance(output, Exception):
             raise output
-        if isinstance(output, MainModelOutput):
+        if isinstance(output, AgentLoopOutput):
             decision = output.decision.model_dump(mode="python", exclude_none=True)
             if role is AgentRole.QA:
-                allowed = {"action", "question"}
+                allowed = {"action", "question", "reroute_to"}
                 payload = {"decision": {k: v for k, v in decision.items() if k in allowed}, "answer": output.answer}
                 return QaModelOutput.model_validate(payload)
             if role is AgentRole.ANALYSIS:
-                allowed = {"action", "analysis_type", "proposal", "question"}
+                allowed = {"action", "analysis_type", "capability_query", "proposal", "question", "reroute_to", "tool", "arguments"}
                 payload = {"decision": {k: v for k, v in decision.items() if k in allowed}, "answer": output.answer}
                 return AnalysisModelOutput.model_validate(payload)
-            allowed = {"action", "job_id", "result_query", "grounded_answer", "question"}
+            allowed = {"action", "job_id", "result_query", "grounded_answer", "question", "reroute_to", "tool", "arguments"}
             payload = {"decision": {k: v for k, v in decision.items() if k in allowed}, "answer": output.answer}
             return ResultQaModelOutput.model_validate(payload)
         return output
@@ -192,7 +192,7 @@ def _run(model: ScriptedMainModel, state: GraphState | None = None) -> GraphStat
 
 
 def test_general_knowledge_routes_to_direct_answer() -> None:
-    model = ScriptedMainModel([MainModelOutput(
+    model = ScriptedMainModel([AgentLoopOutput(
         decision=AgentDecision(action="answer", decision_note="general knowledge"),
         answer="Differential expression compares feature abundance between conditions.",
     )])
@@ -235,7 +235,7 @@ def test_schema_failure_retries_once_then_asks_user() -> None:
 def test_propose_plan_routes_through_analysis_validation() -> None:
     refs = _dataset_refs()
     loader = RecordingDatasetLoader(refs)
-    model = ScriptedMainModel([MainModelOutput(
+    model = ScriptedMainModel([AgentLoopOutput(
         decision=AgentDecision(
             action="propose_plan",
             analysis_type="DEG",
@@ -271,7 +271,7 @@ def test_propose_plan_routes_through_analysis_validation() -> None:
 def test_model_error_can_recover_on_the_single_retry() -> None:
     model = ScriptedMainModel([
         RuntimeError("model unavailable"),
-        MainModelOutput(
+        AgentLoopOutput(
             decision=AgentDecision(action="answer"),
             answer="Recovered answer.",
         ),
@@ -310,7 +310,7 @@ def test_result_qa_queries_evidence_and_returns_verified_citations() -> None:
         sort=None,
         error_code=None,
     )
-    model = ScriptedMainModel([MainModelOutput(
+    model = ScriptedMainModel([AgentLoopOutput(
         decision=AgentDecision(
             action="query_result",
             job_id="job-7",
@@ -359,7 +359,7 @@ def test_get_job_uses_current_job_and_returns_compact_summary() -> None:
     )
     reader = _reader(summary)
     querier = _querier()
-    model = ScriptedMainModel([MainModelOutput(
+    model = ScriptedMainModel([AgentLoopOutput(
         decision=AgentDecision(action="get_job"),
     )])
 
@@ -382,7 +382,7 @@ def test_result_qa_uses_the_only_recent_job_but_does_not_guess_among_several() -
         job_id="job-only", owner_id="user-1", status="succeeded"
     )
     single_reader = _reader(only)
-    model = ScriptedMainModel([MainModelOutput(
+    model = ScriptedMainModel([AgentLoopOutput(
         decision=AgentDecision(action="get_job"),
     )])
     single = GraphState.model_validate(build_agent_graph(
@@ -396,7 +396,7 @@ def test_result_qa_uses_the_only_recent_job_but_does_not_guess_among_several() -
 
     ambiguous_reader = _reader()
     ambiguous = GraphState.model_validate(build_agent_graph(
-        ScriptedMainModel([MainModelOutput(
+        ScriptedMainModel([AgentLoopOutput(
             decision=AgentDecision(action="get_job"),
         )]),
         lambda _request: [],
@@ -420,7 +420,7 @@ def test_result_qa_rejects_cross_user_job_reader_response() -> None:
     reader = _reader(JobSummary(
         job_id="job-7", owner_id="user-2", status="succeeded"
     ))
-    model = ScriptedMainModel([MainModelOutput(
+    model = ScriptedMainModel([AgentLoopOutput(
         decision=AgentDecision(action="get_job", job_id="job-7"),
     )])
 
@@ -488,7 +488,7 @@ def test_graph_has_role_router_and_semantic_nodes() -> None:
 
 
 def test_role_context_excludes_owner_and_dataset_payloads() -> None:
-    model = ScriptedMainModel([MainModelOutput(
+    model = ScriptedMainModel([AgentLoopOutput(
         decision=AgentDecision(action="answer"),
         answer="A bounded answer.",
     )])
@@ -515,7 +515,7 @@ def test_exhausted_step_budget_does_not_call_model() -> None:
 
 
 def _analysis_model(proposal: AnalysisProposal) -> ScriptedMainModel:
-    return ScriptedMainModel([MainModelOutput(
+    return ScriptedMainModel([AgentLoopOutput(
         decision=AgentDecision(
             action="run_analysis",
             analysis_type="DEG",
@@ -655,12 +655,12 @@ def test_default_checkpointer_isolates_interrupted_threads() -> None:
     refs = _dataset_refs()
     proposal = AnalysisProposal(analysis_type="DEG", compare_field="condition", scope=ScopeSpec(mode="all"))
     model = ScriptedMainModel([
-        MainModelOutput(decision=AgentDecision(
+        AgentLoopOutput(decision=AgentDecision(
             action="run_analysis",
             analysis_type="DEG",
             proposal=proposal,
         )),
-        MainModelOutput(decision=AgentDecision(
+        AgentLoopOutput(decision=AgentDecision(
             action="run_analysis",
             analysis_type="DEG",
             proposal=proposal,
@@ -794,10 +794,10 @@ def test_explicit_checkpointer_resumes_confirmation_modify() -> None:
         scope=ScopeSpec(mode="all"),
     )
     model = ScriptedMainModel([
-        MainModelOutput(decision=AgentDecision(
+        AgentLoopOutput(decision=AgentDecision(
             action="run_analysis", analysis_type="DEG", proposal=initial,
         )),
-        MainModelOutput(decision=AgentDecision(
+        AgentLoopOutput(decision=AgentDecision(
             action="run_analysis", analysis_type="DEG", proposal=revised,
         )),
     ])
@@ -849,10 +849,10 @@ def test_confirmation_message_can_be_answered_without_dropping_pending_plan() ->
         scope=ScopeSpec(mode="all"),
     )
     model = ScriptedMainModel([
-        MainModelOutput(decision=AgentDecision(
+        AgentLoopOutput(decision=AgentDecision(
             action="run_analysis", analysis_type="DEG", proposal=proposal,
         )),
-        MainModelOutput(
+        AgentLoopOutput(
             decision=AgentDecision(action="answer"),
             answer="Control is the reference group for the requested contrast.",
         ),
@@ -899,10 +899,10 @@ def test_confirmation_message_merges_local_parameter_revision_and_tracks_provena
         requested_params={"padj_cutoff": 0.01},
     )
     model = ScriptedMainModel([
-        MainModelOutput(decision=AgentDecision(
+        AgentLoopOutput(decision=AgentDecision(
             action="run_analysis", analysis_type="DEG", proposal=initial,
         )),
-        MainModelOutput(decision=AgentDecision(
+        AgentLoopOutput(decision=AgentDecision(
             action="run_analysis", analysis_type="DEG", proposal=revised,
         )),
     ])
@@ -954,10 +954,10 @@ def test_stale_confirmation_plan_version_is_rejected_without_creating_a_job() ->
         scope=ScopeSpec(mode="all"),
     )
     model = ScriptedMainModel([
-        MainModelOutput(decision=AgentDecision(
+        AgentLoopOutput(decision=AgentDecision(
             action="run_analysis", analysis_type="DEG", proposal=first,
         )),
-        MainModelOutput(decision=AgentDecision(
+        AgentLoopOutput(decision=AgentDecision(
             action="run_analysis", analysis_type="DEG", proposal=second,
         )),
     ])

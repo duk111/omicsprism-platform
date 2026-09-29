@@ -3,9 +3,11 @@ from __future__ import annotations
 import pytest
 
 from backend.app.agent.graph import (
+    AgentRole,
     AgentDecision,
+    AnalysisDecision,
+    AnalysisModelOutput,
     GraphState,
-    MainModelOutput,
     NodeCapabilityError,
     ResultQuerySpec,
     build_agent_graph,
@@ -33,10 +35,11 @@ class RecordingSubmitter:
 
 
 class ScriptedModel:
-    def __call__(self, _context: object) -> MainModelOutput:
-        return MainModelOutput(
-            decision=AgentDecision(action="run_analysis", analysis_type="DEG")
-        )
+    def __call__(self, _context: object, *, role: AgentRole) -> AnalysisModelOutput:
+        assert role is AgentRole.ANALYSIS
+        return AnalysisModelOutput(decision=AnalysisDecision(
+            action="run_analysis", analysis_type="DEG"
+        ))
 
 
 def _state(**updates: object) -> GraphState:

@@ -16,7 +16,7 @@ from backend.app.agent.eval_v2 import (
     load_agent_eval_v2_cases,
     run_ci_agent_evaluation,
 )
-from backend.app.agent.graph import MainModelOutput
+from backend.app.agent.graph import AgentRole, QaDecision, QaModelOutput
 from scripts.run_agent_eval_v2 import main
 
 
@@ -99,10 +99,11 @@ def test_eval_multiturn_live_adapter_receives_recent_user_and_assistant_messages
         def __init__(self) -> None:
             self.contexts = []
 
-        def __call__(self, context):
+        def __call__(self, context, *, role: AgentRole):
             self.contexts.append(context)
-            return MainModelOutput.model_validate({
-                "decision": {"action": "answer"},
+            assert role is AgentRole.QA
+            return QaModelOutput.model_validate({
+                "decision": QaDecision(action="answer"),
                 "answer": "A concise answer.",
             })
 

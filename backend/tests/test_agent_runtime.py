@@ -18,7 +18,7 @@ from backend.app.agent.graph import (
     JobLookupRequest,
     JobRef,
     JobSummary,
-    MainModelOutput,
+    AgentLoopOutput,
     QaModelOutput,
     AnalysisModelOutput,
     ResultQaModelOutput,
@@ -28,21 +28,21 @@ from backend.app.agent.graph import (
 )
 
 
-def _role_output(value: MainModelOutput, role: AgentRole) -> object:
+def _role_output(value: AgentLoopOutput, role: AgentRole) -> object:
     decision = value.decision.model_dump(mode="python", exclude_none=True)
     if role is AgentRole.QA:
-        allowed = {"action", "question"}
+        allowed = {"action", "question", "reroute_to"}
         return QaModelOutput.model_validate({
             "decision": {k: v for k, v in decision.items() if k in allowed},
             "answer": value.answer,
         })
     if role is AgentRole.ANALYSIS:
-        allowed = {"action", "analysis_type", "proposal", "question"}
+        allowed = {"action", "analysis_type", "capability_query", "proposal", "question", "reroute_to", "tool", "arguments"}
         return AnalysisModelOutput.model_validate({
             "decision": {k: v for k, v in decision.items() if k in allowed},
             "answer": value.answer,
         })
-    allowed = {"action", "job_id", "result_query", "grounded_answer", "question"}
+    allowed = {"action", "job_id", "result_query", "grounded_answer", "question", "reroute_to", "tool", "arguments"}
     return ResultQaModelOutput.model_validate({
         "decision": {k: v for k, v in decision.items() if k in allowed},
         "answer": value.answer,
@@ -176,7 +176,9 @@ def _context(
         request_hash="sha256:request",
         status="queued",
         attempt=0,
-        error_code=None,
+        outcome=None,
+        failure_code=None,
+        attempted_roles=[],
         created_at=now,
         updated_at=now,
         started_at=None,
@@ -410,13 +412,13 @@ def test_successful_continuation_reads_the_completed_job_and_returns_grounded_ev
         def __call__(self, context, *, role: AgentRole):
             self.contexts.append(context)
             if getattr(context, "job_continuation", None) is None:
-                return _role_output(MainModelOutput(
+                return _role_output(AgentLoopOutput(
                     decision=AgentDecision(action="answer"),
                     answer="Analysis job submitted.",
                 ), role)
             assert context.job_continuation.job_id == "job-completed"
             assert context.job_artifacts == {"job-completed": [artifact]}
-            return _role_output(MainModelOutput(
+            return _role_output(AgentLoopOutput(
                 decision=AgentDecision(
                     action="query_result",
                     result_query=ResultQuerySpec(
@@ -689,7 +691,7 @@ def test_runtime_runs_consecutive_turns_with_a_real_langgraph_checkpoint() -> No
 
         def __call__(self, _context, *, role: AgentRole):
             self.calls += 1
-            return _role_output(MainModelOutput(
+            return _role_output(AgentLoopOutput(
                 decision=AgentDecision(action="answer"),
                 answer=f"answer {self.calls}",
             ), role)
@@ -753,7 +755,7 @@ def test_runtime_merges_new_input_and_retains_only_durable_context() -> None:
 
         def __call__(self, context, *, role: AgentRole):
             self.contexts.append(context)
-            return _role_output(MainModelOutput(
+            return _role_output(AgentLoopOutput(
                 decision=AgentDecision(action="answer"),
                 answer=f"answer {len(self.contexts)}",
             ), role)
@@ -945,10 +947,12 @@ def test_runtime_persists_model_boundary_fallback_as_assistant_message() -> None
         thread_id=turn.thread_id,
         user_id=turn.user_id,
     )
-    assert completed.status.value == "completed"
+    assert completed.status.value == "failed"
+    assert completed.failure_code == "model_unavailable"
+    assert completed.outcome == "failed"
     assert model.calls == 2
     assert len(messages) == 1
-    assert messages[0].blocks[0].text
+    assert messages[0].blocks[0].code == "model_unavailable"
 
 
 def test_runtime_retries_after_process_crash_from_same_checkpoint() -> None:
@@ -1024,7 +1028,7 @@ def test_runtime_persists_visible_error_message_for_failed_turn() -> None:
     assert len(messages) == 1
     block = messages[0].blocks[0]
     assert isinstance(block, AgentErrorBlock)
-    assert block.code == "agent_runtime_failed"
+    assert block.code == "tool_execution_failed"
     assert block.retryable is True
 
 
@@ -1074,7 +1078,8 @@ def test_runtime_timeout_marks_non_retryable_and_moves_item_to_dlq() -> None:
 
     failed = context.product_store.get_turn(turn_id=turn.turn_id, user_id=turn.user_id)
     assert failed.status is AgentTurnStatus.FAILED
-    assert failed.error_code == "agent_turn_timeout"
+    assert failed.failure_code == "model_unavailable"
+    assert failed.outcome == "failed"
     assert queue.processing == []
     assert len(queue.dead_letters) == 1
     message = context.product_store.list_messages(
@@ -1103,7 +1108,6 @@ def test_runtime_cooperative_cancel_wins_before_finalize() -> None:
         turn_id=turn.turn_id,
         user_id=turn.user_id,
         now=datetime.now(timezone.utc),
-        error_code="cancelled_by_user",
     )
     worker.join(timeout=1)
 
@@ -1165,6 +1169,6 @@ def test_runtime_exhausted_transient_retry_isolated_in_dlq() -> None:
 
     failed = context.product_store.get_turn(turn_id=turn.turn_id, user_id=turn.user_id)
     assert failed.status is AgentTurnStatus.FAILED
-    assert failed.error_code == "agent_runtime_failed"
+    assert failed.failure_code == "tool_execution_failed"
     assert queue.processing == []
     assert len(queue.dead_letters) == 1

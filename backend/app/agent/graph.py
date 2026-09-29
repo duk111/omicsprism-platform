@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from copy import deepcopy
 from collections.abc import Callable
 from datetime import datetime
 from enum import Enum
@@ -8,7 +7,8 @@ from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from .clarification_resolver import ClarificationOption, stable_option_id
+from .clarification_resolver import ClarificationOption
+from ..analysis_specs import CapabilityReport
 from .dataset_profile import DatasetProfile
 from .param_resolver import (
     AnalysisParams,
@@ -33,61 +33,10 @@ from .context import (
     ContextAssembler,
     DecisionLedger,
     FactIndex,
-    MainModelContext,
+    AgentControlContext,
     RecentMessages,
     WorkingSet,
 )
-
-
-def _main_output_schema(schema: dict[str, Any]) -> None:
-    """Encode the cross-field answer requirement for structured model output."""
-
-    actions = [
-        "inspect_dataset",
-        "run_analysis",
-        "query_result",
-        "get_job",
-        "ask_user",
-        "tool_call",
-        "grounded_answer",
-        "propose_plan",
-        "reroute",
-    ]
-    decision_definition = deepcopy(schema["$defs"]["AgentDecision"])
-    answer_decision = {
-        "allOf": [
-            decision_definition,
-            {
-                "properties": {"action": {"const": "answer"}},
-                "required": ["action"],
-            },
-        ]
-    }
-    non_answer_decision = {
-        "allOf": [
-            decision_definition,
-            {
-                "properties": {"action": {"enum": actions}},
-                "required": ["action"],
-            },
-        ]
-    }
-    schema["oneOf"] = [
-        {
-            "properties": {
-                "decision": answer_decision,
-                "answer": {"type": "string", "minLength": 1, "maxLength": 1200},
-            },
-            "required": ["decision", "answer"],
-        },
-        {
-            "properties": {
-                "decision": non_answer_decision,
-                "answer": {"type": "null"},
-            },
-            "required": ["decision", "answer"],
-        },
-    ]
 
 
 AnalysisTypeName = Literal["DEG", "DEM", "GMA"]
@@ -113,6 +62,32 @@ class AgentRole(str, Enum):
     QA = "qa"
     ANALYSIS = "analysis"
     RESULT_QA = "result_qa"
+    ROUTER = "router"
+
+
+class RouteTarget(str, Enum):
+    QA = "qa"
+    ANALYSIS = "analysis"
+    RESULT_QA = "result_qa"
+    AMBIGUOUS = "ambiguous"
+    UNSUPPORTED = "unsupported"
+
+
+class RouteDecision(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    target: RouteTarget
+    source: Literal["state", "rule", "classifier", "reroute"]
+    reason: str = Field(default="", max_length=240)
+
+
+class RouteClassification(BaseModel):
+    """No-tool classifier output for only the uncertain route cases."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    target: Literal["qa", "analysis", "result_qa", "ambiguous"]
+    confidence: float = Field(ge=0, le=1)
 
 
 class QaDecision(BaseModel):
@@ -133,12 +108,22 @@ class QaDecision(BaseModel):
         return self
 
 
+class CapabilityQueryInput(BaseModel):
+    """Typed, deterministic capability query requested by Analysis role."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    analysis_type: AnalysisTypeName | None = None
+
+
 class AnalysisDecision(BaseModel):
     """Narrow action contract for the analysis agent."""
 
     model_config = ConfigDict(extra="forbid")
 
     action: Literal[
+        "answer",
+        "capability_query",
         "inspect_dataset",
         "propose_plan",
         "run_analysis",
@@ -147,6 +132,7 @@ class AnalysisDecision(BaseModel):
         "reroute",
     ]
     analysis_type: AnalysisTypeName | None = None
+    capability_query: CapabilityQueryInput | None = None
     proposal: AnalysisProposal | None = None
     question: str | None = Field(default=None, max_length=1000)
     reroute_to: Literal["qa", "analysis", "result_qa"] | None = None
@@ -155,13 +141,30 @@ class AnalysisDecision(BaseModel):
 
     @model_validator(mode="after")
     def _reroute_target_matches_action(self) -> "AnalysisDecision":
+        if self.action == "ask_user" and not self.question:
+            raise ValueError("ask_user action requires a question")
+        if self.action == "capability_query" and self.capability_query is None:
+            raise ValueError("capability_query action requires capability_query input")
+        if self.action != "capability_query" and self.capability_query is not None:
+            raise ValueError("capability_query is only valid for capability_query action")
+        if self.action == "capability_query" and any((
+            self.analysis_type is not None,
+            self.proposal is not None,
+            self.question is not None,
+            self.tool is not None,
+            bool(self.arguments),
+        )):
+            raise ValueError("capability_query cannot include analysis, question, or tool fields")
         if self.action == "reroute" and self.reroute_to not in {"qa", "result_qa"}:
             raise ValueError("analysis reroute must target qa or result_qa")
         if self.action == "tool_call" and self.tool not in {
             ToolName.DESCRIBE_METADATA,
             ToolName.ENUMERATE_CONTRASTS,
+            ToolName.LIST_JOBS,
+            ToolName.DESCRIBE_ARTIFACTS,
+            ToolName.QUERY_ARTIFACT,
         }:
-            raise ValueError("analysis tool_call requires an analysis read-only tool")
+            raise ValueError("tool_call requires a read-only tool")
         if self.action == "tool_call" and self.reroute_to is not None:
             raise ValueError("tool_call cannot include reroute_to")
         if self.action != "tool_call" and (self.tool is not None or self.arguments):
@@ -177,6 +180,7 @@ class ResultDecision(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     action: Literal[
+        "answer",
         "query_result",
         "get_job",
         "grounded_answer",
@@ -194,14 +198,18 @@ class ResultDecision(BaseModel):
 
     @model_validator(mode="after")
     def _reroute_target_matches_action(self) -> "ResultDecision":
+        if self.action == "ask_user" and not self.question:
+            raise ValueError("ask_user action requires a question")
         if self.action == "reroute" and self.reroute_to not in {"qa", "analysis"}:
             raise ValueError("result QA reroute must target qa or analysis")
         if self.action == "tool_call" and self.tool not in {
+            ToolName.DESCRIBE_METADATA,
+            ToolName.ENUMERATE_CONTRASTS,
             ToolName.LIST_JOBS,
             ToolName.DESCRIBE_ARTIFACTS,
             ToolName.QUERY_ARTIFACT,
         }:
-            raise ValueError("result QA tool_call requires a result read-only tool")
+            raise ValueError("tool_call requires a read-only tool")
         if self.action == "tool_call" and self.reroute_to is not None:
             raise ValueError("tool_call cannot include reroute_to")
         if self.action != "tool_call" and (self.tool is not None or self.arguments):
@@ -236,6 +244,14 @@ class AnalysisModelOutput(BaseModel):
     decision: AnalysisDecision
     answer: str | None = Field(default=None, min_length=1, max_length=1200)
 
+    @model_validator(mode="after")
+    def _answer_matches_action(self) -> "AnalysisModelOutput":
+        if self.decision.action == "answer" and self.answer is None:
+            raise ValueError("answer action requires answer text")
+        if self.decision.action != "answer" and self.answer is not None:
+            raise ValueError("answer text is only valid for answer action")
+        return self
+
 
 class ResultQaModelOutput(BaseModel):
     """Structured response contract for the result QA role."""
@@ -244,6 +260,14 @@ class ResultQaModelOutput(BaseModel):
 
     decision: ResultDecision
     answer: str | None = Field(default=None, min_length=1, max_length=1200)
+
+    @model_validator(mode="after")
+    def _answer_matches_action(self) -> "ResultQaModelOutput":
+        if self.decision.action == "answer" and self.answer is None:
+            raise ValueError("answer action requires answer text")
+        if self.decision.action != "answer" and self.answer is not None:
+            raise ValueError("answer text is only valid for answer action")
+        return self
 
 
 class StepBudget(BaseModel):
@@ -483,32 +507,6 @@ class PendingAnalysisClarification(BaseModel):
     source_action: Literal["inspect_dataset", "propose_plan", "run_analysis"] = "propose_plan"
     proposal: AnalysisProposal | None = None
 
-    @model_validator(mode="before")
-    @classmethod
-    def _normalize_legacy_options(cls, value: object) -> object:
-        """Convert pre-Step5 string options into stable option records."""
-
-        if not isinstance(value, dict) or not isinstance(value.get("options"), list):
-            return value
-        normalized: list[object] = []
-        for item in value["options"]:
-            if isinstance(item, str):
-                normalized.append({
-                    "option_id": stable_option_id(item),
-                    "label": item,
-                })
-            elif isinstance(item, dict) and "option_id" not in item and "id" in item:
-                normalized.append({
-                    **item,
-                    "option_id": item["id"],
-                })
-            else:
-                normalized.append(item)
-        result = dict(value)
-        result["options"] = normalized
-        return result
-
-
 class AgentStreamEvent(BaseModel):
     """Public SSE event carrying durable turn, message, or HITL state."""
 
@@ -566,6 +564,7 @@ class AgentDecision(BaseModel):
 
     action: Literal[
         "answer",
+        "capability_query",
         "inspect_dataset",
         "run_analysis",
         "query_result",
@@ -577,6 +576,7 @@ class AgentDecision(BaseModel):
         "reroute",
     ]
     analysis_type: AnalysisTypeName | None = None
+    capability_query: CapabilityQueryInput | None = None
     proposal: AnalysisProposal | None = None
     job_id: str | None = Field(default=None, max_length=200)
     result_query: ResultQuerySpec | None = None
@@ -589,6 +589,22 @@ class AgentDecision(BaseModel):
 
     @model_validator(mode="after")
     def _result_query_matches_action(self) -> "AgentDecision":
+        if self.action == "capability_query" and self.capability_query is None:
+            raise ValueError("capability_query action requires capability_query input")
+        if self.action != "capability_query" and self.capability_query is not None:
+            raise ValueError("capability_query is only valid for capability_query action")
+        if self.action == "capability_query" and any((
+            self.analysis_type is not None,
+            self.proposal is not None,
+            self.job_id is not None,
+            self.result_query is not None,
+            self.question is not None,
+            self.grounded_answer is not None,
+            self.reroute_to is not None,
+            self.tool is not None,
+            bool(self.arguments),
+        )):
+            raise ValueError("capability_query cannot include execution, result, or tool fields")
         if self.action == "query_result" and self.result_query is None:
             raise ValueError("query_result action requires result_query")
         if self.action != "query_result" and self.result_query is not None:
@@ -639,7 +655,7 @@ class ToolObservation(BaseModel):
     retry_count: int = Field(default=0, ge=0, le=1)
 
 
-class MainModelOutput(BaseModel):
+class AgentLoopOutput(BaseModel):
     """Validated model response for Main routing and general answers."""
 
     model_config = ConfigDict(extra="forbid")
@@ -647,14 +663,8 @@ class MainModelOutput(BaseModel):
     decision: AgentDecision
     answer: str | None = Field(default=None, min_length=1, max_length=1200)
 
-    @classmethod
-    def model_json_schema(cls, *args: Any, **kwargs: Any) -> dict[str, Any]:
-        schema = super().model_json_schema(*args, **kwargs)
-        _main_output_schema(schema)
-        return schema
-
     @model_validator(mode="after")
-    def _answer_matches_action(self) -> "MainModelOutput":
+    def _answer_matches_action(self) -> "AgentLoopOutput":
         if self.decision.action == "answer" and self.answer is None:
             raise ValueError("answer action requires answer text")
         if self.decision.action != "answer" and self.answer is not None:
@@ -664,7 +674,7 @@ class MainModelOutput(BaseModel):
         return self
 
 
-MainDecisionModel = Callable[[MainModelContext], object]
+MainDecisionModel = Callable[..., object]
 ToolExecutor = Callable[[ToolCallRequest, "GraphState"], object]
 
 
@@ -728,7 +738,8 @@ class GraphState(BaseModel):
         context_version="memory.v1:empty"
     ))
     active_input_bundle_id: str | None = Field(default=None, min_length=1, max_length=200)
-    reroute_count: int = Field(default=0, ge=0, le=2)
+    visited_roles: list[AgentRole] = Field(default_factory=list, max_length=3)
+    route_decision: RouteDecision | None = None
     dataset_profiles: list[DatasetProfileRef] = Field(default_factory=list, max_length=6)
     current_job: JobRef | None = None
     recent_jobs: list[JobRef] = Field(default_factory=list, max_length=20)
@@ -742,6 +753,11 @@ class GraphState(BaseModel):
     job_summary: JobSummary | None = None
     job_continuation: JobContinuationFact | None = None
     grounded_answer: GroundedAnswer | None = None
+    capability_report: CapabilityReport | None = None
+    outcome: Literal[
+        "completed", "needs_input", "unsupported", "unresolved", "failed"
+    ] | None = None
+    failure_code: str | None = Field(default=None, max_length=100)
     pending_plan: PendingPlan | None = None
     pending_analysis: PendingAnalysisClarification | None = None
     confirmed_params: AnalysisParams | None = None
@@ -751,6 +767,12 @@ class GraphState(BaseModel):
 
     @model_validator(mode="after")
     def _references_belong_to_user(self) -> "GraphState":
+        if len(self.visited_roles) != len(set(self.visited_roles)):
+            raise ValueError("visited_roles must not contain duplicates")
+        if self.outcome in {"needs_input", "unsupported", "unresolved", "failed"} and not self.failure_code:
+            raise ValueError("non-success outcomes require failure_code")
+        if self.outcome in {None, "completed"} and self.failure_code is not None:
+            raise ValueError("failure_code is only valid for non-success outcomes")
         references = [*self.dataset_profiles, *self.recent_jobs]
         if self.current_job is not None:
             references.append(self.current_job)
@@ -790,7 +812,7 @@ def build_agent_graph(
     from .nodes.result_qa_agent import result_qa_agent_node
 
     builder = StateGraph(GraphState)
-    builder.add_node("route", route_node)
+    builder.add_node("route", lambda state: route_node(state, model))
     builder.add_node("qa_agent", qa_agent_node(model, tool_executor, trace_recorder))
     builder.add_node(
         "analysis_agent",
@@ -815,7 +837,12 @@ def build_agent_graph(
     builder.add_conditional_edges(
         "route",
         route_after_route,
-        {"qa": "qa_agent", "analysis": "analysis_agent", "result_qa": "result_qa_agent"},
+        {
+            "qa": "qa_agent",
+            "analysis": "analysis_agent",
+            "result_qa": "result_qa_agent",
+            "end": END,
+        },
     )
     builder.add_conditional_edges(
         "qa_agent",

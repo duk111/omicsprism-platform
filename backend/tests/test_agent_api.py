@@ -337,7 +337,9 @@ def test_stream_projection_contains_only_public_turn_and_message_dtos() -> None:
         request_hash="sha256:secret",
         status="completed",
         attempt=1,
-        error_code=None,
+        outcome="completed",
+        failure_code=None,
+        attempted_roles=["qa"],
         created_at=now,
         updated_at=now,
         started_at=now,
@@ -588,6 +590,9 @@ def test_openapi_exposes_agent_contract_without_api_model_dependency() -> None:
     assert all("eval-candidates" not in path for path in schema["paths"])
     request_properties = schema["components"]["schemas"]["AgentTurnCreateRequest"]["properties"]
     assert "user_id" not in request_properties
+    turn_properties = schema["components"]["schemas"]["AgentTurnResponse"]["properties"]
+    assert {"outcome", "failure_code", "attempted_roles"} <= set(turn_properties)
+    assert "error_code" not in turn_properties
     generated = Path("frontend/src/api-types.ts").read_text(encoding="utf-8")
     assert "export interface AgentStreamEvent" in generated
     assert "blocks: (AgentTextBlock | AgentAdvisoryBlock | AgentInputSummaryBlock" in generated

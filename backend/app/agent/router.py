@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
-from .graph import AgentRole, GraphState
+from .graph import AgentRole, GraphState, RouteTarget
 
 
-def route(state: GraphState) -> AgentRole:
-    """Select an agent role using bounded, deterministic intent rules."""
+def route(state: GraphState) -> AgentRole | RouteTarget | None:
+    """Return a high-confidence deterministic role, or defer to the classifier."""
 
     message = state.user_message
     has_jobs = bool(state.current_job or state.recent_jobs)
@@ -29,8 +29,17 @@ def route(state: GraphState) -> AgentRole:
             return AgentRole.ANALYSIS
         return AgentRole.ANALYSIS
 
+    if _is_explicit_jobs_listing(message):
+        return AgentRole.RESULT_QA
+
     if has_jobs and _is_explicit_result_request(message):
         return AgentRole.RESULT_QA
+
+    if _is_capability_request(message):
+        return AgentRole.ANALYSIS
+
+    if _is_explicitly_unsupported(message):
+        return RouteTarget.UNSUPPORTED
 
     if _is_explicit_analysis_request(message) or _is_analysis_followup(message):
         return AgentRole.ANALYSIS
@@ -38,7 +47,28 @@ def route(state: GraphState) -> AgentRole:
     if _is_new_dataset_message(message):
         return AgentRole.ANALYSIS
 
+    if _needs_semantic_classification(message, state):
+        return None
+
     return AgentRole.QA
+
+
+def _is_explicitly_unsupported(message: str) -> bool:
+    text = message.casefold()
+    return any(marker in text for marker in (
+        "single-cell", "single cell", "空间转录组", "spatial transcriptomics",
+        "蛋白质结构", "protein structure", "image segmentation", "图像分割",
+    ))
+
+
+def _needs_semantic_classification(message: str, state: GraphState) -> bool:
+    text = message.casefold().strip()
+    vague_data_requests = (
+        "帮我看看", "帮我看一下", "看看这些数据", "看下这些数据",
+        "这两个数据", "这些数据能", "这些数据可以", "这组数据",
+        "look at these data", "take a look at this dataset", "what can these data",
+    )
+    return bool(state.dataset_profiles) and any(marker in text for marker in vague_data_requests)
 
 
 def _is_explicit_result_request(message: str) -> bool:
@@ -79,6 +109,15 @@ def _is_analysis_followup(message: str) -> bool:
     )
 
 
+def _is_capability_request(message: str) -> bool:
+    text = message.casefold().strip()
+    return any(marker in text for marker in (
+        "能做什么", "可以做什么", "能分析什么", "可以分析什么",
+        "能做差异分析", "可以做差异分析", "能做 deg", "可以做 deg",
+        "what can", "what analyses", "supported analysis", "can i do",
+    ))
+
+
 def _is_new_dataset_message(message: str) -> bool:
     text = message.casefold().strip()
     return any(
@@ -94,7 +133,7 @@ def _is_explicit_analysis_request(message: str) -> bool:
     return any(
         marker in message.casefold()
         for marker in (
-            "run ", "analyze", "compare ", "plan ", "execute", "perform ", "start ",
+            "run ", "analyze", "compare ", "inspect ", "metadata", "contrast", "plan ", "execute", "perform ", "start ",
             "\u5206\u6790", "\u8fd0\u884c", "\u6bd4\u8f83", "\u8ba1\u5212",
         )
     )
@@ -121,4 +160,5 @@ __all__ = [
     "_is_explicit_analysis_request",
     "_is_explicit_job_status_request",
     "_is_explicit_jobs_listing",
+    "_is_capability_request",
 ]

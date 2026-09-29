@@ -3,9 +3,17 @@ from __future__ import annotations
 import json
 
 from backend.app.agent.graph import (
+    AgentRole,
     AgentDecision,
+    AnalysisDecision,
+    AnalysisModelOutput,
     GraphState,
-    MainModelOutput,
+    AgentLoopOutput,
+    JobRef,
+    QaDecision,
+    QaModelOutput,
+    ResultDecision,
+    ResultQaModelOutput,
     StepBudget,
     ToolCallRequest,
     build_agent_graph,
@@ -29,12 +37,38 @@ class _Model:
         self.outputs = list(outputs)
         self.contexts = []
 
-    def __call__(self, context: object) -> object:
+    def __call__(self, context: object, *, role: AgentRole) -> object:
         self.contexts.append(context)
         output = self.outputs.pop(0)
         if isinstance(output, Exception):
             raise output
-        return output
+        if not isinstance(output, AgentLoopOutput):
+            return output
+        decision = output.decision.model_dump(mode="python", exclude_none=True)
+        by_role = {
+            AgentRole.QA: (
+                QaModelOutput,
+                QaDecision,
+                {"action", "question", "reroute_to"},
+            ),
+            AgentRole.ANALYSIS: (
+                AnalysisModelOutput,
+                AnalysisDecision,
+                {"action", "analysis_type", "capability_query", "proposal", "question", "reroute_to", "tool", "arguments"},
+            ),
+                AgentRole.RESULT_QA: (
+                ResultQaModelOutput,
+                ResultDecision,
+                {"action", "job_id", "result_query", "grounded_answer", "question", "reroute_to", "tool", "arguments"},
+            ),
+        }
+        output_type, _decision_type, allowed = by_role[role]
+        if output.decision.action == "answer" and role is AgentRole.ANALYSIS:
+            allowed = allowed | {"action"}
+        return output_type.model_validate({
+            "decision": {key: value for key, value in decision.items() if key in allowed},
+            "answer": output.answer,
+        })
 
 
 def _state(**overrides: object) -> GraphState:
@@ -42,6 +76,8 @@ def _state(**overrides: object) -> GraphState:
         "thread_id": "loop-thread",
         "user_id": "user-1",
         "user_message": "Inspect the metadata",
+        "current_job": JobRef(job_id="job-1", owner_id="user-1"),
+        "recent_jobs": [JobRef(job_id="job-1", owner_id="user-1")],
     }
     values.update(overrides)
     return GraphState.model_validate(values)
@@ -53,12 +89,12 @@ def _config() -> dict[str, dict[str, str]]:
 
 def test_main_loop_executes_read_only_tool_and_reassembles_context() -> None:
     model = _Model([
-        MainModelOutput(decision=AgentDecision(
+        AgentLoopOutput(decision=AgentDecision(
             action="tool_call",
             tool=ToolName.DESCRIBE_METADATA,
             arguments={"fields": ["treatment"]},
         )),
-        MainModelOutput(
+        AgentLoopOutput(
             decision=AgentDecision(action="answer"),
             answer="The metadata contains the requested treatment field.",
         ),
@@ -85,19 +121,19 @@ def test_main_loop_executes_read_only_tool_and_reassembles_context() -> None:
     assert len(model.contexts) == 2
     assert requests[0].tool is ToolName.DESCRIBE_METADATA
     assert requests[0].arguments == {"fields": ["treatment"]}
-    assert model.contexts[1].working_set.items[0].kind == "tool"
+    assert model.contexts[1].tool_observations[0].tool == ToolName.DESCRIBE_METADATA.value
     assert state.step_budget.used_model_steps == 2
     assert state.step_budget.used_tool_calls == 1
 
 
 def test_repeated_describe_metadata_reads_each_field_name() -> None:
     model = _Model([
-        MainModelOutput(decision=AgentDecision(
+        AgentLoopOutput(decision=AgentDecision(
             action="tool_call",
             tool=ToolName.DESCRIBE_METADATA,
             arguments={"fields": ["treatment"]},
         )),
-        MainModelOutput(decision=AgentDecision(
+        AgentLoopOutput(decision=AgentDecision(
             action="tool_call",
             tool=ToolName.DESCRIBE_METADATA,
             arguments={"fields": ["treatment"]},
@@ -117,7 +153,7 @@ def test_repeated_describe_metadata_reads_each_field_name() -> None:
         lambda _request: None,
         lambda _request: None,
         tool_executor=execute,
-    ).invoke(_state(), _config())
+    ).invoke(_state(user_message="Inspect treatment metadata"), _config())
     state = GraphState.model_validate(result)
 
     assert state.response_text == "Metadata fields: treatment"
@@ -140,17 +176,17 @@ def test_tool_summary_truncation_preserves_valid_json() -> None:
 
 def test_same_tool_with_different_arguments_is_executed_again() -> None:
     model = _Model([
-        MainModelOutput(decision=AgentDecision(
+        AgentLoopOutput(decision=AgentDecision(
             action="tool_call",
             tool=ToolName.DESCRIBE_ARTIFACTS,
             arguments={"job_id": "job-1"},
         )),
-        MainModelOutput(decision=AgentDecision(
+        AgentLoopOutput(decision=AgentDecision(
             action="tool_call",
             tool=ToolName.DESCRIBE_ARTIFACTS,
             arguments={"job_id": "job-2"},
         )),
-        MainModelOutput(decision=AgentDecision(action="answer"), answer="Compared both jobs."),
+        AgentLoopOutput(decision=AgentDecision(action="answer"), answer="Compared both jobs."),
     ])
     requests: list[ToolCallRequest] = []
 
@@ -165,7 +201,7 @@ def test_same_tool_with_different_arguments_is_executed_again() -> None:
         lambda _request: None,
         lambda _request: None,
         tool_executor=execute,
-    ).invoke(_state(), _config())
+    ).invoke(_state(user_message="show job status"), _config())
     state = GraphState.model_validate(result)
 
     assert state.response_text == "Compared both jobs."
@@ -174,17 +210,17 @@ def test_same_tool_with_different_arguments_is_executed_again() -> None:
 
 def test_repeated_deterministic_tool_result_uses_model_guidance() -> None:
     model = _Model([
-        MainModelOutput(decision=AgentDecision(
+        AgentLoopOutput(decision=AgentDecision(
             action="tool_call",
             tool=ToolName.DESCRIBE_ARTIFACTS,
             arguments={"job_id": "job-1"},
         )),
-        MainModelOutput(decision=AgentDecision(
+        AgentLoopOutput(decision=AgentDecision(
             action="tool_call",
             tool=ToolName.DESCRIBE_ARTIFACTS,
             arguments={"job_id": "job-1"},
         )),
-        MainModelOutput(decision=AgentDecision(action="answer"), answer="The artifact is a volcano plot."),
+        AgentLoopOutput(decision=AgentDecision(action="answer"), answer="The artifact is a volcano plot."),
     ])
     requests: list[ToolCallRequest] = []
 
@@ -199,7 +235,7 @@ def test_repeated_deterministic_tool_result_uses_model_guidance() -> None:
         lambda _request: None,
         lambda _request: None,
         tool_executor=execute,
-    ).invoke(_state(), _config())
+    ).invoke(_state(user_message="show job status"), _config())
     state = GraphState.model_validate(result)
 
     assert state.response_text == "The artifact is a volcano plot."
@@ -213,17 +249,17 @@ def test_repeated_deterministic_tool_result_uses_model_guidance() -> None:
 
 def test_repeated_transient_tool_failure_is_retried_without_extra_model_step() -> None:
     model = _Model([
-        MainModelOutput(decision=AgentDecision(
+        AgentLoopOutput(decision=AgentDecision(
             action="tool_call",
             tool=ToolName.DESCRIBE_ARTIFACTS,
             arguments={"job_id": "job-1"},
         )),
-        MainModelOutput(decision=AgentDecision(
+        AgentLoopOutput(decision=AgentDecision(
             action="tool_call",
             tool=ToolName.DESCRIBE_ARTIFACTS,
             arguments={"job_id": "job-1"},
         )),
-        MainModelOutput(decision=AgentDecision(action="answer"), answer="Recovered."),
+        AgentLoopOutput(decision=AgentDecision(action="answer"), answer="Recovered."),
     ])
     requests: list[ToolCallRequest] = []
     attempts = 0
@@ -243,7 +279,7 @@ def test_repeated_transient_tool_failure_is_retried_without_extra_model_step() -
         lambda _request: None,
         lambda _request: None,
         tool_executor=execute,
-    ).invoke(_state(), _config())
+    ).invoke(_state(user_message="show result for GeneA"), _config())
     state = GraphState.model_validate(result)
 
     assert state.response_text == "Recovered."
@@ -255,10 +291,10 @@ def test_repeated_transient_tool_failure_is_retried_without_extra_model_step() -
 
 def test_tool_budget_is_an_exit_without_an_extra_model_call() -> None:
     model = _Model([
-        MainModelOutput(decision=AgentDecision(
+        AgentLoopOutput(decision=AgentDecision(
             action="tool_call", tool=ToolName.DESCRIBE_METADATA
         )),
-        MainModelOutput(decision=AgentDecision(action="answer"), answer="unexpected"),
+        AgentLoopOutput(decision=AgentDecision(action="answer"), answer="unexpected"),
     ])
     result = build_agent_graph(
         model,
@@ -282,7 +318,7 @@ def test_tool_budget_is_an_exit_without_an_extra_model_call() -> None:
 def test_model_failure_retry_consumes_model_steps_and_then_continues() -> None:
     model = _Model([
         {"decision": {"action": "invalid"}},
-        MainModelOutput(decision=AgentDecision(action="answer"), answer="recovered"),
+        AgentLoopOutput(decision=AgentDecision(action="answer"), answer="recovered"),
     ])
     result = build_agent_graph(
         model,
@@ -290,7 +326,7 @@ def test_model_failure_retry_consumes_model_steps_and_then_continues() -> None:
         lambda _request: None,
         lambda _request: None,
         lambda _request: None,
-    ).invoke(_state(), _config())
+    ).invoke(_state(user_message="show result for GeneA"), _config())
     state = GraphState.model_validate(result)
 
     assert len(model.contexts) == 2
@@ -300,10 +336,10 @@ def test_model_failure_retry_consumes_model_steps_and_then_continues() -> None:
 
 def test_explicit_followup_retries_an_initial_clarification() -> None:
     model = _Model([
-        MainModelOutput(decision=AgentDecision(
+        AgentLoopOutput(decision=AgentDecision(
             action="ask_user", question="Which dataset do you mean?"
         )),
-        MainModelOutput(
+        AgentLoopOutput(
             decision=AgentDecision(action="answer"),
             answer="It compares abundance between groups.",
         ),
@@ -331,12 +367,12 @@ def test_explicit_followup_retries_an_initial_clarification() -> None:
     assert state.decision is not None and state.decision.action == "answer"
     assert state.response_text == "It compares abundance between groups."
     assert len(model.contexts) == 2
-    assert "revise the previous assistant answer" in (model.contexts[1].conversation_summary or "")
+    assert model.contexts[1].recent_messages.messages[-1].role == "assistant"
 
 
 def test_genuine_clarification_with_history_is_not_retried() -> None:
     model = _Model([
-        MainModelOutput(decision=AgentDecision(
+        AgentLoopOutput(decision=AgentDecision(
             action="ask_user", question="Which dataset do you mean?"
         )),
     ])
@@ -366,11 +402,11 @@ def test_genuine_clarification_with_history_is_not_retried() -> None:
 
 def test_list_jobs_request_forces_read_only_tool_before_answer() -> None:
     model = _Model([
-        MainModelOutput(
+        AgentLoopOutput(
             decision=AgentDecision(action="answer"),
             answer="There are no available jobs.",
         ),
-        MainModelOutput(
+        AgentLoopOutput(
             decision=AgentDecision(action="answer"),
             answer="One job is available.",
         ),
@@ -398,8 +434,8 @@ def test_list_jobs_request_forces_read_only_tool_before_answer() -> None:
 
 def test_repeated_list_jobs_request_converges_from_tool_observation() -> None:
     model = _Model([
-        MainModelOutput(decision=AgentDecision(action="answer"), answer="wrong"),
-        MainModelOutput(decision=AgentDecision(
+        AgentLoopOutput(decision=AgentDecision(action="answer"), answer="wrong"),
+        AgentLoopOutput(decision=AgentDecision(
             action="tool_call", tool=ToolName.LIST_JOBS
         )),
     ])
@@ -444,7 +480,7 @@ def test_step_budget_uses_separate_dimensions() -> None:
 
 def test_unknown_model_usage_does_not_fake_a_token_count() -> None:
     model = _Model([
-        MainModelOutput(decision=AgentDecision(action="answer"), answer="bounded"),
+        AgentLoopOutput(decision=AgentDecision(action="answer"), answer="bounded"),
     ])
     result = build_agent_graph(
         model,
@@ -465,7 +501,7 @@ def test_unknown_model_usage_does_not_fake_a_token_count() -> None:
 
 def test_reported_model_usage_updates_separate_budget_counters() -> None:
     model = _Model([
-        MainModelOutput(decision=AgentDecision(action="answer"), answer="bounded"),
+        AgentLoopOutput(decision=AgentDecision(action="answer"), answer="bounded"),
     ])
     model.last_usage = ModelUsage(
         status="reported",
@@ -510,12 +546,12 @@ def test_grounded_loop_verifies_model_draft_and_falls_back_to_evidence() -> None
         ),
     )])
     model = _Model([
-        MainModelOutput(decision=AgentDecision(
+        AgentLoopOutput(decision=AgentDecision(
             action="tool_call",
             tool=ToolName.QUERY_ARTIFACT,
             arguments={"job_id": "job-1", "artifact": "deg_results.csv"},
         )),
-        MainModelOutput(decision=AgentDecision(
+        AgentLoopOutput(decision=AgentDecision(
             action="grounded_answer",
             grounded_answer=draft,
         )),
@@ -531,7 +567,7 @@ def test_grounded_loop_verifies_model_draft_and_falls_back_to_evidence() -> None
         lambda _request: None,
         lambda _request: None,
         tool_executor=execute,
-    ).invoke(_state(), _config())
+    ).invoke(_state(user_message="show result for GeneA"), _config())
     state = GraphState.model_validate(result)
 
     assert state.grounded_answer is not None

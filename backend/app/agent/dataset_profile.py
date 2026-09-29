@@ -7,8 +7,10 @@ from typing import Annotated, Literal, Union
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from ..analysis_specs import canonical_input_role
 
-MatrixRole = Literal["counts", "metabs", "transcriptome", "metabolome"]
+
+MatrixRole = Literal["counts", "transcriptome", "metabolome"]
 MetadataRole = Literal["metadata"]
 NumericType = Literal["integer_counts", "continuous_abundance", "mixed"]
 AlignmentStatus = Literal["exact", "subset", "mismatch"]
@@ -85,7 +87,7 @@ def build_dataset_profiles(
     matrix_ids = {
         field: sample_ids
         for field, row, _headers, sample_ids in inspected
-        if field in {"counts", "metabs", "transcriptome", "metabolome"}
+        if canonical_input_role(field) in {"counts", "transcriptome", "metabolome"}
     }
     profiles: list[DatasetProfile] = []
     for field, row, headers, sample_ids in inspected:
@@ -113,10 +115,10 @@ def _matrix_profile(
     else:
         numeric_type = "continuous_abundance"
     feature_type: Literal["gene", "metabolite"] = (
-        "metabolite" if field in {"metabs", "metabolome"} else "gene"
+        "metabolite" if canonical_input_role(field) == "metabolome" else "gene"
     )
     return MatrixProfile(
-        role=field,  # type: ignore[arg-type]
+        role=canonical_input_role(field),  # type: ignore[arg-type]
         shape=(int(row.get("row_count") or 0), max(0, len(headers) - 1)),
         sample_ids=sample_ids,
         feature_type=feature_type,
@@ -190,7 +192,7 @@ def _group_profile(
 
 
 def _sample_ids(field: str, headers: list[str], rows: list[list[str]]) -> list[str]:
-    if field in {"counts", "metabs", "transcriptome", "metabolome"}:
+    if canonical_input_role(field) in {"counts", "transcriptome", "metabolome"}:
         return [value for value in headers[1:] if value]
     if field in {"metadata", "group"} and headers:
         return [row[0].strip() for row in rows if row and row[0].strip()]

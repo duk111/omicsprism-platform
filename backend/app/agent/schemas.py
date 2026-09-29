@@ -241,11 +241,30 @@ class AgentTurnRecord(ContractModel):
     request_hash: str = Field(min_length=1)
     status: AgentTurnStatus
     attempt: int = Field(ge=0)
-    error_code: str | None
+    outcome: Literal["completed", "needs_input", "unsupported", "unresolved", "failed"] | None = None
+    failure_code: str | None = Field(default=None, max_length=100)
+    attempted_roles: list[Literal["qa", "analysis", "result_qa"]] = Field(default_factory=list, max_length=3)
     created_at: datetime
     updated_at: datetime
     started_at: datetime | None
     completed_at: datetime | None
+
+    @model_validator(mode="after")
+    def _outcome_matches_status(self) -> "AgentTurnRecord":
+        if self.status is AgentTurnStatus.FAILED:
+            if self.outcome != "failed" or not self.failure_code:
+                raise ValueError("failed turns require outcome=failed and failure_code")
+        elif self.status is AgentTurnStatus.COMPLETED:
+            if self.outcome not in {"completed", "needs_input", "unsupported", "unresolved"}:
+                raise ValueError("completed turns require a non-failed outcome")
+        elif self.status in {AgentTurnStatus.QUEUED, AgentTurnStatus.RUNNING, AgentTurnStatus.CANCELLED}:
+            if self.outcome is not None or self.failure_code is not None:
+                raise ValueError("non-terminal turns cannot carry an outcome or failure_code")
+        if self.outcome in {"needs_input", "unsupported", "unresolved"} and not self.failure_code:
+            raise ValueError("non-success outcomes require failure_code")
+        if self.outcome in {None, "completed"} and self.failure_code is not None:
+            raise ValueError("failure_code is only valid for non-success outcomes")
+        return self
 
 class AgentTurnResponse(ContractModel):
     turn_id: str = Field(min_length=1)
@@ -254,11 +273,30 @@ class AgentTurnResponse(ContractModel):
     trace_id: str = Field(default="trace-local", min_length=1, max_length=200)
     status: AgentTurnStatus
     attempt: int = Field(ge=0)
-    error_code: str | None
+    outcome: Literal["completed", "needs_input", "unsupported", "unresolved", "failed"] | None = None
+    failure_code: str | None = Field(default=None, max_length=100)
+    attempted_roles: list[Literal["qa", "analysis", "result_qa"]] = Field(default_factory=list, max_length=3)
     created_at: datetime
     updated_at: datetime
     started_at: datetime | None
     completed_at: datetime | None
+
+    @model_validator(mode="after")
+    def _outcome_matches_status(self) -> "AgentTurnResponse":
+        if self.status is AgentTurnStatus.FAILED:
+            if self.outcome != "failed" or not self.failure_code:
+                raise ValueError("failed turns require outcome=failed and failure_code")
+        elif self.status is AgentTurnStatus.COMPLETED:
+            if self.outcome not in {"completed", "needs_input", "unsupported", "unresolved"}:
+                raise ValueError("completed turns require a non-failed outcome")
+        elif self.status in {AgentTurnStatus.QUEUED, AgentTurnStatus.RUNNING, AgentTurnStatus.CANCELLED}:
+            if self.outcome is not None or self.failure_code is not None:
+                raise ValueError("non-terminal turns cannot carry an outcome or failure_code")
+        if self.outcome in {"needs_input", "unsupported", "unresolved"} and not self.failure_code:
+            raise ValueError("non-success outcomes require failure_code")
+        if self.outcome in {None, "completed"} and self.failure_code is not None:
+            raise ValueError("failure_code is only valid for non-success outcomes")
+        return self
 
 class AgentTurnListResponse(ContractModel):
     turns: list[AgentTurnResponse]
@@ -353,7 +391,8 @@ class AgentTraceEventResponse(ContractModel):
     cached_tokens: int | None = Field(default=None, ge=0)
     usage_status: Literal["reported", "unknown"] | None = None
     retry_count: int = Field(default=0, ge=0)
-    error_code: str | None = Field(default=None, max_length=100)
+    failure_code: str | None = Field(default=None, max_length=100)
+    attempted_roles: list[Literal["qa", "analysis", "result_qa"]] = Field(default_factory=list, max_length=3)
     created_at: datetime
 
 

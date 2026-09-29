@@ -46,7 +46,9 @@ def _turn(*, request_hash: str = "sha256:request-a") -> AgentTurnRecord:
         request_hash=request_hash,
         status="queued",
         attempt=0,
-        error_code=None,
+        outcome=None,
+        failure_code=None,
+        attempted_roles=[],
         created_at=now,
         updated_at=now,
         started_at=None,
@@ -130,16 +132,15 @@ def test_cancel_turn_marks_active_turn_cancelled() -> None:
         turn_id="turn-1",
         user_id="user-1",
         now=datetime.now(timezone.utc),
-        error_code="cancelled_by_user",
     )
     assert cancelled.status.value == "cancelled"
-    assert cancelled.error_code == "cancelled_by_user"
+    assert cancelled.outcome is None
+    assert cancelled.failure_code is None
     with pytest.raises(TurnConflict):
         store.cancel_turn(
             turn_id="turn-1",
             user_id="user-1",
             now=datetime.now(timezone.utc),
-            error_code="cancelled_by_user",
         )
 
 

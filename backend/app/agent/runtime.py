@@ -140,11 +140,19 @@ class AgentRuntime:
             if finalized and item.continuation is not None:
                 self._complete_job_wait(item)
             if finalized:
+                finished = self.context.product_store.get_turn(
+                    turn_id=item.turn_id,
+                    user_id=item.user_id,
+                )
                 self._record_turn_event(
-                    "turn.completed",
+                    "turn.failed" if finished.status is AgentTurnStatus.FAILED else "turn.completed",
                     item,
                     run_id=turn.run_id,
-                    outcome="completed",
+                    outcome=finished.outcome,
+                    failure_code=finished.failure_code,
+                    attempted_roles=[role.value for role in GraphState.model_validate(
+                        self.context.graph.get_state({"configurable": {"thread_id": item.thread_id}}).values
+                    ).visited_roles],
                     latency_ms=round((perf_counter() - started_at) * 1000, 3),
                     retry_count=max(0, turn.attempt - 1),
                 )
@@ -343,11 +351,16 @@ class AgentRuntime:
             "decision": None,
             "response_text": None,
             "response_blocks": [],
+            "outcome": None,
+            "failure_code": None,
+            "visited_roles": [],
+            "route_decision": None,
             "resolved_request": None,
             "validation_report": None,
             "job_summary": None,
             "job_continuation": None,
             "grounded_answer": None,
+            "capability_report": None,
             "pending_plan": None,
             "pending_interrupt": None,
             "pending_analysis": pending_analysis,
@@ -365,7 +378,7 @@ class AgentRuntime:
                 limit=100,
             )
             recent, summary = build_recent_messages(messages)
-            ledger_memory = ContextAssembler().assemble(merged).conversation_memory
+            ledger_memory = ContextAssembler().assemble_control(merged).conversation_memory
             merged = merged.model_copy(update={
                 "recent_messages": recent,
                 "conversation_summary": summary or current.conversation_summary,
@@ -461,7 +474,12 @@ class AgentRuntime:
             "pending_interrupt": None,
             "job_summary": None,
             "grounded_answer": None,
+            "capability_report": None,
             "tool_observations": [],
+            "outcome": None,
+            "failure_code": None,
+            "visited_roles": [],
+            "route_decision": None,
         })
         if event.status.value != "succeeded":
             self.context.graph.update_state(config, updated.model_dump(mode="json"))
@@ -547,7 +565,6 @@ class AgentRuntime:
                 turn_id=turn.turn_id,
                 user_id=turn.user_id,
                 now=datetime.now(timezone.utc),
-                error_code="agent_wait_cancelled",
             )
         except TurnConflict:
             # A concurrent delivery or API cancellation already finalized it.
@@ -628,7 +645,17 @@ class AgentRuntime:
         if not state.response_text:
             raise ValueError("completed graph state is missing response_text")
         blocks: list[AgentMessageBlock] = list(state.response_blocks)
-        if not blocks:
+        outcome = state.outcome or "completed"
+        failure_code = state.failure_code
+        if state.outcome == "failed":
+            code = failure_code or "tool_execution_failed"
+            failure_code = code
+            blocks = [AgentErrorBlock(
+                code=code,
+                user_message=state.response_text,
+                retryable=code in {"model_unavailable", "tool_execution_failed"},
+            )]
+        elif not blocks:
             blocks = [AgentTextBlock(text=state.response_text)]
         message = AgentMessageRecord(
             message_id=f"assistant-{item.turn_id}",
@@ -644,9 +671,16 @@ class AgentRuntime:
             self.context.product_store.finish_turn(
                 turn_id=item.turn_id,
                 user_id=item.user_id,
-                status=AgentTurnStatus.COMPLETED,
+                status=(
+                    AgentTurnStatus.FAILED
+                    if state.outcome == "failed"
+                    else AgentTurnStatus.COMPLETED
+                ),
                 now=datetime.now(timezone.utc),
                 message=message,
+                outcome=outcome,
+                failure_code=failure_code,
+                attempted_roles=[role.value for role in state.visited_roles],
             )
         except TurnConflict:
             # A duplicate delivery may have completed the same turn already.
@@ -654,7 +688,7 @@ class AgentRuntime:
                 turn_id=item.turn_id,
                 user_id=item.user_id,
             )
-            if current.status is not AgentTurnStatus.COMPLETED:
+            if current.status not in {AgentTurnStatus.COMPLETED, AgentTurnStatus.FAILED}:
                 raise
         return True
 
@@ -671,6 +705,7 @@ class AgentRuntime:
                 user_id=item.user_id,
             )
             if current.status is AgentTurnStatus.RUNNING:
+                failure_code = _runtime_failure_code(error_code)
                 message = AgentMessageRecord(
                     message_id=f"assistant-{item.turn_id}",
                     thread_id=item.thread_id,
@@ -679,7 +714,7 @@ class AgentRuntime:
                     user_id=item.user_id,
                     role=AgentMessageRole.ASSISTANT,
                     blocks=[AgentErrorBlock(
-                        code=error_code,
+                        code=failure_code,
                         user_message=_RUNTIME_ERROR_MESSAGE,
                         retryable=retryable,
                     )],
@@ -691,7 +726,9 @@ class AgentRuntime:
                     status=AgentTurnStatus.FAILED,
                     now=datetime.now(timezone.utc),
                     message=message,
-                    error_code=error_code,
+                    outcome="failed",
+                    failure_code=failure_code,
+                    attempted_roles=[],
                 )
                 self._record_turn_event(
                     "turn.failed",
@@ -754,6 +791,7 @@ class AgentRuntime:
         latency_ms: float | None = None,
         retry_count: int = 0,
         error_code: str | None = None,
+        attempted_roles: list[str] | None = None,
     ) -> None:
         recorder = self.context.trace_recorder
         if recorder is None:
@@ -768,7 +806,8 @@ class AgentRuntime:
             outcome=outcome,
             latency_ms=latency_ms,
             retry_count=retry_count,
-            error_code=error_code,
+            failure_code=_runtime_failure_code(error_code) if outcome == "failed" else None,
+            attempted_roles=attempted_roles,
         )
 
 
@@ -778,6 +817,12 @@ def _completion_notice_blocks(summary: JobSummary, text: str) -> list[AgentMessa
     if job is not None:
         blocks.append(job)
     return blocks
+
+
+def _runtime_failure_code(error_code: str) -> str:
+    if error_code in {"agent_turn_timeout", "model_unavailable"}:
+        return "model_unavailable"
+    return "tool_execution_failed"
 
 
 def _snapshot_interrupts(snapshot: object) -> list[GraphInterrupt]:
