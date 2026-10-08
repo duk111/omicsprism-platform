@@ -62,6 +62,7 @@ def analysis_agent_node(
             or _looks_like_capability_query(state.user_message)
         ):
             result = loop(state)
+            result = _normalize_analysis_response(state, result)
             if (
                 isinstance(result.get("decision"), AgentDecision)
                 and result["decision"].action == "capability_query"
@@ -73,12 +74,78 @@ def analysis_agent_node(
     return run
 
 
+def _normalize_analysis_response(
+    state: GraphState,
+    result: dict[str, object],
+) -> dict[str, object]:
+    """Prevent the internal ask_user action from becoming a user-visible protocol."""
+
+    decision = result.get("decision")
+    if not isinstance(decision, AgentDecision):
+        return result
+    # Capability answers are a bounded read-only response.  For every other
+    # analysis request, however, the role model is not allowed to terminate
+    # the planning protocol with prose (or an internal ask_user action).
+    # Push the candidate through the deterministic resolver/validator instead.
+    if (
+        decision.action == "answer"
+        and not _looks_like_capability_query(state.user_message)
+        and not _looks_like_readonly_inspection(state.user_message)
+        and _looks_like_analysis_request(state.user_message, decision)
+    ):
+        result["decision"] = AgentDecision(
+            action="propose_plan",
+            analysis_type=decision.analysis_type,
+            proposal=decision.proposal,
+        )
+        result["response_text"] = None
+        result["response_blocks"] = []
+        result["outcome"] = None
+        result["failure_code"] = None
+        return result
+    if decision.action != "ask_user":
+        return result
+    if result.get("outcome") == "failed" or result.get("failure_code"):
+        return result
+    if state.pending_analysis is not None and state.pending_analysis.status == "active":
+        return result
+    result["decision"] = AgentDecision(
+        action="propose_plan",
+        analysis_type=decision.analysis_type,
+        proposal=decision.proposal,
+    )
+    result["response_text"] = None
+    result["response_blocks"] = []
+    result["outcome"] = None
+    result["failure_code"] = None
+    return result
+
+
 def _looks_like_capability_query(message: str) -> bool:
     text = message.casefold().strip()
     return any(marker in text for marker in (
         "能做什么", "可以做什么", "能分析什么", "可以分析什么",
         "能做差异分析", "可以做差异分析", "what can", "what analyses",
         "can i do", "supported analysis",
+    ))
+
+
+def _looks_like_analysis_request(message: str, decision: AgentDecision) -> bool:
+    if decision.analysis_type is not None or decision.proposal is not None:
+        return True
+    text = message.casefold().strip()
+    return any(marker in text for marker in (
+        "run ", "analy", "compare ", "contrast", "plan ", "execute", "perform ", "start ",
+        "分析", "运行", "比较", "计划",
+    ))
+
+
+def _looks_like_readonly_inspection(message: str) -> bool:
+    text = message.casefold().strip()
+    return any(marker in text for marker in (
+        "describe metadata", "inspect metadata", "metadata fields",
+        "enumerate contrast", "list valid contrast", "valid contrast",
+        "描述 metadata", "查看 metadata", "列出对比", "有效对比",
     ))
 
 
@@ -242,7 +309,7 @@ def _proposal_for_pending(
     update: dict[str, object] = {}
     contrast_fields = {"compare_field", "tested_level", "reference_level"}
     aliases = {"tested_levels": "tested_level", "reference": "reference_level"}
-    known_fields = contrast_fields | {"scope", "scope_mode"} | set(
+    known_fields = contrast_fields | {"scope", "scope_mode", "same_fields"} | set(
         param_specs_for_analysis(base.analysis_type)
     )
     for key, value in patch.items():
@@ -252,7 +319,22 @@ def _proposal_for_pending(
         if key in contrast_fields:
             update[key] = value
         elif key == "scope_mode":
-            update["scope"] = ScopeSpec(mode=str(value))
+            mode = str(value)
+            if mode == "all":
+                update["scope"] = ScopeSpec(mode="all")
+            elif mode == "stratified":
+                current_fields = []
+                if isinstance(base.scope, ScopeSpec):
+                    current_fields = list(base.scope.blocking_fields)
+                update["scope"] = ScopeSpec(mode="stratified", blocking_fields=current_fields or ["__pending_scope_field__"])
+            else:
+                update["scope"] = ScopeSpec(mode=mode)
+        elif key == "same_fields":
+            fields = [item.strip() for item in str(value).split(",") if item.strip()]
+            update["scope"] = (
+                ScopeSpec(mode="stratified", blocking_fields=fields)
+                if fields else ScopeSpec(mode="all")
+            )
         elif key == "scope":
             update["scope"] = ScopeSpec.model_validate(value)
         else:
@@ -273,7 +355,7 @@ def _validate_patch_shape(proposal: AnalysisProposal) -> None:
     scalar = {
         key: value
         for key, value in proposal.requested_params.items()
-        if key in specs
+        if key in specs and key not in {"compare_field", "tested_level", "reference_level", "same_fields"}
     }
     if analysis_type == "GMA":
         GMAParams.model_validate({"analysis_type": "GMA", **scalar})

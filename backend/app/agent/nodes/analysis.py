@@ -13,6 +13,8 @@ from ..fingerprint import compute_input_fingerprint
 from ..clarification_resolver import ClarificationOption, stable_option_id
 from ..message_blocks import job_block, text_block
 from ..graph import (
+    AgentRole,
+    AnalysisModelOutput,
     AnalysisExecutionRequest,
     ConfirmationPayload,
     ConfirmationResume,
@@ -21,6 +23,7 @@ from ..graph import (
     GraphState,
     JobRef,
     JobSubmitter,
+    MainDecisionModel,
     NodeCapabilityError,
     PendingPlan,
     PendingAnalysisClarification,
@@ -35,6 +38,7 @@ from ..validation import (
     validate_analysis_request,
 )
 from ...models import JobStatus
+from ...analysis_specs import AnalysisSpecRegistry, canonical_input_role
 
 
 class DatasetLoadError(ValueError):
@@ -48,6 +52,7 @@ class ExecutionRejected(ValueError):
 def analysis_node(
     dataset_loader: DatasetLoader,
     job_submitter: JobSubmitter,
+    response_model: MainDecisionModel | None = None,
 ) -> Callable[[GraphState], Command]:
     def run(state: GraphState) -> Command:
         decision = state.decision
@@ -75,7 +80,53 @@ def analysis_node(
         next_budget = state.step_budget.model_copy(
             update={"used_model_steps": state.step_budget.used_model_steps + 1}
         )
-        dataset_refs = _load_validation_refs(state, dataset_loader)
+        if not state.dataset_profiles:
+            text = "Please provide the counts/metadata inputs before starting an analysis."
+            pending = PendingAnalysisClarification(
+                analysis_type=decision.analysis_type,
+                question=text,
+                missing=["dataset"],
+                source_message=state.user_message,
+                source_action=decision.action,
+                proposal=_analysis_proposal(state),
+            )
+            return Command(
+                update={
+                    "pending_analysis": pending,
+                    "response_text": text,
+                    "response_blocks": [text_block(text)],
+                    "outcome": "needs_input",
+                    "failure_code": "missing_analysis_parameter",
+                    "step_budget": next_budget,
+                },
+                goto=END,
+            )
+        try:
+            dataset_refs = _load_validation_refs(state, dataset_loader)
+        except DatasetLoadError as exc:
+            text = f"I could not validate the current analysis inputs: {str(exc)[:500]}"
+            return Command(
+                update={
+                    "response_text": text,
+                    "response_blocks": [text_block(text)],
+                    "outcome": "failed",
+                    "failure_code": "dataset_validation_failed",
+                    "step_budget": next_budget,
+                },
+                goto=END,
+            )
+        except Exception as exc:
+            text = f"The analysis inputs could not be loaded: {type(exc).__name__}: {str(exc)[:400]}"
+            return Command(
+                update={
+                    "response_text": text,
+                    "response_blocks": [text_block(text)],
+                    "outcome": "failed",
+                    "failure_code": "dataset_loader_failed",
+                    "step_budget": next_budget,
+                },
+                goto=END,
+            )
         request_text = _analysis_request_text(state)
         resolved = resolve_analysis_request(
             request_text,
@@ -87,10 +138,87 @@ def analysis_node(
                 else state.confirmed_params
             ),
         )
-        report = validate_analysis_request(resolved, dataset_refs)
+        if resolved.analysis_type is not None:
+            present_roles = {
+                canonical_input_role(
+                    getattr(item.profile, "role", None)
+                    or getattr(item, "role", "")
+                )
+                for item in state.dataset_profiles
+            }
+            missing_roles = sorted(
+                set(AnalysisSpecRegistry().required_roles(str(resolved.analysis_type).lower()))
+                - present_roles
+            )
+            if missing_roles:
+                text = (
+                    f"The platform does not support {resolved.analysis_type} with the current inputs. "
+                    f"Missing required input roles: {', '.join(missing_roles)}."
+                )
+                return Command(
+                    update={
+                        "resolved_request": resolved,
+                        "response_text": text,
+                        "response_blocks": [text_block(text)],
+                        "outcome": "unsupported",
+                        "failure_code": "unsupported_request",
+                        "step_budget": next_budget,
+                    },
+                    goto=END,
+                )
+        try:
+            report = validate_analysis_request(resolved, dataset_refs)
+        except Exception as exc:
+            text = f"The analysis inputs failed deterministic validation: {type(exc).__name__}: {str(exc)[:400]}"
+            return Command(
+                update={
+                    "resolved_request": resolved,
+                    "response_text": text,
+                    "response_blocks": [text_block(text)],
+                    "outcome": "failed",
+                    "failure_code": "validation_failed",
+                    "step_budget": next_budget,
+                },
+                goto=END,
+            )
         if report.ok:
             if resolved.analysis_type is None or resolved.params is None:
                 raise RuntimeError("successful validation must contain resolved parameters")
+            sample_scope = _sample_scope_from_inputs(report, resolved, dataset_refs)
+            existing_pending = state.pending_analysis
+            if existing_pending is None or existing_pending.status != "consumed":
+                pending = _candidate_pending(
+                    state,
+                    resolved,
+                    report,
+                    sample_scope,
+                )
+                pending = _with_model_confirmation(
+                    state,
+                    pending,
+                    response_model,
+                )
+                if response_model is not None and hasattr(response_model, "last_assistant_message"):
+                    next_budget = next_budget.model_copy(update={
+                        "used_model_steps": min(
+                            next_budget.max_model_steps,
+                            next_budget.used_model_steps + 1,
+                        ),
+                    })
+                return Command(
+                    update={
+                        "resolved_request": resolved,
+                        "validation_report": report,
+                        "pending_analysis": pending,
+                        "pending_interrupt": None,
+                        "response_text": pending.question,
+                        "response_blocks": [text_block(pending.question)],
+                        "outcome": "needs_input",
+                        "failure_code": "missing_analysis_parameter",
+                        "step_budget": next_budget,
+                    },
+                    goto=END,
+                )
             pending_plan = _build_pending_plan(state, resolved, report)
             payload = ConfirmationPayload(
                 analysis_type=resolved.analysis_type,
@@ -479,6 +607,184 @@ def _clarification_question(
         details = "；".join(item.message[:500] for item in report.blocking[:3])
         question = f"分析请求未通过校验，请处理后继续：{details}"
     return question[:1200]
+
+
+def _sample_scope_from_report(report: ValidationReport) -> list[StratumSummary]:
+    previews = report.previews or ([report.preview] if report.preview is not None else [])
+    return [StratumSummary(
+        stratum=dict(preview.same_values),
+        tested_count=preview.tested_count,
+        reference_count=preview.reference_count,
+        included=True,
+    ) for preview in previews if preview is not None]
+
+
+def _sample_scope_from_inputs(
+    report: ValidationReport,
+    resolved: ResolvedRequest,
+    dataset_refs: list[DatasetRef],
+) -> list[StratumSummary]:
+    """Derive display counts from the matrix/metadata intersection."""
+
+    params = resolved.params
+    contrast = getattr(params, "contrast", None) if params is not None else None
+    if contrast is None:
+        return _sample_scope_from_report(report)
+    metadata_ref = next((item for item in dataset_refs if item.role == "metadata"), None)
+    matrix_role = "counts" if resolved.analysis_type == "DEG" else "metabolome"
+    matrix_ref = next((item for item in dataset_refs if item.role == matrix_role), None)
+    if metadata_ref is None or matrix_ref is None:
+        return _sample_scope_from_report(report)
+    metadata_text = metadata_ref.content.decode("utf-8-sig", errors="replace")
+    rows = list(csv.DictReader(io.StringIO(metadata_text, newline="")))
+    matrix_header = next(csv.reader(io.StringIO(matrix_ref.content.decode("utf-8-sig", errors="replace"))), [])
+    matrix_samples = {str(value).strip() for value in matrix_header[1:] if str(value).strip()}
+    sample_field = str((rows[0] if rows else {}).get("sample_id", ""))
+    if not sample_field:
+        sample_field = str(next(iter(rows[0]), "")) if rows else ""
+    rows = [
+        {str(key).strip(): str(value or "").strip() for key, value in row.items() if key is not None}
+        for row in rows
+        if str(row.get(sample_field, "")).strip() in matrix_samples
+    ]
+    fields = list(contrast.scope.blocking_fields) if contrast.scope.mode == "stratified" else []
+    groups: dict[tuple[str, ...], list[dict[str, str]]] = {}
+    for row in rows:
+        key = tuple(row.get(field, "") for field in fields)
+        groups.setdefault(key, []).append(row)
+    min_replicates = int(getattr(params, "min_replicates", 2))
+    result: list[StratumSummary] = []
+    for key, group in groups.items():
+        tested_count = sum(row.get(contrast.compare_field, "") == contrast.tested_level for row in group)
+        reference_count = sum(row.get(contrast.compare_field, "") == contrast.reference_level for row in group)
+        included = tested_count >= min_replicates and reference_count >= min_replicates
+        result.append(StratumSummary(
+            stratum=dict(zip(fields, key)),
+            tested_count=tested_count,
+            reference_count=reference_count,
+            included=included,
+            exclusion_reason=None if included else f"requires at least {min_replicates} samples per group",
+        ))
+    return result or _sample_scope_from_report(report)
+
+
+def _candidate_pending(
+    state: GraphState,
+    resolved: ResolvedRequest,
+    report: ValidationReport,
+    sample_scope: list[StratumSummary],
+) -> PendingAnalysisClarification:
+    proposal = _analysis_proposal(state)
+    if resolved.params is not None:
+        proposal = AnalysisProposal(
+            analysis_type=resolved.params.analysis_type,
+            compare_field=resolved.params.contrast.compare_field,
+            tested_level=resolved.params.contrast.tested_level,
+            reference_level=resolved.params.contrast.reference_level,
+            scope=resolved.params.contrast.scope,
+            requested_params=resolved.params.legacy_params(),
+        )
+    return PendingAnalysisClarification(
+        analysis_type=resolved.analysis_type,
+        question=_candidate_confirmation_question(state, resolved, report, sample_scope),
+        missing=[],
+        options=[],
+        source_message=state.user_message,
+        input_bundle_id=state.active_input_bundle_id,
+        source_action=state.decision.action if state.decision is not None else "propose_plan",
+        proposal=proposal,
+        sample_scope=sample_scope,
+        candidate_validation=report,
+    )
+
+
+def _candidate_confirmation_question(
+    state: GraphState,
+    resolved: ResolvedRequest,
+    report: ValidationReport,
+    sample_scope: list[StratumSummary],
+) -> str:
+    params = resolved.params
+    if params is None or not hasattr(params, "contrast"):
+        return "Please confirm the proposed analysis parameters, or tell me what to change."
+    contrast = params.contrast
+    scope = contrast.scope
+    chinese = any("\u4e00" <= char <= "\u9fff" for char in state.user_message)
+    scope_text = (
+        "全部样本"
+        if scope.mode == "all"
+        else "按 " + ", ".join(scope.blocking_fields) + " 分层"
+        if scope.mode == "stratified"
+        else "固定条件 " + ", ".join(f"{k}={v}" for k, v in scope.fixed_filters.items())
+    )
+    counts = "; ".join(
+        f"{', '.join(f'{k}={v}' for k, v in item.stratum.items()) or 'all'}: "
+        f"tested={item.tested_count}, reference={item.reference_count}"
+        for item in sample_scope
+    ) or "No stratum count preview is available."
+    if chinese:
+        return (
+            f"我根据当前文件提出了一个候选 {params.analysis_type} 设置："
+            f"比较字段 {contrast.compare_field}，测试组 {contrast.tested_level}，"
+            f"参考组 {contrast.reference_level}，范围为{scope_text}。"
+            f"样本计数：{counts}。请确认这个设置，或告诉我需要修改比较字段、比较组或分层方式。"
+        )[:1200]
+    return (
+        f"I proposed a {params.analysis_type} setup from the current files: compare "
+        f"{contrast.compare_field}, testing {contrast.tested_level} against "
+        f"{contrast.reference_level}, using {scope_text}. Sample counts: {counts}. "
+        "Please confirm this setup or tell me what to change."
+    )[:1200]
+
+
+def _with_model_confirmation(
+    state: GraphState,
+    pending: PendingAnalysisClarification,
+    response_model: MainDecisionModel | None,
+) -> PendingAnalysisClarification:
+    """Let the role model phrase validated candidate facts; fallback stays deterministic."""
+
+    if response_model is None:
+        return pending
+    if not hasattr(response_model, "last_assistant_message"):
+        # Recorded/test models and simple injected fixtures do not implement
+        # the live phrasing boundary; keep the deterministic fallback.
+        return pending
+    from ..context import ContextAssembler
+
+    prompt_state = state.model_copy(update={
+        "pending_analysis": pending,
+        "validation_report": pending.candidate_validation,
+    })
+    try:
+        context = ContextAssembler().assemble_for_analysis(prompt_state)
+        raw = response_model(context, role=AgentRole.ANALYSIS)
+        output = AnalysisModelOutput.model_validate(raw)
+        text = output.answer if output.decision.action == "answer" else output.decision.question
+        if text and _grounded_confirmation_text(text, pending):
+            return pending.model_copy(update={"question": text[:1200]})
+    except Exception:
+        pass
+    return pending
+
+
+def _grounded_confirmation_text(text: str, pending: PendingAnalysisClarification) -> bool:
+    """Accept model phrasing only when it repeats the validated candidate facts."""
+
+    normalized = text.casefold()
+    if normalized.strip() in {"ask_user", "tool_call", "reroute"}:
+        return False
+    proposal = pending.proposal
+    if proposal is None:
+        return False
+    required = [proposal.analysis_type, proposal.compare_field, proposal.tested_level, proposal.reference_level]
+    if any(value and str(value).casefold() not in normalized for value in required):
+        return False
+    for item in pending.sample_scope:
+        for count in (item.tested_count, item.reference_count):
+            if str(count) not in normalized:
+                return False
+    return True
 
 
 def _clarification_option(

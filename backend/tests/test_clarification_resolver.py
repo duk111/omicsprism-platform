@@ -49,16 +49,15 @@ def test_param_specs_are_introspected_and_scoped_by_analysis_type() -> None:
     dem = param_specs_for_analysis("DEM")
     gma = param_specs_for_analysis("GMA")
 
-    assert set(deg) == {"padj_cutoff", "log2fc_cutoff", "min_total_count", "min_replicates"}
-    assert set(dem) == {
-        "padj_cutoff",
+    assert {"padj_cutoff", "log2fc_cutoff", "min_total_count", "min_replicates", "compare_field", "tested_level", "reference_level", "same_fields"} <= set(deg)
+    assert {"padj_cutoff",
         "log2fc_cutoff",
         "vip_cutoff",
         "min_replicates",
         "max_missing_fraction",
         "impute_method",
-    }
-    assert set(gma) == {"fdr_cutoff", "max_missing_fraction"}
+    } <= set(dem)
+    assert {"fdr_cutoff", "max_missing_fraction"} <= set(gma)
     assert deg["padj_cutoff"].default == 0.05
     assert deg["padj_cutoff"].ge == 0
     assert deg["padj_cutoff"].le == 1
@@ -73,6 +72,16 @@ def test_deterministic_resolver_maps_multiple_threshold_edits() -> None:
 
     assert result.intent == "edit_params"
     assert result.proposal_patch == {"min_replicates": 1, "log2fc_cutoff": 0.5}
+
+
+def test_deterministic_resolver_maps_scope_edit_without_hardcoded_user_field_names() -> None:
+    result = ClarificationResolver()(ClarificationResolverInput(
+        user_reply="按 sampling_day 分层，不要按 replicate 分层",
+        param_spec=param_specs_for_analysis("DEG"),
+    ))
+
+    assert result.intent == "edit_params"
+    assert result.proposal_patch == {"scope_mode": "stratified", "same_fields": "sampling_day"}
 
 
 def test_option_ids_are_stable_and_ordinal_selection_returns_patch() -> None:

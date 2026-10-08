@@ -393,6 +393,14 @@ class ContextAssembler:
             if pending_analysis is not None and hasattr(pending_analysis, "model_dump")
             else None
         )
+        if pending_payload is not None:
+            pending_payload["candidate"] = pending_payload.get("proposal")
+            pending_payload["validation"] = pending_payload.get("candidate_validation")
+            pending_payload["strata_counts"] = pending_payload.get("sample_scope", [])
+            pending_payload["confirmation_required"] = bool(
+                getattr(pending_analysis, "status", None) == "active"
+                and getattr(pending_analysis, "candidate_validation", None) is not None
+            )
         return AnalysisModelContext(
             trace_id=str(getattr(state, "trace_id", "") or "trace-local"),
             thread_id=str(getattr(state, "thread_id", "") or "thread-local"),

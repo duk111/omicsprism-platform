@@ -120,6 +120,10 @@ class ClarificationResolverOutput(BaseModel):
 
 
 PARAM_DESCRIPTIONS: dict[str, str] = {
+    "compare_field": "metadata 中用于定义比较因素的列名。",
+    "tested_level": "比较中作为测试组的实际水平。",
+    "reference_level": "比较中作为参考组的实际水平。",
+    "same_fields": "用于分层或阻断的 metadata 列名，不能与比较字段相同。",
     "padj_cutoff": "多重检验校正后的显著性阈值，越小越严格。",
     "log2fc_cutoff": "绝对 log2 fold change 的最低阈值，越大越严格。",
     "min_total_count": "特征在所有样本中的最小总计数过滤阈值。",
@@ -211,7 +215,12 @@ def param_specs_for_analysis(analysis_type: str | None) -> dict[str, ParamFieldS
         "GMA": GMAParams,
     }
     model = models.get(str(analysis_type or "").upper())
-    return build_param_spec(model) if model is not None else {}
+    specs = build_param_spec(model) if model is not None else {}
+    for name in ("compare_field", "tested_level", "reference_level", "same_fields"):
+        description = PARAM_DESCRIPTIONS.get(name)
+        if description and name not in specs:
+            specs[name] = ParamFieldSpec(field=name, value_type="string", description=description)
+    return specs
 
 
 def _normalized(text: str) -> str:
@@ -342,6 +351,26 @@ class ClarificationResolver:
                         confidence=0.98,
                         reason=f"识别到用户在询问参数 {field} 的含义。",
                     )
+        scope_match = re.search(
+            r"(?:按|按照|以|by|stratif(?:y|ied)\s+by)\s*([^\s，,。.;；]{1,80})\s*(?:分层|分组|strat|blocking)",
+            text,
+            flags=re.IGNORECASE,
+        )
+        if scope_match:
+            field = scope_match.group(1).strip(" ，,。.")
+            return ClarificationResolverOutput(
+                intent="edit_params",
+                proposal_patch={"scope_mode": "stratified", "same_fields": field},
+                confidence=0.9,
+                reason="识别到用户指定了分层字段。",
+            )
+        if any(token in lowered for token in ("不要分层", "不分层", "全部样本", "all samples", "without stratification")):
+            return ClarificationResolverOutput(
+                intent="edit_params",
+                proposal_patch={"scope_mode": "all", "same_fields": ""},
+                confidence=0.9,
+                reason="识别到用户要求使用全部样本。",
+            )
         patch = _extract_patch(text, request.param_spec)
         if patch:
             return ClarificationResolverOutput(

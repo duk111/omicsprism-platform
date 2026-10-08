@@ -735,7 +735,7 @@ class AgentRuntime:
                     item,
                     run_id=current.run_id,
                     outcome="failed",
-                    error_code=error_code,
+                    failure_code=_runtime_failure_code(error_code),
                     retry_count=max(0, current.attempt - 1),
                 )
         except Exception:
@@ -790,7 +790,7 @@ class AgentRuntime:
         outcome: str | None = None,
         latency_ms: float | None = None,
         retry_count: int = 0,
-        error_code: str | None = None,
+        failure_code: str | None = None,
         attempted_roles: list[str] | None = None,
     ) -> None:
         recorder = self.context.trace_recorder
@@ -806,7 +806,7 @@ class AgentRuntime:
             outcome=outcome,
             latency_ms=latency_ms,
             retry_count=retry_count,
-            failure_code=_runtime_failure_code(error_code) if outcome == "failed" else None,
+            failure_code=failure_code or (_runtime_failure_code("agent_runtime_failed") if outcome == "failed" else None),
             attempted_roles=attempted_roles,
         )
 

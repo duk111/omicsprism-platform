@@ -35,11 +35,11 @@ def route(state: GraphState) -> AgentRole | RouteTarget | None:
     if has_jobs and _is_explicit_result_request(message):
         return AgentRole.RESULT_QA
 
-    if _is_capability_request(message):
-        return AgentRole.ANALYSIS
-
     if _is_explicitly_unsupported(message):
         return RouteTarget.UNSUPPORTED
+
+    if _is_capability_request(message):
+        return AgentRole.ANALYSIS
 
     if _is_explicit_analysis_request(message) or _is_analysis_followup(message):
         return AgentRole.ANALYSIS
@@ -56,7 +56,7 @@ def route(state: GraphState) -> AgentRole | RouteTarget | None:
 def _is_explicitly_unsupported(message: str) -> bool:
     text = message.casefold()
     return any(marker in text for marker in (
-        "single-cell", "single cell", "空间转录组", "spatial transcriptomics",
+        "single-cell", "single cell", "单细胞", "空间转录组", "spatial transcriptomics",
         "蛋白质结构", "protein structure", "image segmentation", "图像分割",
     ))
 

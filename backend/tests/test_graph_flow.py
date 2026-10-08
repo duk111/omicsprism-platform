@@ -29,7 +29,7 @@ from backend.app.agent.graph import (
     StepBudget,
     build_agent_graph,
 )
-from backend.app.agent.nodes.analysis import DatasetLoadError, analysis_node
+from backend.app.agent.nodes.analysis import analysis_node
 from backend.app.agent.nodes.result_qa import ResultAccessError, result_qa_node
 from backend.app.agent.param_resolver import AnalysisProposal, ScopeSpec
 from backend.app.agent.schemas import AgentJobBlock, AgentTextBlock, ToolName, ToolResult
@@ -263,9 +263,38 @@ def test_propose_plan_routes_through_analysis_validation() -> None:
         _config(),
     )
 
-    assert result["__interrupt__"]
-    assert result["__interrupt__"][0].value["kind"] == "confirmation"
+    assert not result.get("__interrupt__")
+    assert result["pending_analysis"].status == "active"
+    assert result["outcome"] == "needs_input"
+    assert "condition" in result["response_text"]
     assert loader.requests
+
+
+def test_valid_analysis_candidate_requires_user_confirmation_before_plan_interrupt() -> None:
+    refs = _dataset_refs()
+    model = _analysis_model(AnalysisProposal(
+        analysis_type="DEG",
+        compare_field="condition",
+        tested_level="salt",
+        reference_level="control",
+        scope=ScopeSpec(mode="all"),
+    ))
+    result = build_agent_graph(
+        model,
+        RecordingDatasetLoader(refs),
+        _submitter(),
+        _reader(),
+        _querier(),
+    ).invoke(_state(
+        user_message="帮我分析差异基因",
+        dataset_profiles=_profile_refs(refs),
+    ), _config("candidate-confirmation"))
+
+    assert not result.get("__interrupt__")
+    assert result["outcome"] == "needs_input"
+    assert result["pending_analysis"].status == "active"
+    assert result["response_text"] != "ask_user"
+    assert result["pending_analysis"].sample_scope[0].tested_count == 2
 
 
 def test_model_error_can_recover_on_the_single_retry() -> None:
@@ -541,9 +570,23 @@ def test_complete_analysis_request_is_resolved_and_validated_before_confirmation
         dataset_profiles=_profile_refs(refs),
     )
 
-    result = build_agent_graph(
-        model, loader, submitter, _reader(), _querier()
-    ).invoke(state, _config(state.thread_id))
+    graph = build_agent_graph(model, loader, submitter, _reader(), _querier())
+    config = _config(state.thread_id)
+    first = graph.invoke(state, config)
+    candidate = GraphState.model_validate(first)
+    confirmed = candidate.model_copy(update={
+        "user_message": "confirm",
+        "decision": None,
+        "response_text": None,
+        "response_blocks": [],
+        "outcome": None,
+        "failure_code": None,
+        "visited_roles": [],
+        "route_decision": None,
+        "step_budget": type(candidate.step_budget)(),
+    })
+    graph.update_state(config, confirmed.model_dump(mode="json"))
+    result = graph.invoke(confirmed.model_dump(mode="json"), config)
 
     assert result["__interrupt__"][0].value["kind"] == "confirmation"
     payload = result["__interrupt__"][0].value
@@ -556,6 +599,9 @@ def test_complete_analysis_request_is_resolved_and_validated_before_confirmation
     assert result["pending_plan"].plan_version == payload["plan_version"]
     assert not submitter.requests
     assert loader.requests == [DatasetLoadRequest(
+        user_id="user-1",
+        dataset_ids=["dataset-counts", "dataset-metadata"],
+    ), DatasetLoadRequest(
         user_id="user-1",
         dataset_ids=["dataset-counts", "dataset-metadata"],
     )]
@@ -591,6 +637,20 @@ def test_fixed_scope_preview_matches_execution_inputs() -> None:
         user_message="Compare salt and control in WT",
         dataset_profiles=_profile_refs(refs),
     ), config)
+    candidate = GraphState.model_validate(paused)
+    confirmed = candidate.model_copy(update={
+        "user_message": "confirm",
+        "decision": None,
+        "response_text": None,
+        "response_blocks": [],
+        "outcome": None,
+        "failure_code": None,
+        "visited_roles": [],
+        "route_decision": None,
+        "step_budget": type(candidate.step_budget)(),
+    })
+    graph.update_state(config, confirmed.model_dump(mode="json"))
+    paused = graph.invoke(confirmed.model_dump(mode="json"), config)
     payload = paused["__interrupt__"][0].value
     assert payload["kind"] == "confirmation"
     assert payload["preview"]["scope"]["mode"] == "fixed"
@@ -734,6 +794,20 @@ def test_default_checkpointer_resumes_confirmation_flow_once() -> None:
         ),
         config,
     )
+    candidate = GraphState.model_validate(paused)
+    confirmed = candidate.model_copy(update={
+        "user_message": "confirm",
+        "decision": None,
+        "response_text": None,
+        "response_blocks": [],
+        "outcome": None,
+        "failure_code": None,
+        "visited_roles": [],
+        "route_decision": None,
+        "step_budget": type(candidate.step_budget)(),
+    })
+    graph.update_state(config, confirmed.model_dump(mode="json"))
+    paused = graph.invoke(confirmed.model_dump(mode="json"), config)
     payload = paused["__interrupt__"][0].value
 
     completed = GraphState.model_validate(graph.invoke(Command(resume={
@@ -1017,6 +1091,20 @@ def test_confirmation_cancel_does_not_create_a_job() -> None:
         ),
         config,
     )
+    candidate = GraphState.model_validate(paused)
+    confirmed = candidate.model_copy(update={
+        "user_message": "confirm",
+        "decision": None,
+        "response_text": None,
+        "response_blocks": [],
+        "outcome": None,
+        "failure_code": None,
+        "visited_roles": [],
+        "route_decision": None,
+        "step_budget": type(candidate.step_budget)(),
+    })
+    graph.update_state(config, confirmed.model_dump(mode="json"))
+    paused = graph.invoke(confirmed.model_dump(mode="json"), config)
     payload = paused["__interrupt__"][0].value
 
     cancelled = GraphState.model_validate(
@@ -1031,7 +1119,7 @@ def test_confirmation_cancel_does_not_create_a_job() -> None:
     assert cancelled.pending_interrupt is None
     assert cancelled.pending_plan is None
     assert cancelled.response_text == "Analysis plan rejected."
-    assert len(loader.requests) == 1
+    assert len(loader.requests) == 2
     assert not submitter.requests
 
 
@@ -1138,8 +1226,152 @@ def test_analysis_loader_rejects_cross_user_dataset() -> None:
         _querier(),
     )
 
-    with pytest.raises(DatasetLoadError, match="cross-user"):
-        graph.invoke(_state(
-            user_message="Run DEG",
-            dataset_profiles=_profile_refs(state_refs),
-        ), _config())
+    result = graph.invoke(_state(
+        user_message="Run DEG",
+        dataset_profiles=_profile_refs(state_refs),
+    ), _config())
+
+    assert result["outcome"] == "failed"
+    assert result["failure_code"] == "dataset_validation_failed"
+    assert "cross-user" in result["response_text"]
+    assert "ask_user" not in result["response_text"]
+
+
+def test_metadata_semantic_columns_are_not_auto_promoted_to_design_facts() -> None:
+    counts = (
+        b"gene," + b",".join(f"s{i}".encode() for i in range(1, 9))
+        + b"\ng1," + b",".join(b"10" for _ in range(8)) + b"\n"
+    )
+    metadata = (
+        b"sample_id,condition,timepoint,replicate,batch\n"
+        b"s1,control,0h,r1,b1\n"
+        b"s2,control,0h,r2,b1\n"
+        b"s3,salt,0h,r1,b1\n"
+        b"s4,salt,0h,r2,b1\n"
+        b"s5,control,24h,r1,b2\n"
+        b"s6,control,24h,r2,b2\n"
+        b"s7,salt,24h,r1,b2\n"
+        b"s8,salt,24h,r2,b2\n"
+    )
+    refs = _dataset_refs(counts=counts, metadata=metadata)
+    loader = RecordingDatasetLoader(refs)
+    submitter = _submitter()
+    graph = build_agent_graph(
+        _analysis_model(AnalysisProposal(
+            analysis_type="DEG",
+            # The model does not provide a design field or a blocking scope.
+            # The resolver may form a candidate from observed levels, but it
+            # must never promote timepoint/replicate/batch by column name.
+            scope=ScopeSpec(mode="all"),
+        )),
+        loader,
+        submitter,
+        _reader(),
+        _querier(),
+    )
+
+    result = graph.invoke(_state(
+        user_message="Run a DEG analysis",
+        dataset_profiles=_profile_refs(refs),
+    ), _config("metadata-semantic-guard"))
+
+    assert result["outcome"] == "needs_input"
+    assert result["pending_analysis"].status == "active"
+    assert result["pending_analysis"].proposal.compare_field == "condition"
+    assert result["pending_analysis"].proposal.scope.mode == "all"
+    assert result["pending_analysis"].sample_scope[0].stratum == {}
+    assert result["pending_analysis"].candidate_validation is not None
+    assert result["pending_analysis"].candidate_validation.preview.tested_count == 4
+    assert result["pending_analysis"].candidate_validation.preview.reference_count == 4
+    assert not submitter.requests
+    assert "timepoint" not in result["response_text"].casefold()
+    assert "replicate" not in result["response_text"].casefold()
+    assert "ask_user" not in result["response_text"]
+
+
+def test_model_unavailable_is_a_natural_language_failure() -> None:
+    model = ScriptedMainModel([
+        RuntimeError("model unavailable"),
+        RuntimeError("model unavailable"),
+    ])
+
+    result = _run(model, _state(user_message="show the latest result"))
+
+    assert result.outcome == "failed"
+    assert result.failure_code == "model_unavailable"
+    assert "unavailable" in (result.response_text or "").casefold()
+    assert all(token not in (result.response_text or "") for token in ("ask_user", "tool_call", "reroute"))
+
+
+def test_internal_action_tokens_are_removed_from_model_text() -> None:
+    model = ScriptedMainModel([AgentLoopOutput(
+        decision=AgentDecision(action="answer"),
+        answer="The internal action is ask_user; please continue.",
+    )])
+
+    result = _run(model)
+
+    assert result.response_text is not None
+    assert all(token not in result.response_text for token in ("ask_user", "tool_call", "reroute"))
+    assert result.response_text == "Please confirm or clarify the requested analysis settings."
+
+
+def test_non_retryable_tool_failure_is_a_natural_language_failure() -> None:
+    model = ScriptedMainModel([AgentLoopOutput(
+        decision=AgentDecision(
+            action="tool_call",
+            tool=ToolName.DESCRIBE_ARTIFACTS,
+            arguments={"job_id": "job-1"},
+        ),
+    )])
+
+    def failing_tool(_request: object, _state: GraphState) -> dict[str, object]:
+        return {"ok": False, "error_code": "permission_denied"}
+
+    result = build_agent_graph(
+        model,
+        lambda _request: [],
+        _submitter(),
+        _reader(),
+        _querier(),
+        tool_executor=failing_tool,
+    ).invoke(_state(
+        user_message="show the latest result",
+        current_job=JobRef(job_id="job-1", owner_id="user-1"),
+        recent_jobs=[JobRef(job_id="job-1", owner_id="user-1")],
+    ), _config("tool-failure"))
+    state = GraphState.model_validate(result)
+
+    assert state.outcome == "failed"
+    assert state.failure_code == "tool_execution_failed"
+    assert "failed" in (state.response_text or "").casefold()
+    assert all(token not in (state.response_text or "") for token in ("ask_user", "tool_call", "reroute"))
+
+
+def test_unsupported_analysis_is_not_presented_as_supported() -> None:
+    refs = _dataset_refs()
+    model = ScriptedMainModel([AgentLoopOutput(
+        decision=AgentDecision(
+            action="run_analysis",
+            analysis_type="GMA",
+            proposal=AnalysisProposal(analysis_type="GMA"),
+        ),
+    )])
+    submitter = _submitter()
+
+    result = build_agent_graph(
+        model,
+        RecordingDatasetLoader(refs),
+        submitter,
+        _reader(),
+        _querier(),
+    ).invoke(_state(
+        user_message="Run GMA",
+        dataset_profiles=_profile_refs(refs),
+    ), _config("unsupported-analysis"))
+
+    assert result["outcome"] == "unsupported"
+    assert result["failure_code"] == "unsupported_request"
+    assert "missing required input roles" in result["response_text"].casefold()
+    assert not submitter.requests
+    assert all(token not in result["response_text"] for token in ("ask_user", "tool_call", "reroute"))

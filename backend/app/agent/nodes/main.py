@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from copy import deepcopy
 from time import perf_counter
 from collections.abc import Callable
@@ -734,6 +735,8 @@ def _ask_user_update(
             "unresolved": "route_ambiguous",
             "failed": "tool_execution_failed",
         }[outcome]
+    if outcome == "failed":
+        question = _failure_message(failure_code, question)
     return {
         "decision": AgentDecision(
             action="ask_user",
@@ -750,12 +753,40 @@ def _ask_user_update(
     }
 
 
+def _failure_message(failure_code: str, question: str) -> str:
+    """Keep failures user-visible and actionable without exposing protocol actions."""
+
+    if (
+        _contains_internal_action(question)
+        or question == _MODEL_FALLBACK_QUESTION
+    ):
+        return {
+            "model_unavailable": "The analysis model is temporarily unavailable. Please try again shortly.",
+            "role_schema_validation_failed": _MODEL_FALLBACK_QUESTION,
+            "tool_execution_failed": "The requested data tool failed. Please try again or review the input files.",
+            "tool_call_rejected": "That operation is not supported by this agent.",
+        }.get(failure_code, "The requested operation failed. Please try again.")
+    return question
+
+
 def _response_text(output: AgentLoopOutput) -> str | None:
     if output.decision.action == "answer":
-        return output.answer
+        return _hide_internal_action_text(output.answer)
     if output.decision.action == "ask_user":
-        return output.decision.question
+        return _hide_internal_action_text(output.decision.question)
     return None
+
+
+def _hide_internal_action_text(value: str | None) -> str | None:
+    if value is None:
+        return None
+    if _contains_internal_action(value):
+        return "Please confirm or clarify the requested analysis settings."
+    return value
+
+
+def _contains_internal_action(value: str) -> bool:
+    return bool(re.search(r"(?<![A-Za-z0-9_])(ask_user|tool_call|reroute)(?![A-Za-z0-9_])", value, re.IGNORECASE))
 
 
 def _grounded_answer_text(answer: GroundedAnswer) -> str:

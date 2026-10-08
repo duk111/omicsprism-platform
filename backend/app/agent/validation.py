@@ -165,6 +165,7 @@ class ValidationReport(BaseModel):
     warnings: list[Issue] = Field(default_factory=list)
     missing: list[MissingParam] = Field(default_factory=list)
     preview: ContrastPreview | None = None
+    previews: list[ContrastPreview] = Field(default_factory=list, max_length=50)
     input_fingerprint: str
 
 
@@ -240,6 +241,7 @@ def validate_analysis_request(
         blocking.extend(_issues(response.errors))
         warnings = _issues(response.warnings)
         preview = None
+        previews: list[ContrastPreview] = []
         if analysis_type in {AnalysisType.DEG, AnalysisType.DEM}:
             metadata_ref = next((ref for ref in validation_refs if ref.role == "metadata"), None)
             rows = _metadata_rows(metadata_ref)
@@ -247,9 +249,11 @@ def validate_analysis_request(
             blocking.extend(_issues(item for item in contrast_issues if item.severity == "error"))
             warnings.extend(_issues(item for item in contrast_issues if item.severity == "warning"))
             if contrasts:
-                preview_data = contrasts[0].as_dict()
-                preview_data["scope"] = scope.model_dump(mode="python")
-                preview = ContrastPreview.model_validate(preview_data)
+                for contrast in contrasts[:50]:
+                    preview_data = contrast.as_dict()
+                    preview_data["scope"] = scope.model_dump(mode="python")
+                    previews.append(ContrastPreview.model_validate(preview_data))
+                preview = previews[0]
             elif metadata_ref is not None and not blocking:
                 blocking.append(Issue(code="contrast_unavailable", message="无法从 metadata 形成合法 contrast", field="contrast"))
         return ValidationReport(
@@ -259,6 +263,7 @@ def validate_analysis_request(
             warnings=warnings,
             missing=list(request.missing),
             preview=preview,
+            previews=previews,
             input_fingerprint=fingerprint,
         )
     blocking.extend(Issue(code="missing_parameter", message=item.reason, field=item.field) for item in request.missing)
@@ -269,6 +274,7 @@ def validate_analysis_request(
         warnings=[],
         missing=list(request.missing),
         preview=None,
+        previews=[],
         input_fingerprint=fingerprint,
     )
 
@@ -302,3 +308,5 @@ def _metadata_rows(ref: DatasetRef | None) -> list[dict[str, str]]:
         {str(key).strip(): str(value or "").strip() for key, value in row.items() if key is not None}
         for row in csv.DictReader(io.StringIO(text, newline=""))
     ]
+
+

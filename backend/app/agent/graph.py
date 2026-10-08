@@ -506,6 +506,8 @@ class PendingAnalysisClarification(BaseModel):
     input_bundle_id: str | None = Field(default=None, max_length=200)
     source_action: Literal["inspect_dataset", "propose_plan", "run_analysis"] = "propose_plan"
     proposal: AnalysisProposal | None = None
+    sample_scope: list[StratumSummary] = Field(default_factory=list, max_length=50)
+    candidate_validation: ValidationReport | None = None
 
 class AgentStreamEvent(BaseModel):
     """Public SSE event carrying durable turn, message, or HITL state."""
@@ -829,7 +831,7 @@ def build_agent_graph(
     )
     builder.add_node(
         "analysis",
-        analysis_node(dataset_loader, job_submitter),
+        analysis_node(dataset_loader, job_submitter, model),
         destinations=("analysis", END),
     )
     builder.add_node("result_qa", result_qa_node(job_reader, result_querier))

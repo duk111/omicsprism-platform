@@ -217,6 +217,6 @@ def test_mcp_rejections_are_traced_without_capability_enumeration() -> None:
         asyncio.run(server.call_tool("describe_metadata", {"unexpected": True}))
 
     assert [(event.tool_name, event.outcome, event.error_code) for event in events] == [
-        ("not_visible", "mcp:local:not_visible", "not_visible"),
-        ("describe_metadata", "mcp:local:invalid_arguments", "invalid_arguments"),
+        ("not_visible", "mcp:local:not_visible", "tool_call_rejected"),
+        ("describe_metadata", "mcp:local:invalid_arguments", "tool_call_rejected"),
     ]
