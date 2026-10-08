@@ -20,6 +20,7 @@ from ..graph import (
     CapabilityQueryInput,
     GraphState,
     MainDecisionModel,
+    PendingAnalysisClarification,
     ToolExecutor,
 )
 from ..message_blocks import text_block
@@ -63,6 +64,7 @@ def analysis_agent_node(
         ):
             result = loop(state)
             result = _normalize_analysis_response(state, result)
+            result = _materialize_human_clarification(state, result)
             if (
                 isinstance(result.get("decision"), AgentDecision)
                 and result["decision"].action == "capability_query"
@@ -72,6 +74,43 @@ def analysis_agent_node(
         return _resolve_pending_turn(state, resolver)
 
     return run
+
+
+def _materialize_human_clarification(
+    state: GraphState,
+    result: dict[str, object],
+) -> dict[str, object]:
+    """Persist an analysis agent's uncertainty for the next user turn.
+
+    ``ask_user`` is a semantic HITL outcome, not a terminal protocol detail.
+    Keeping it in ``pending_analysis`` lets the next ordinary chat turn enter
+    the clarification resolver and continue the same candidate plan.
+    """
+    decision = result.get("decision")
+    if not isinstance(decision, AgentDecision):
+        return result
+    if decision.action != "ask_user" or state.pending_analysis is not None:
+        return result
+    question = decision.question or "Please clarify the analysis settings."
+    proposal = decision.proposal
+    if proposal is None:
+        proposal = AnalysisProposal(analysis_type=decision.analysis_type)
+    analysis_type = decision.analysis_type or proposal.analysis_type
+    pending = PendingAnalysisClarification(
+        analysis_type=analysis_type,
+        question=question[:1200],
+        missing=["scope"] if "scope" in question.casefold() else [],
+        source_message=state.user_message,
+        input_bundle_id=state.active_input_bundle_id,
+        source_action="propose_plan",
+        proposal=proposal,
+    )
+    result["pending_analysis"] = pending
+    result["outcome"] = "needs_input"
+    result["failure_code"] = "missing_analysis_parameter"
+    result["response_text"] = question[:1200]
+    result["response_blocks"] = [text_block(question[:1200])]
+    return result
 
 
 def _normalize_analysis_response(

@@ -1348,6 +1348,73 @@ def test_non_retryable_tool_failure_is_a_natural_language_failure() -> None:
     assert all(token not in (state.response_text or "") for token in ("ask_user", "tool_call", "reroute"))
 
 
+def test_tool_failure_is_returned_to_model_before_terminal_failure() -> None:
+    """A standard tool result lets the model recover or explain the issue."""
+    model = ScriptedMainModel([
+        AgentLoopOutput(decision=AgentDecision(
+            action="tool_call",
+            tool=ToolName.DESCRIBE_ARTIFACTS,
+            arguments={"job_id": "job-1"},
+        )),
+        AgentLoopOutput(
+            decision=AgentDecision(action="answer"),
+            answer="The requested job is not accessible.",
+        ),
+    ])
+
+    result = build_agent_graph(
+        model,
+        lambda _request: [],
+        _submitter(),
+        _reader(),
+        _querier(),
+        tool_executor=lambda _request, _state: {
+            "ok": False,
+            "error_code": "permission_denied",
+        },
+    ).invoke(_state(
+        user_message="show result",
+        current_job=JobRef(job_id="job-1", owner_id="user-1"),
+        recent_jobs=[JobRef(job_id="job-1", owner_id="user-1")],
+    ), _config("tool-error-recovery"))
+    state = GraphState.model_validate(result)
+
+    assert state.outcome == "completed"
+    assert state.response_text == "The requested job is not accessible."
+    assert state.tool_observations[-1].outcome == "failed"
+    assert '"error_code":"permission_denied"' in state.tool_observations[-1].summary
+
+
+def test_analysis_uncertainty_becomes_resumable_hitl_state() -> None:
+    refs = _dataset_refs()
+    model = ScriptedMainModel([
+        AgentLoopOutput(decision=AgentDecision(
+            action="ask_user",
+            analysis_type="DEG",
+            question="Which scope should I use: all or stratified?",
+        )),
+    ])
+
+    result = build_agent_graph(
+        model,
+        RecordingDatasetLoader(refs),
+        _submitter(),
+        _reader(),
+        _querier(),
+    ).invoke(_state(
+        user_message="analyze differential genes",
+        dataset_profiles=_profile_refs(refs),
+    ), _config("analysis-hitl"))
+    state = GraphState.model_validate(result)
+
+    assert state.outcome == "needs_input"
+    assert state.failure_code == "missing_analysis_parameter"
+    assert state.pending_analysis is not None
+    assert state.pending_analysis.status == "active"
+    assert state.pending_analysis.source_action == "propose_plan"
+    assert state.pending_analysis.missing == ["scope"]
+
+
 def test_unsupported_analysis_is_not_presented_as_supported() -> None:
     refs = _dataset_refs()
     model = ScriptedMainModel([AgentLoopOutput(

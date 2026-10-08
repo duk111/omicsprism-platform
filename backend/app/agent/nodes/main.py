@@ -178,6 +178,12 @@ def _run_agent_loop(
                 output = candidate
                 break
             if output is None:
+                # If a tool was just rejected, preserve that boundary error
+                # rather than misreporting the missing model retry as a model
+                # outage. In a live function-calling transcript the model gets
+                # the tool result above and may still recover or ask for HITL.
+                if observations and observations[-1].outcome == "failed":
+                    model_failure_code = "tool_execution_failed"
                 return _ask_user_update(
                     _MODEL_FALLBACK_QUESTION,
                     budget,
@@ -349,18 +355,6 @@ def _run_agent_loop(
                     "step_budget": budget,
                     "tool_observations": observations,
                 }
-            if (
-                decision.action != "tool_call"
-                and observations
-                and observations[-1].outcome == "failed"
-            ):
-                return _ask_user_update(
-                    "The requested data tool failed before a verified answer could be produced.",
-                    budget,
-                    observations,
-                    outcome="failed",
-                    failure_code="tool_execution_failed",
-                )
             if decision.action != "tool_call":
                 response_text = _response_text(output)
                 return {
@@ -428,14 +422,6 @@ def _run_agent_loop(
             ))
             observations = observations[-12:]
             budget = _advance_tool_budget(budget)
-            if tool_outcome == "failed" and not retryable:
-                return _ask_user_update(
-                    "The requested data tool failed.",
-                    budget,
-                    observations,
-                    outcome="failed",
-                    failure_code="tool_execution_failed",
-                )
             if budget.used_tool_calls >= budget.max_tool_calls:
                 return _ask_user_update(
                     _budget_question(observations),
@@ -679,10 +665,27 @@ def _execute_tool_request(
             if isinstance(result_error_code, str) and result_error_code:
                 tool_error_code = result_error_code
     except Exception as exc:
-        summary = "tool execution failed"
+        # Keep the native function-calling transcript valid: an exception is
+        # represented as a bounded tool result so the model gets one chance to
+        # correct its call or turn the missing fact into HITL clarification.
+        error_code = type(exc).__name__
+        summary = _json_compact({
+            "ok": False,
+            "error_code": error_code,
+            "message": "The tool call was rejected by the data boundary.",
+        })
         tool_outcome = "failed"
         retryable = _is_transient_tool_error(exc)
-        tool_error_code = type(exc).__name__
+        tool_error_code = error_code
+        LOG.warning(
+            "agent tool execution failed",
+            extra={
+                "event": "agent.tool.failed",
+                "tool": request.tool.value,
+                "error_code": error_code,
+            },
+            exc_info=True,
+        )
     if trace_recorder is not None:
         trace_recorder.tool_call(
             context=state,
@@ -690,7 +693,7 @@ def _execute_tool_request(
             tool_schema_hash=stable_hash(ToolCallRequest.model_json_schema()),
             latency_ms=round((perf_counter() - tool_started) * 1000, 3),
             outcome=tool_outcome,
-            failure_code="tool_execution_failed" if tool_outcome == "failed" else None,
+            failure_code=(tool_error_code if tool_outcome == "failed" else None),
         )
     return summary, tool_outcome, retryable, tool_error_code, evidence
 
