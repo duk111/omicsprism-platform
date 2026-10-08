@@ -86,9 +86,9 @@ function AppRoutes() {
   return (
     <div className="platform-shell">
       <header className="topbar">
-        <button className="brand" type="button" onClick={() => navigate("/")}>OmicsPrism</button>
+        <button className="brand" type="button" onClick={() => navigate("/home")}>OmicsPrism</button>
         <nav className="topnav">
-          <button type="button" className={location.pathname === "/home" ? "active-nav" : ""} onClick={() => navigate("/home")}>Home</button>
+          <button type="button" className={location.pathname === "/" || location.pathname === "/home" ? "active-nav" : ""} onClick={() => navigate("/home")}>Home</button>
           <button type="button" className={location.pathname === "/copilot" ? "active-nav" : ""} onClick={() => navigate("/copilot")}>Copilot</button>
           <button type="button" className={location.pathname === "/new" ? "active-nav" : ""} onClick={() => navigate("/new")}>New Analysis</button>
           <button type="button" className={location.pathname === "/jobs" || location.pathname.startsWith("/jobs/") ? "active-nav" : ""} onClick={() => navigate("/jobs")}>My Jobs</button>
@@ -97,7 +97,7 @@ function AppRoutes() {
         </nav>
       </header>
       <Routes>
-        <Route path="/" element={<LandingPage onStart={() => navigate("/home")} />} />
+        <Route path="/" element={<AnalysisPage tab="home" onSelectType={openAnalysis} onProgress={openProgress} />} />
         <Route path="/home" element={<AnalysisPage tab="home" onSelectType={openAnalysis} onProgress={openProgress} />} />
         <Route path="/new" element={<AnalysisPage tab="new" onSelectType={openAnalysis} onProgress={openProgress} />} />
         <Route path="/deg" element={<AnalysisFormRoute analysisType="deg" />} />
@@ -116,24 +116,10 @@ function AppRoutes() {
   );
 }
 
-function LandingPage({ onStart }: { onStart: () => void }) {
-  return (
-    <main className="landing-page">
-      <section className="landing-intro">
-        <p className="eyebrow">Multi-omics analysis platform</p>
-        <h1>OmicsPrism</h1>
-        <p>Run differential gene expression, differential metabolite, and gene-metabolite association analyses from one workspace.</p>
-        <button className="primary" type="button" onClick={onStart}>Start analysis</button>
-      </section>
-    </main>
-  );
-}
-
 function AnalysisFormRoute({ analysisType }: { analysisType: AnalysisType }) {
   const navigate = useNavigate();
   return (
     <main className="page narrow">
-      <AnalysisTabs />
       <AnalysisForm
         initialType={analysisType}
         onProgress={jobId => navigate(`/jobs/${encodeURIComponent(jobId)}`)}
@@ -273,8 +259,7 @@ function AnalysisPage({
   onProgress: (jobId: string) => void;
 }) {
   return (
-    <main className={tab === "download" || tab === "tutorial" || tab === "contact" ? "page" : "page narrow"}>
-      <AnalysisTabs tab={tab} />
+    <main className={`${tab === "home" || tab === "new" ? "page home-page" : tab === "download" || tab === "tutorial" || tab === "contact" ? "page" : "page narrow"}`}>
       {(tab === "home" || tab === "new") && (
         <WelcomeCards onSelect={onSelectType} />
       )}
@@ -381,11 +366,14 @@ function ContactPage() {
 
 function WelcomeCards({ onSelect }: { onSelect: (t: AnalysisType) => void }) {
   return (
-    <section className="welcome">
-      <h1 className="welcome-title">OmicsPrism</h1>
+    <section className="welcome home-welcome">
+      <div className="welcome-heading">
+        <p className="eyebrow">Multi-omics analysis workspace</p>
+        <h1 className="welcome-title">Welcome <span>to OmicsPrism</span></h1>
+      </div>
       <p className="welcome-desc">
         Upload your omics data and run statistical analyses with publication-ready visualizations.
-        No account required: your data stays in this browser session.
+        Your data stays in this browser session, so you can move from question to result without an account.
       </p>
       <div className="welcome-cards">
         <button className="welcome-card" type="button" onClick={() => onSelect("deg")}>
