@@ -7,7 +7,11 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from ..analysis_specs import AnalysisSpecRegistry, canonical_input_role
+from ..analysis_specs import (
+    AnalysisCatalogItem,
+    AnalysisSpecRegistry,
+    canonical_input_role,
+)
 from .dataset_profile import MetadataProfile
 from .param_resolver import ScopeSpec
 
@@ -68,7 +72,8 @@ class FactIndex(BaseModel):
     sample_count: int = Field(default=0, ge=0)
     alignment: dict[str, str] = Field(default_factory=dict, max_length=12)
     job_artifacts: dict[str, list[str]] = Field(default_factory=dict, max_length=20)
-    analysis_capabilities: dict[str, list[str]] = Field(default_factory=dict, max_length=3)
+    analysis_catalog: list[AnalysisCatalogItem] = Field(default_factory=list, max_length=3)
+    analysis_readiness: dict[str, dict[str, object]] = Field(default_factory=dict, max_length=3)
 
 
 class QaFactIndex(BaseModel):
@@ -525,11 +530,13 @@ class ContextAssembler:
                 artifacts = [str(item) for item in getattr(summary, "artifacts", [])]
                 job_artifacts[job_id] = artifacts[: self._MAX_JOB_ARTIFACTS]
                 truncated = truncated or len(artifacts) > self._MAX_JOB_ARTIFACTS
-        capability_report = AnalysisSpecRegistry().capability_report(roles)
-        analysis_capabilities = {
-            item.analysis_type: item.missing_roles
+        registry = AnalysisSpecRegistry()
+        capability_report = registry.capability_report(roles)
+        analysis_readiness = {
+            item.analysis_type: item.model_dump(mode="json")
             for item in capability_report.items
         }
+        analysis_catalog = registry.analysis_catalog()
         payload = {
             "roles": roles,
             "fields": metadata_fields,
@@ -537,7 +544,8 @@ class ContextAssembler:
             "sample_count": sample_count,
             "alignment": alignment,
             "job_artifacts": job_artifacts,
-            "analysis_capabilities": analysis_capabilities,
+            "analysis_catalog": [item.model_dump(mode="json") for item in analysis_catalog],
+            "analysis_readiness": analysis_readiness,
         }
         return FactIndex(
             context_version=_version("facts", payload),
@@ -548,7 +556,8 @@ class ContextAssembler:
             sample_count=sample_count,
             alignment=alignment,
             job_artifacts=job_artifacts,
-            analysis_capabilities=analysis_capabilities,
+            analysis_catalog=analysis_catalog,
+            analysis_readiness=analysis_readiness,
         )
 
     def _decision_ledger(self, state: object) -> DecisionLedger:

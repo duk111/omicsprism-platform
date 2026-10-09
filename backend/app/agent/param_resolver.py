@@ -15,6 +15,39 @@ ParamValue = str | int | float | bool | None
 ScopeMode = Literal["fixed", "stratified", "all", "unknown"]
 
 
+def infer_analysis_type(
+    user_message: str,
+    roles: Sequence[str] | None = None,
+) -> AnalysisName | None:
+    """Infer the analysis module from explicit language and available inputs.
+
+    This is deliberately small and deterministic.  The model may propose a
+    type, but a missing or malformed model field must not strand an otherwise
+    actionable chat turn.  Role based inference is only used when exactly one
+    registered module matches the available input bundle.
+    """
+
+    text = str(user_message or "").casefold()
+    keyword_groups: tuple[tuple[AnalysisName, tuple[str, ...]], ...] = (
+        ("GMA", ("gma", "调控网络", "调控网", "基因代谢", "联合分析", "多组学", "网络推断", "网络分析", "gene-metabol", "gene metabol", "regulatory network", "network inference", "multi-omics", "integrated omics")),
+        ("DEG", ("deg", "差异基因", "差异表达", "转录组差异", "基因差异", "differential gene", "differential expression")),
+        ("DEM", ("dem", "差异代谢", "差异代谢物", "代谢组差异", "代谢物差异", "differential metabol", "metabolite differential")),
+    )
+    matches = [analysis for analysis, markers in keyword_groups if any(marker in text for marker in markers)]
+    if matches:
+        return matches[0] if len(set(matches)) == 1 else None
+
+    present = {str(role).strip().casefold() for role in (roles or ())}
+    candidates: list[AnalysisName] = []
+    if {"counts", "metadata"} <= present:
+        candidates.append("DEG")
+    if {"metabolome", "metadata"} <= present:
+        candidates.append("DEM")
+    if {"transcriptome", "metabolome", "group"} <= present:
+        candidates.append("GMA")
+    return candidates[0] if len(candidates) == 1 else None
+
+
 class ScopeSpec(BaseModel):
     """Explicit sample-scope semantics for a contrast.
 

@@ -169,6 +169,20 @@ class ValidationReport(BaseModel):
     input_fingerprint: str
 
 
+def _preflight_role(analysis_type: str | None, role: str) -> str:
+    """Map canonical roles to the legacy preflight field names.
+
+    DEM still uses the legacy ``metabs`` key, while GMA's existing engine
+    expects ``metabolome``.  Keeping this compatibility mapping at the
+    adapter boundary prevents the chat planner from having to know either
+    spelling.
+    """
+
+    if str(analysis_type) == "GMA" and canonical_input_role(role) == "metabolome":
+        return "metabolome"
+    return analysis_engine_role(role)
+
+
 def validate_analysis_request(
     request: ResolvedRequest,
     dataset_refs: list[DatasetRef],
@@ -230,7 +244,7 @@ def validate_analysis_request(
         analysis_type = _analysis_type(request.params.analysis_type)
         validation_refs = scoped_refs if scope_error is None else dataset_refs
         files = {
-            analysis_engine_role(ref.role): UploadFile(
+            _preflight_role(request.analysis_type, ref.role): UploadFile(
                 filename=ref.filename,
                 file=io.BytesIO(ref.content),
             )

@@ -8,8 +8,19 @@ from backend.app.agent.param_resolver import (
     ContrastSpec,
     DEGParams,
     ScopeSpec,
+    infer_analysis_type,
     resolve_analysis_request,
 )
+
+
+def test_infer_analysis_type_uses_domain_language_before_input_roles() -> None:
+    assert infer_analysis_type("帮我推断调控网络", ["counts", "metadata"]) == "GMA"
+    assert infer_analysis_type("run a differential metabolite analysis", ["counts", "metadata"]) == "DEM"
+
+
+def test_infer_analysis_type_uses_unique_input_bundle_when_request_is_vague() -> None:
+    assert infer_analysis_type("帮我分析", ["counts", "metadata"]) == "DEG"
+    assert infer_analysis_type("帮我分析", ["counts", "metabolome", "metadata"]) is None
 
 
 def _metadata(rows: list[list[str]], columns: list[str]) -> MetadataProfile:

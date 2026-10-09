@@ -185,7 +185,7 @@ resolve_analysis_request + validator
 - **能力支持**：理论上该分析需要哪些输入角色；
 - **当前可运行**：本次数据和参数已经通过完整确定性校验。
 
-`ContextAssembler` 不应复制一套 DEG/DEM/GMA requirements。`fact_index.analysis_capabilities` 应从 `AnalysisSpecRegistry` 派生，并统一 `metabs`/`metabolome` 等角色别名。模型只能解释确定性结果，不能自行声称分析已经可运行。
+`ContextAssembler` 不应复制一套 DEG/DEM/GMA requirements。`fact_index.analysis_catalog` 和 `fact_index.analysis_readiness` 应从 `AnalysisSpecRegistry` 派生，并统一 `metabs`/`metabolome` 等角色别名。模型负责理解目录和解释 readiness；模型不能自行声称分析已经可运行。
 
 能力咨询的推荐链路：
 
@@ -472,7 +472,7 @@ evaluator 先返回 `CapabilityReport`，再由 Analysis role 组织用户语言
 ## 15. 实施顺序
 
 1. 冻结并实现公开 `outcome`、`failure_code`、`attempted_roles` 契约，删除旧 `error_code` 字段和读写路径。
-2. 从 `AnalysisSpecRegistry` 派生规范角色、别名和 `analysis_capabilities`，移除 `ContextAssembler` 中的重复 requirements。
+2. 从 `AnalysisSpecRegistry` 派生分析目录、规范角色、别名和 `analysis_readiness`，移除 `ContextAssembler` 中的重复 requirements。
 3. 固化状态优先级和 `visited_roles` 清理/继承规则，删除旧 `reroute_count` 和 checkpoint 回退路径。
 4. 实现 `CapabilityQueryInput`、确定性 evaluator、`CapabilityReport` 和 `capability_query` action。
 5. 引入单一 `RouteDecision`，分类器只负责 role/拒识，不负责 action、工具或参数。

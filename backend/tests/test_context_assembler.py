@@ -83,6 +83,9 @@ def test_context_assembler_exposes_bounded_facts_and_decisions() -> None:
     assert context.fact_index.metadata_levels["line"] == {"WT": 2, "mutant": 2}
     assert context.fact_index.sample_count == 4
     assert context.fact_index.alignment == {"counts": "exact"}
+    assert [item.id for item in context.fact_index.analysis_catalog] == ["DEG", "DEM", "GMA"]
+    assert context.fact_index.analysis_readiness["DEG"]["missing_roles"] == []
+    assert context.fact_index.analysis_readiness["DEM"]["missing_roles"] == ["metabolome"]
     assert context.fact_index.job_artifacts == {
         "job-4": ["differential_gene_counts.csv"]
     }

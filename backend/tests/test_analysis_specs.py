@@ -27,6 +27,20 @@ def test_registry_contains_input_and_parameter_rule_containers() -> None:
         assert isinstance(spec.parameter_rules, tuple)
 
 
+def test_registry_exposes_single_model_facing_analysis_catalog() -> None:
+    catalog = AnalysisSpecRegistry().analysis_catalog()
+
+    assert [item.id for item in catalog] == ["DEG", "DEM", "GMA"]
+    deg = catalog[0]
+    assert deg.label == "差异基因分析"
+    assert "通过统计方法比较两组或多组样本的基因表达量" in deg.description
+    assert deg.required_inputs == ["counts", "metadata"]
+    dem = catalog[1]
+    assert dem.required_inputs == ["metabolome", "metadata"]
+    gma = catalog[2]
+    assert gma.required_inputs == ["transcriptome", "metabolome", "group"]
+
+
 def test_registry_filters_parameters_to_analysis_whitelist() -> None:
     registry = AnalysisSpecRegistry()
 
@@ -55,3 +69,9 @@ def test_registry_normalizes_role_aliases_and_evaluates_capabilities() -> None:
     assert dem.present_roles == ["metabolome", "metadata"]
     assert dem.missing_roles == []
     assert dem.next_step == "ready_for_parameter_resolution"
+
+    report = registry.capability_report(["counts", "metadata"])
+    readiness = {item.analysis_type: item for item in report.items}
+    assert readiness["DEG"].missing_roles == []
+    assert readiness["DEM"].missing_roles == ["metabolome"]
+    assert readiness["GMA"].missing_roles == ["group", "metabolome", "transcriptome"]

@@ -43,6 +43,10 @@ function ConfirmationPanel({ payload, interruptId, busy, modification, onModific
           {(preview.same_fields ?? []).length > 0 && <div><span>Stratified by</span><strong>{preview.same_fields!.join(", ")}</strong><small>{formatSameValues(preview.same_values)}</small></div>}
         </div>
       )}
+      <div className="confirmation-params">
+        <span>Parameters</span>
+        <div>{parameterEntries(payload.resolved_params).map(([name, value]) => <strong key={name}>{formatParameterName(name)}={String(value)}</strong>)}</div>
+      </div>
       {(payload.warnings ?? []).map(warning => <p className="inline-warning" key={`${warning.code}-${warning.field ?? ""}`}>{warning.message}</p>)}
       <div className="modification-row">
         <label htmlFor={`modification-${interruptId}`}><Pencil size={14} />Modification</label>
@@ -65,3 +69,11 @@ const scopeDetails = (scope: NonNullable<ConfirmationPayload["preview"]>["scope"
 };
 const formatSameValues = (values: Record<string, string> | undefined) =>
   Object.entries(values ?? {}).map(([field, value]) => `${field}=${value}`).join(", ");
+
+const parameterEntries = (params: ConfirmationPayload["resolved_params"]) =>
+  Object.entries(params as Record<string, unknown>)
+    .filter(([name, value]) => name !== "analysis_type" && name !== "contrast" && value !== undefined && value !== null)
+    .slice(0, 20);
+
+const formatParameterName = (name: string) =>
+  name === "min_replicates" ? "min samples/group" : name;

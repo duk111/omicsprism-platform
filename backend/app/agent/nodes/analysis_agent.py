@@ -92,6 +92,13 @@ def _materialize_human_clarification(
     if decision.action != "ask_user" or state.pending_analysis is not None:
         return result
     question = decision.question or "Please clarify the analysis settings."
+    if _has_chinese(state.user_message) != _has_chinese(question):
+        question = (
+            "请补充分析类型、比较字段、测试组、参考组或范围；"
+            "我会先根据当前数据列出候选分析计划。"
+            if _has_chinese(state.user_message)
+            else "Please provide the analysis type, comparison field, groups, or scope so I can build a candidate plan."
+        )
     proposal = decision.proposal
     if proposal is None:
         proposal = AnalysisProposal(analysis_type=decision.analysis_type)
@@ -164,9 +171,14 @@ def _looks_like_capability_query(message: str) -> bool:
     text = message.casefold().strip()
     return any(marker in text for marker in (
         "能做什么", "可以做什么", "能分析什么", "可以分析什么",
+        "哪些分析", "能做哪些分析", "可以做哪些分析",
         "能做差异分析", "可以做差异分析", "what can", "what analyses",
         "can i do", "supported analysis",
     ))
+
+
+def _has_chinese(text: str) -> bool:
+    return any("\u4e00" <= char <= "\u9fff" for char in str(text or ""))
 
 
 def _looks_like_analysis_request(message: str, decision: AgentDecision) -> bool:
@@ -175,7 +187,8 @@ def _looks_like_analysis_request(message: str, decision: AgentDecision) -> bool:
     text = message.casefold().strip()
     return any(marker in text for marker in (
         "run ", "analy", "compare ", "contrast", "plan ", "execute", "perform ", "start ",
-        "分析", "运行", "比较", "计划",
+        "分析", "运行", "比较", "计划", "调控网络", "网络推断", "差异基因", "差异代谢物",
+        "regulatory network", "network inference", "multi-omics", "integrated omics",
     ))
 
 
@@ -200,6 +213,8 @@ def _complete_capability_query(
         getattr(profile.profile, "role", "")
         for profile in state.dataset_profiles
     )
+    registry = AnalysisSpecRegistry()
+    catalog = {item.id: item for item in registry.analysis_catalog()}
     items = report.items
     if query.analysis_type is not None:
         items = [item for item in items if item.analysis_type == query.analysis_type]
@@ -208,22 +223,34 @@ def _complete_capability_query(
     if chinese:
         lines = ["当前数据的分析能力："]
         for item in report.items:
+            module = catalog.get(item.analysis_type)
+            prefix = (
+                f"{item.analysis_type}（{module.label}）：{module.description}；"
+                f"所需输入：{', '.join(module.required_inputs)}。"
+                if module is not None else f"{item.analysis_type}："
+            )
             if item.missing_roles:
                 lines.append(
-                    f"{item.analysis_type}：缺少输入角色 {', '.join(item.missing_roles)}。"
+                    f"{prefix}当前缺少输入角色 {', '.join(item.missing_roles)}。"
                 )
             else:
-                lines.append(f"{item.analysis_type}：输入角色满足，可继续解析分析参数。")
+                lines.append(f"{prefix}当前输入角色满足，可继续解析分析参数。")
         text = "\n".join(lines) if report.items else "当前没有可评估的分析类型。"
     else:
         lines = ["Analysis capabilities for the current inputs:"]
         for item in report.items:
+            module = catalog.get(item.analysis_type)
+            prefix = (
+                f"{item.analysis_type} ({module.label}): {module.description}; "
+                f"required inputs: {', '.join(module.required_inputs)}."
+                if module is not None else f"{item.analysis_type}:"
+            )
             if item.missing_roles:
                 lines.append(
-                    f"{item.analysis_type}: missing input roles {', '.join(item.missing_roles)}."
+                    f"{prefix} Missing input roles: {', '.join(item.missing_roles)}."
                 )
             else:
-                lines.append(f"{item.analysis_type}: inputs are present; parameters still require resolution.")
+                lines.append(f"{prefix} Inputs are present; parameters still require resolution.")
         text = "\n".join(lines) if report.items else "No registered analysis is available."
     result.update({
         "decision": AgentDecision(action="answer"),

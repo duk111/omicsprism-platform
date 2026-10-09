@@ -113,6 +113,7 @@ def _is_capability_request(message: str) -> bool:
     text = message.casefold().strip()
     return any(marker in text for marker in (
         "能做什么", "可以做什么", "能分析什么", "可以分析什么",
+        "哪些分析", "能做哪些分析", "可以做哪些分析",
         "能做差异分析", "可以做差异分析", "能做 deg", "可以做 deg",
         "what can", "what analyses", "supported analysis", "can i do",
     ))
@@ -134,6 +135,8 @@ def _is_explicit_analysis_request(message: str) -> bool:
         marker in message.casefold()
         for marker in (
             "run ", "analyze", "compare ", "inspect ", "metadata", "contrast", "plan ", "execute", "perform ", "start ",
+            "调控网络", "网络推断", "网络分析", "差异基因", "差异表达", "差异代谢", "差异代谢物",
+            "regulatory network", "network inference", "multi-omics", "integrated omics",
             "\u5206\u6790", "\u8fd0\u884c", "\u6bd4\u8f83", "\u8ba1\u5212",
         )
     )

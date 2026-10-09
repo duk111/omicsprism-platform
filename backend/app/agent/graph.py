@@ -405,8 +405,8 @@ class PendingPlan(BaseModel):
     plan_version: int = Field(default=1, ge=1)
     thread_id: str = Field(min_length=1, max_length=200)
     analysis_type: AnalysisTypeName
-    scope: ScopeSpec
-    contrast: ContrastSpec
+    scope: ScopeSpec | None = None
+    contrast: ContrastSpec | None = None
     params: AnalysisParams
     provenance: dict[str, ProvenanceSource] = Field(default_factory=dict, max_length=64)
     sample_scope: list[StratumSummary] = Field(default_factory=list, max_length=50)
@@ -417,11 +417,14 @@ class PendingPlan(BaseModel):
     def _params_match_plan(self) -> "PendingPlan":
         if self.params.analysis_type != self.analysis_type:
             raise ValueError("pending plan analysis_type must match params")
-        if not hasattr(self.params, "contrast"):
-            raise ValueError("pending plan params must contain a contrast")
-        if self.params.contrast != self.contrast:
+        params_contrast = getattr(self.params, "contrast", None)
+        if params_contrast is None:
+            if self.contrast is not None or self.scope is not None:
+                raise ValueError("a non-contrast plan cannot carry contrast scope")
+            return self
+        if self.contrast != params_contrast:
             raise ValueError("pending plan contrast must match params")
-        if self.scope != self.contrast.scope:
+        if self.scope != params_contrast.scope:
             raise ValueError("pending plan scope must match contrast scope")
         return self
 

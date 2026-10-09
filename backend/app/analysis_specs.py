@@ -53,6 +53,19 @@ class AnalysisSpec:
     display_label: str
     input_rules: tuple[InputRule, ...]
     parameter_rules: tuple[ParameterRule, ...]
+    description: str = ""
+    catalog_label: str = ""
+
+
+class AnalysisCatalogItem(BaseModel):
+    """Stable, model-facing description of one supported analysis module."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    id: Literal["DEG", "DEM", "GMA"]
+    label: str = Field(min_length=1, max_length=200)
+    description: str = Field(min_length=1, max_length=800)
+    required_inputs: list[str] = Field(default_factory=list, max_length=8)
 
 
 class CapabilityItem(BaseModel):
@@ -88,6 +101,8 @@ _DEFAULT_SPECS = {
     AnalysisType.DEG: AnalysisSpec(
         analysis_type=AnalysisType.DEG,
         display_label="DEG",
+        catalog_label="差异基因分析",
+        description="通过统计方法比较两组或多组样本的基因表达量，筛选出具有显著差异的基因",
         input_rules=(InputRule("counts"), InputRule("metadata")),
         parameter_rules=(
             ParameterRule("compare_field", required=True),
@@ -105,6 +120,8 @@ _DEFAULT_SPECS = {
     AnalysisType.DEM: AnalysisSpec(
         analysis_type=AnalysisType.DEM,
         display_label="DEM",
+        catalog_label="差异代谢物分析",
+        description="通过统计方法比较两组或多组样本的代谢物丰度，筛选出具有显著差异的代谢物",
         input_rules=(InputRule("metabolome"), InputRule("metadata")),
         parameter_rules=(
             ParameterRule("compare_field", required=True),
@@ -126,6 +143,8 @@ _DEFAULT_SPECS = {
     AnalysisType.GMA: AnalysisSpec(
         analysis_type=AnalysisType.GMA,
         display_label="GMA",
+        catalog_label="基因-代谢调控网络分析",
+        description="基于转录组、代谢组和分组信息推断基因-代谢物关联网络与关键基因",
         input_rules=(
             InputRule("transcriptome"),
             InputRule("metabolome"),
@@ -166,6 +185,19 @@ class AnalysisSpecRegistry:
             for rule in self.get(analysis_type).input_rules
             if rule.required
         )
+
+    def analysis_catalog(self) -> list[AnalysisCatalogItem]:
+        """Return the single source of truth for model-facing module knowledge."""
+
+        return [
+            AnalysisCatalogItem(
+                id=analysis_type.name,
+                label=(self.get(analysis_type).catalog_label or self.get(analysis_type).display_label),
+                description=self.get(analysis_type).description,
+                required_inputs=list(self.required_roles(analysis_type)),
+            )
+            for analysis_type in self.analysis_types()
+        ]
 
     def capability_report(self, roles: Iterable[str]) -> CapabilityReport:
         present = {

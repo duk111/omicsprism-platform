@@ -30,7 +30,13 @@ from ..graph import (
     PlanVersionConflict,
     StratumSummary,
 )
-from ..param_resolver import AnalysisProposal, ResolvedRequest, resolve_analysis_request
+from ..param_resolver import (
+    AnalysisProposal,
+    ResolvedRequest,
+    ScopeSpec,
+    infer_analysis_type,
+    resolve_analysis_request,
+)
 from ..validation import (
     DatasetRef,
     ValidationReport,
@@ -81,9 +87,12 @@ def analysis_node(
             update={"used_model_steps": state.step_budget.used_model_steps + 1}
         )
         if not state.dataset_profiles:
-            text = "Please provide the counts/metadata inputs before starting an analysis."
+            text = _missing_inputs_message(state)
             pending = PendingAnalysisClarification(
-                analysis_type=decision.analysis_type,
+                analysis_type=(
+                    decision.analysis_type
+                    or infer_analysis_type(state.user_message, [])
+                ),
                 question=text,
                 missing=["dataset"],
                 source_message=state.user_message,
@@ -104,7 +113,11 @@ def analysis_node(
         try:
             dataset_refs = _load_validation_refs(state, dataset_loader)
         except DatasetLoadError as exc:
-            text = f"I could not validate the current analysis inputs: {str(exc)[:500]}"
+            text = _localized_error(
+                state,
+                f"当前分析输入无法通过校验：{str(exc)[:500]}",
+                f"I could not validate the current analysis inputs: {str(exc)[:500]}",
+            )
             return Command(
                 update={
                     "response_text": text,
@@ -116,7 +129,11 @@ def analysis_node(
                 goto=END,
             )
         except Exception as exc:
-            text = f"The analysis inputs could not be loaded: {type(exc).__name__}: {str(exc)[:400]}"
+            text = _localized_error(
+                state,
+                f"分析输入无法加载：{type(exc).__name__}: {str(exc)[:400]}",
+                f"The analysis inputs could not be loaded: {type(exc).__name__}: {str(exc)[:400]}",
+            )
             return Command(
                 update={
                     "response_text": text,
@@ -128,10 +145,28 @@ def analysis_node(
                 goto=END,
             )
         request_text = _analysis_request_text(state)
+        proposal = _analysis_proposal(state)
+        # Keep the model as a proposal source, but make the module selection
+        # deterministic when it omitted the type.  This is what lets a Chinese
+        # request such as “推断调控网络” enter GMA without another dead-end
+        # clarification turn.
+        if proposal.analysis_type is None:
+            inferred_type = infer_analysis_type(
+                request_text,
+                [
+                    canonical_input_role(
+                        getattr(item.profile, "role", None)
+                        or getattr(item, "role", "")
+                    )
+                    for item in state.dataset_profiles
+                ],
+            )
+            if inferred_type is not None:
+                proposal = proposal.model_copy(update={"analysis_type": inferred_type})
         resolved = resolve_analysis_request(
             request_text,
             [item.profile for item in state.dataset_profiles],
-            llm_proposal=_analysis_proposal(state),
+            llm_proposal=proposal,
             prior_params=(
                 state.pending_plan.params
                 if state.pending_plan is not None
@@ -152,7 +187,9 @@ def analysis_node(
             )
             if missing_roles:
                 text = (
-                    f"The platform does not support {resolved.analysis_type} with the current inputs. "
+                    f"当前输入不支持 {resolved.analysis_type}。缺少必要的数据角色：{', '.join(missing_roles)}。"
+                    if _is_chinese(state.user_message)
+                    else f"The platform does not support {resolved.analysis_type} with the current inputs. "
                     f"Missing required input roles: {', '.join(missing_roles)}."
                 )
                 return Command(
@@ -169,7 +206,11 @@ def analysis_node(
         try:
             report = validate_analysis_request(resolved, dataset_refs)
         except Exception as exc:
-            text = f"The analysis inputs failed deterministic validation: {type(exc).__name__}: {str(exc)[:400]}"
+            text = _localized_error(
+                state,
+                f"分析输入未通过确定性校验：{type(exc).__name__}: {str(exc)[:400]}",
+                f"The analysis inputs failed deterministic validation: {type(exc).__name__}: {str(exc)[:400]}",
+            )
             return Command(
                 update={
                     "resolved_request": resolved,
@@ -250,7 +291,11 @@ def analysis_node(
 
         pending = PendingAnalysisClarification(
             analysis_type=resolved.analysis_type,
-            question=_clarification_question(resolved, report),
+            question=_clarification_question(
+                resolved,
+                report,
+                user_message=state.user_message,
+            ),
             missing=[item.field for item in resolved.missing[:3]],
             options=[
                 _clarification_option(item.field, option, state)
@@ -458,6 +503,56 @@ def _analysis_proposal(state: GraphState) -> AnalysisProposal:
     return proposal
 
 
+def _is_chinese(text: str) -> bool:
+    return any("\u4e00" <= char <= "\u9fff" for char in str(text or ""))
+
+
+def _localized_error(state: GraphState, chinese: str, english: str) -> str:
+    return chinese if _is_chinese(state.user_message) else english
+
+
+def _missing_inputs_message(state: GraphState) -> str:
+    """Explain the next upload in the same language as the user.
+
+    The old fixed English sentence made a capability question look like a
+    validation failure.  Keep the response useful even before a bundle exists:
+    name all three modules and their required input roles.
+    """
+
+    analysis_type = (
+        state.decision.analysis_type
+        if state.decision is not None
+        else None
+    ) or infer_analysis_type(state.user_message, [])
+    identified = (
+        f"我识别为 {analysis_type}（{_analysis_label(analysis_type)}）。"
+        if analysis_type and _is_chinese(state.user_message)
+        else (
+            f"I identified {analysis_type} ({_analysis_label(analysis_type, chinese=False)}). "
+            if analysis_type else ""
+        )
+    )
+    if _is_chinese(state.user_message):
+        return (
+            f"{identified or '我先根据你的请求定位分析模块，但目前还不能唯一确定模块。'}"
+            "当前还没有可用的输入文件，"
+            "所以暂时不能计算样本数或生成可提交计划。\n"
+            "可选模块：DEG（差异基因：counts + metadata）、"
+            "DEM（差异代谢物：metabolome + metadata）、"
+            "GMA（基因-代谢调控网络：transcriptome + metabolome + group）。\n"
+            "请上传对应文件；上传后我会先列出推断的分析类型、数据文件、比较组、"
+            "样本计数和默认参数，再请你确认或修改。"
+        )
+    return (
+        f"{identified}I can identify the analysis module first, but no input bundle is available yet, "
+        "so sample counts and a runnable plan cannot be computed.\n"
+        "Available modules: DEG (counts + metadata), DEM (metabolome + metadata), "
+        "and GMA (transcriptome + metabolome + group). Upload the matching files and "
+        "I will show the inferred module, files, contrast, sample counts, and defaults "
+        "before asking for confirmation."
+    )
+
+
 def _build_pending_plan(
     state: GraphState,
     resolved: ResolvedRequest,
@@ -466,8 +561,6 @@ def _build_pending_plan(
     if resolved.analysis_type is None or resolved.params is None:
         raise ValueError("a pending plan requires resolved analysis parameters")
     contrast = getattr(resolved.params, "contrast", None)
-    if contrast is None:
-        raise ValueError("a pending plan requires a contrast")
     previous = state.pending_plan
     plan_id = previous.plan_id if previous is not None else f"plan-{uuid4().hex}"
     plan_version = previous.plan_version + 1 if previous is not None else 1
@@ -483,7 +576,7 @@ def _build_pending_plan(
         plan_version=plan_version,
         thread_id=state.thread_id,
         analysis_type=resolved.analysis_type,
-        scope=contrast.scope,
+        scope=contrast.scope if contrast is not None else None,
         contrast=contrast,
         params=resolved.params,
         provenance=_plan_provenance(state, resolved.params),
@@ -593,7 +686,21 @@ def _check_metadata_fields(
 def _clarification_question(
     resolved: ResolvedRequest,
     report: ValidationReport,
+    *,
+    user_message: str = "",
 ) -> str:
+    if not _is_chinese(user_message):
+        if resolved.missing:
+            fields = ", ".join(item.field for item in resolved.missing[:3])
+            options = "; ".join(
+                f"{item.field}: {', '.join(item.options[:20])}"
+                for item in resolved.missing[:3]
+                if item.options
+            )
+            suffix = f" Options: {options}." if options else ""
+            return f"I need {fields} before I can build the analysis plan.{suffix}"[:1200]
+        details = "; ".join(item.message[:500] for item in report.blocking[:3])
+        return f"The analysis request did not pass validation: {details}"[:1200]
     if resolved.missing:
         question = resolved.clarification or "请补充缺失的分析参数。"
         options = [
@@ -675,13 +782,16 @@ def _candidate_pending(
     sample_scope: list[StratumSummary],
 ) -> PendingAnalysisClarification:
     proposal = _analysis_proposal(state)
+    if proposal.analysis_type is None and resolved.analysis_type is not None:
+        proposal = proposal.model_copy(update={"analysis_type": resolved.analysis_type})
     if resolved.params is not None:
+        contrast = getattr(resolved.params, "contrast", None)
         proposal = AnalysisProposal(
             analysis_type=resolved.params.analysis_type,
-            compare_field=resolved.params.contrast.compare_field,
-            tested_level=resolved.params.contrast.tested_level,
-            reference_level=resolved.params.contrast.reference_level,
-            scope=resolved.params.contrast.scope,
+            compare_field=getattr(contrast, "compare_field", None),
+            tested_level=getattr(contrast, "tested_level", None),
+            reference_level=getattr(contrast, "reference_level", None),
+            scope=(getattr(contrast, "scope", None) or ScopeSpec(mode="unknown")),
             requested_params=resolved.params.legacy_params(),
         )
     return PendingAnalysisClarification(
@@ -706,35 +816,96 @@ def _candidate_confirmation_question(
 ) -> str:
     params = resolved.params
     if params is None or not hasattr(params, "contrast"):
-        return "Please confirm the proposed analysis parameters, or tell me what to change."
+        inputs = _input_summary(state)
+        values = _parameter_summary(params) if params is not None else ""
+        if _is_chinese(state.user_message):
+            return (
+                f"我根据当前文件推断为 {getattr(params, 'analysis_type', resolved.analysis_type)}"
+                f"（{_analysis_label(getattr(params, 'analysis_type', resolved.analysis_type))}）。\n"
+                f"数据：{inputs}。\n"
+                f"参数：{values or '使用模块默认值'}。\n"
+                "请确认这份分析计划，或告诉我需要修改的参数。"
+            )[:1200]
+        return (
+            f"I inferred {getattr(params, 'analysis_type', resolved.analysis_type)} "
+            f"({_analysis_label(getattr(params, 'analysis_type', resolved.analysis_type), chinese=False)}). "
+            f"Inputs: {inputs}. Parameters: {values or 'module defaults'}. "
+            "Please confirm this analysis plan or tell me what to change."
+        )[:1200]
     contrast = params.contrast
     scope = contrast.scope
-    chinese = any("\u4e00" <= char <= "\u9fff" for char in state.user_message)
+    chinese = _is_chinese(state.user_message)
     scope_text = (
-        "全部样本"
+        ("全部样本" if chinese else "all samples")
         if scope.mode == "all"
-        else "按 " + ", ".join(scope.blocking_fields) + " 分层"
+        else (("按 " + ", ".join(scope.blocking_fields) + " 分层") if chinese else ("stratified by " + ", ".join(scope.blocking_fields)))
         if scope.mode == "stratified"
-        else "固定条件 " + ", ".join(f"{k}={v}" for k, v in scope.fixed_filters.items())
+        else (("固定条件 " + ", ".join(f"{k}={v}" for k, v in scope.fixed_filters.items())) if chinese else ("fixed filters " + ", ".join(f"{k}={v}" for k, v in scope.fixed_filters.items())))
     )
     counts = "; ".join(
-        f"{', '.join(f'{k}={v}' for k, v in item.stratum.items()) or 'all'}: "
-        f"tested={item.tested_count}, reference={item.reference_count}"
+        f"{', '.join(f'{k}={v}' for k, v in item.stratum.items()) or ('全部' if chinese else 'all')}: "
+        + (
+            f"测试组={item.tested_count}，参考组={item.reference_count}"
+            if chinese
+            else f"tested={item.tested_count}, reference={item.reference_count}"
+        )
         for item in sample_scope
-    ) or "No stratum count preview is available."
+    ) or ("暂无分层样本计数" if chinese else "No stratum count preview is available.")
+    inputs = _input_summary(state)
+    parameters = _parameter_summary(params)
     if chinese:
         return (
-            f"我根据当前文件提出了一个候选 {params.analysis_type} 设置："
-            f"比较字段 {contrast.compare_field}，测试组 {contrast.tested_level}，"
-            f"参考组 {contrast.reference_level}，范围为{scope_text}。"
-            f"样本计数：{counts}。请确认这个设置，或告诉我需要修改比较字段、比较组或分层方式。"
+            f"我根据当前文件推断为 {params.analysis_type}（{_analysis_label(params.analysis_type)}）。\n"
+            f"数据：{inputs}。\n"
+            f"设置：比较字段={contrast.compare_field}，测试组={contrast.tested_level}，"
+            f"参考组={contrast.reference_level}，范围={scope_text}。\n"
+            f"样本计数：{counts}。\n"
+            f"其他参数：{parameters or '使用模块默认值'}。\n"
+            "请确认这份分析计划，或直接告诉我需要修改的字段、比较组、范围或参数。"
         )[:1200]
     return (
-        f"I proposed a {params.analysis_type} setup from the current files: compare "
+        f"I inferred {params.analysis_type} ({_analysis_label(params.analysis_type, chinese=False)}) from the current files. "
+        f"Inputs: {inputs}. Compare "
         f"{contrast.compare_field}, testing {contrast.tested_level} against "
         f"{contrast.reference_level}, using {scope_text}. Sample counts: {counts}. "
-        "Please confirm this setup or tell me what to change."
+        f"Other parameters: {parameters or 'module defaults'}. "
+        "Please confirm this analysis plan or tell me what to change."
     )[:1200]
+
+
+def _input_summary(state: GraphState) -> str:
+    items: list[str] = []
+    for item in state.dataset_profiles:
+        profile = getattr(item, "profile", item)
+        role = canonical_input_role(
+            getattr(profile, "role", None) or getattr(item, "role", "")
+        )
+        filename = str(getattr(item, "filename", "") or role)
+        items.append(f"{role}={filename}")
+    return ", ".join(items) or "none"
+
+
+def _parameter_summary(params: object) -> str:
+    dump = getattr(params, "model_dump", None)
+    if not callable(dump):
+        return ""
+    values = dump(mode="python", exclude={"analysis_type", "contrast"})
+    # Keep the public plan language domain friendly and avoid exposing the
+    # internal field spelling in the chat transcript.
+    labels = {"min_replicates": "min_samples_per_group"}
+    return ", ".join(
+        f"{labels.get(key, key)}={value}" for key, value in values.items()
+    )
+
+
+def _analysis_label(analysis_type: object, *, chinese: bool = True) -> str:
+    labels = {
+        "DEG": ("差异基因分析", "differential gene analysis"),
+        "DEM": ("差异代谢物分析", "differential metabolite analysis"),
+        "GMA": ("基因-代谢调控网络分析", "gene-metabolite network analysis"),
+    }
+    pair = labels.get(str(analysis_type))
+    return (pair[0] if chinese else pair[1]) if pair else str(analysis_type)
 
 
 def _with_model_confirmation(
@@ -784,6 +955,10 @@ def _grounded_confirmation_text(text: str, pending: PendingAnalysisClarification
         for count in (item.tested_count, item.reference_count):
             if str(count) not in normalized:
                 return False
+    # A role model can be instructed to mirror the user language, but the
+    # deterministic fallback must remain authoritative when it does not.
+    if _is_chinese(pending.source_message) != _is_chinese(text):
+        return False
     return True
 
 
