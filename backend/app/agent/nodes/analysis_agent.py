@@ -28,7 +28,6 @@ from ..param_resolver import AnalysisProposal, ContrastSpec, GMAParams, DEGParam
 from ..schemas import ToolName
 from ..trace import TraceRecorder
 from .main import (
-    _MODEL_FALLBACK_QUESTION,
     _advance_model_budget,
     _ask_user_update,
     _run_agent_loop,

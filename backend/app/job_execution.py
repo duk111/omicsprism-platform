@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import traceback
+import math
 import zipfile
 import logging
 from concurrent.futures import ThreadPoolExecutor
@@ -50,6 +51,33 @@ def _coerce_bool(value: object, default: bool) -> bool:
     return bool(value)
 
 
+def _numeric_param(
+    params: dict,
+    name: str,
+    default: float | int,
+    *,
+    minimum: float,
+    maximum: float | None = None,
+    integer: bool = False,
+) -> float | int:
+    """Read a numeric job parameter without treating valid zero as missing."""
+
+    raw = params.get(name)
+    value = default if raw is None else raw
+    try:
+        numeric = float(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{name} must be numeric") from exc
+    if not math.isfinite(numeric):
+        raise ValueError(f"{name} must be finite")
+    if integer and numeric != int(numeric):
+        raise ValueError(f"{name} must be an integer")
+    if numeric < minimum or (maximum is not None and numeric > maximum):
+        bound = f"between {minimum} and {maximum}" if maximum is not None else f"at least {minimum}"
+        raise ValueError(f"{name} must be {bound}")
+    return int(numeric) if integer else numeric
+
+
 class JobExecutor(Protocol):
     """Submission boundary for background work.
 
@@ -77,18 +105,6 @@ class LocalThreadJobExecutor:
 
     def enqueue(self, job_id: str) -> None:
         self.pool.submit(self.runner.run, job_id)
-
-
-class QueueJobExecutor:
-    """Placeholder adapter for a future queue-backed worker process.
-
-    A Celery/RQ implementation would publish only the job id here. A separate
-    worker process would consume the message, instantiate OmicsPrismJobRunner,
-    and call runner.run(job_id), preserving the same job.json contract.
-    """
-
-    def enqueue(self, job_id: str) -> None:  # pragma: no cover - integration placeholder
-        raise NotImplementedError("Configure a queue-backed executor such as Celery or RQ")
 
 
 class RedisJobQueue:
@@ -191,6 +207,27 @@ class RedisWorker:
                 )
         return expired
 
+    def publish_pending_once(self) -> int:
+        """Replay durable Job outbox records whose Redis publish failed."""
+        if self.job_store is None:
+            return 0
+        published = 0
+        for job in self.job_store.list_internal(include_deleted=False):
+            if job.status is not JobStatus.QUEUED or job.dispatch_state != "pending":
+                continue
+            try:
+                self.queue.enqueue(job.id)
+                job.dispatch_state = "published"
+                job.updated_at = datetime.now(timezone.utc)
+                self.job_store.save(job)
+                published += 1
+            except Exception:
+                LOG.exception(
+                    "failed to publish pending job",
+                    extra={"job_id": job.id, "event": "job.enqueue_retry_failed"},
+                )
+        return published
+
     def run_forever(self) -> None:  # pragma: no cover - process entrypoint
         if self.job_store is not None:
             threading.Thread(
@@ -199,6 +236,7 @@ class RedisWorker:
                 daemon=True,
             ).start()
         while True:
+            self.publish_pending_once()
             job_id = self.queue.dequeue()
             if job_id is None:
                 time.sleep(self.idle_sleep_seconds)
@@ -383,10 +421,10 @@ def _run_differential_job(
             compare_field=str(job.params.get("compare_field") or "group1"),
             tested_levels=tested_levels,
             reference_level=str(job.params.get("reference_level") or ""),
-            padj_cutoff=float(job.params.get("padj_cutoff") or 0.05),
-            log2fc_cutoff=float(job.params.get("log2fc_cutoff") or 1.0),
-            min_total_count=int(job.params.get("min_total_count") or 10),
-            min_replicates=int(job.params.get("min_replicates") or 2),
+            padj_cutoff=_numeric_param(job.params, "padj_cutoff", 0.05, minimum=0, maximum=1),
+            log2fc_cutoff=_numeric_param(job.params, "log2fc_cutoff", 1.0, minimum=0),
+            min_total_count=_numeric_param(job.params, "min_total_count", 10, minimum=0, integer=True),
+            min_replicates=_numeric_param(job.params, "min_replicates", 2, minimum=1, integer=True),
             n_cpus=8,
         )
     report(85, "Generating differential results")
@@ -421,16 +459,18 @@ def _run_dem_job(
             compare_field=str(job.params.get("compare_field") or "group1"),
             tested_levels=tested_levels,
             reference_level=str(job.params.get("reference_level") or ""),
-            vip_cutoff=float(job.params.get("vip_cutoff") or 1.0),
-            padj_cutoff=float(job.params.get("padj_cutoff") or 0.05),
-            log2fc_cutoff=float(job.params.get("log2fc_cutoff") or 1.0),
-            pseudocount=float(job.params.get("pseudocount") or 1e-9),
-            max_missing_fraction=float(job.params.get("max_missing_fraction") or 0.5),
+            vip_cutoff=_numeric_param(job.params, "vip_cutoff", 1.0, minimum=0),
+            padj_cutoff=_numeric_param(job.params, "padj_cutoff", 0.05, minimum=0, maximum=1),
+            log2fc_cutoff=_numeric_param(job.params, "log2fc_cutoff", 1.0, minimum=0),
+            pseudocount=_numeric_param(job.params, "pseudocount", 1e-9, minimum=0),
+            max_missing_fraction=_numeric_param(job.params, "max_missing_fraction", 0.5, minimum=0, maximum=1),
             impute_method=str(job.params.get("impute_method") or "half-min"),
             normalize=_coerce_bool(job.params.get("normalize"), True),
             log_transform=_coerce_bool(job.params.get("log_transform"), True),
-            min_replicates=int(job.params.get("min_replicates") or 2),
-            n_orthogonal_components=int(job.params.get("n_orthogonal_components") or 1),
+            min_replicates=_numeric_param(job.params, "min_replicates", 2, minimum=1, integer=True),
+            n_orthogonal_components=_numeric_param(
+                job.params, "n_orthogonal_components", 1, minimum=0, integer=True,
+            ),
         )
     report(85, "Generating DEM results")
     _generate_dem_figure_data(output_dir, job.params)
@@ -553,12 +593,11 @@ def _write_figure_data(out_dir: Path, page_id: str, payload: dict) -> None:
 
 def _generate_deg_figure_data(out_dir: Path, params: dict) -> None:
     """Generate figure_data JSON files for DEG (differential gene expression) analysis."""
-    import json
     import pandas as pd
     import numpy as np
 
-    padj_cutoff = float(params.get("padj_cutoff") or 0.05)
-    log2fc_cutoff = float(params.get("log2fc_cutoff") or 1.0)
+    padj_cutoff = _numeric_param(params, "padj_cutoff", 0.05, minimum=0, maximum=1)
+    log2fc_cutoff = _numeric_param(params, "log2fc_cutoff", 1.0, minimum=0)
 
     # Collect all contrast CSV files
     volcano_traces_by_contrast: dict[str, list] = {}
@@ -649,12 +688,11 @@ def _generate_deg_figure_data(out_dir: Path, params: dict) -> None:
 
 def _generate_dem_figure_data(out_dir: Path, params: dict) -> None:
     """Generate figure_data JSON files for DEM (differential expression of metabolites) analysis."""
-    import json
     import pandas as pd
     import numpy as np
 
-    padj_cutoff = float(params.get("padj_cutoff") or 0.05)
-    log2fc_cutoff = float(params.get("log2fc_cutoff") or 1.0)
+    padj_cutoff = _numeric_param(params, "padj_cutoff", 0.05, minimum=0, maximum=1)
+    log2fc_cutoff = _numeric_param(params, "log2fc_cutoff", 1.0, minimum=0)
 
     # DEM outputs *.all.csv similarly to DEG
     volcano_traces_by_contrast: dict[str, list] = {}

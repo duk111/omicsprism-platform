@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from threading import Lock
 from datetime import datetime, timedelta, timezone
 from hashlib import sha256
 from time import perf_counter
@@ -25,6 +26,7 @@ from ..models import (
 from ..settings import AppSettings
 from ..storage_service import CSV_MAX_BYTES, FileStorageService
 from .product_store import AgentProductStore, PostgresAgentProductStore
+from .cancellation import raise_if_cancelled
 from .capabilities import CapabilityPrincipal, build_readonly_capability_registry
 from .trace import TraceRecorder
 from .graph import (
@@ -77,6 +79,12 @@ class AgentApiContext:
             queue_close()
 
 
+@dataclass(frozen=True)
+class _JobSubmission:
+    ref: JobRef
+    created: bool
+
+
 def _create_postgres_checkpointer(database_url: str) -> PostgresSaver:
     pool = ConnectionPool(
         database_url,
@@ -117,6 +125,7 @@ def create_agent_api_context(
         )
     if job_executor is None:
         raise RuntimeError("A Job executor is required for the Agent graph")
+    dispatch_lock = Lock()
 
     model = VllmGraphModel(
         base_url=settings.agent_model_url,
@@ -166,7 +175,8 @@ def create_agent_api_context(
             ))
         return refs
 
-    def _submit_job(request: AnalysisExecutionRequest) -> JobRef:
+    def _submit_job(request: AnalysisExecutionRequest) -> _JobSubmission:
+        raise_if_cancelled()
         job_id = str(uuid5(
             NAMESPACE_URL,
             f"omicsprism:{request.user_id}:{request.idempotency_key}",
@@ -180,7 +190,17 @@ def create_agent_api_context(
         except (KeyError, LookupError):
             existing = None
         if existing is not None:
-            return JobRef(job_id=existing.id, owner_id=request.user_id)
+            # The database is the durable outbox. A previous request may have
+            # committed the Job but failed while publishing its id to Redis.
+            # Retry publication whenever the record is still pending.
+            if existing.dispatch_state == "pending":
+                raise_if_cancelled()
+                with dispatch_lock:
+                    job_executor.enqueue(existing.id)
+                    existing.dispatch_state = "published"
+                    existing.updated_at = datetime.now(timezone.utc)
+                    job_store.save(existing)
+            return _JobSubmission(JobRef(job_id=existing.id, owner_id=request.user_id), False)
 
         input_records = [
             product_store.get_input_file(file_id=file_id, user_id=request.user_id)
@@ -250,7 +270,9 @@ def create_agent_api_context(
             params=request.resolved_params.legacy_params(),
             progress=0,
             progress_step="Queued",
+            dispatch_state="pending",
         )
+        raise_if_cancelled()
         job_store.save(job)
         # A real graph turn is persisted before submission. The local
         # ``turn-local`` compatibility path is used by isolated fixtures only.
@@ -267,8 +289,13 @@ def create_agent_api_context(
                 created_at=now,
                 updated_at=now,
             ))
-        job_executor.enqueue(job_id)
-        return JobRef(job_id=job_id, owner_id=request.user_id)
+        with dispatch_lock:
+            raise_if_cancelled()
+            job_executor.enqueue(job_id)
+            job.dispatch_state = "published"
+            job.updated_at = datetime.now(timezone.utc)
+            job_store.save(job)
+        return _JobSubmission(JobRef(job_id=job_id, owner_id=request.user_id), True)
 
     def submit_job(request: AnalysisExecutionRequest) -> JobRef:
         started = perf_counter()
@@ -277,8 +304,8 @@ def create_agent_api_context(
             f"omicsprism:{request.user_id}:{request.idempotency_key}",
         ))
         try:
-            result = _submit_job(request)
-        except Exception as exc:
+            submission = _submit_job(request)
+        except Exception:
             trace_recorder.job_submitted(
                 request=request,
                 job_id=job_id,
@@ -289,11 +316,11 @@ def create_agent_api_context(
             raise
         trace_recorder.job_submitted(
             request=request,
-            job_id=result.job_id,
+            job_id=submission.ref.job_id,
             latency_ms=round((perf_counter() - started) * 1000, 3),
-            outcome="deduplicated" if result.job_id != job_id else "submitted",
+            outcome="submitted" if submission.created else "deduplicated",
         )
-        return result
+        return submission.ref
 
     def read_job(request: JobLookupRequest) -> JobSummary:
         runtime = AgentToolRuntime(

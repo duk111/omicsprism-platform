@@ -346,7 +346,7 @@ def test_job_submission_persists_an_ownership_bound_wait(
         "build_agent_graph",
         lambda *args, **_kwargs: captured.append(args[2]) or object(),
     )
-    context = bootstrap.create_agent_api_context(
+    bootstrap.create_agent_api_context(
         _settings(
             agent_model_url="http://model-host:8000",
             agent_model_name="model",

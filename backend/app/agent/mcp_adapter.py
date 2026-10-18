@@ -151,32 +151,26 @@ class CapabilityMCPServer(MCPServer):
         """Preserve strict registry validation before SDK argument handling."""
         started = perf_counter()
         outcome = "error"
-        error_code: str | None = None
         try:
             self.registry.validate(name, arguments, principal=self.principal)
             result = await super().call_tool(name, arguments, context)
             if getattr(result, "is_error", False):
                 outcome = "tool_error"
-                error_code = "tool_error"
             else:
                 outcome = "ok"
             return result
         except CapabilityNotVisible:
             outcome = "not_visible"
-            error_code = CapabilityNotVisible.code
             raise
         except CapabilityInvalidArguments:
             outcome = "invalid_arguments"
-            error_code = CapabilityInvalidArguments.code
             raise
         except CapabilityError:
             outcome = "error"
-            error_code = CapabilityError.code
             raise
         except Exception:
             # The SDK deliberately hides unexpected tool details from clients.
             outcome = "error"
-            error_code = "tool_error"
             raise
         finally:
             if self.trace_recorder is not None and self.trace_context is not None:

@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 from datetime import datetime, timezone
 from random import random
-from threading import Thread
+from threading import Event, Thread
 from time import perf_counter
 from time import sleep
 from typing import Callable
@@ -12,6 +12,7 @@ from langgraph.types import Command
 from psycopg import OperationalError
 
 from .bootstrap import AgentApiContext
+from .cancellation import bind_cancel_event, reset_cancel_event
 from .context import ContextAssembler, build_recent_messages
 from .graph import (
     GraphInterrupt,
@@ -35,8 +36,7 @@ from .schemas import (
     AgentTurnStatus,
     AgentTurnRecord,
 )
-from .message_blocks import job_block, job_block_from_summary, text_block
-from ..models import JobStatus
+from .message_blocks import job_block_from_summary, text_block
 
 
 LOG = logging.getLogger("omicsprism.platform.agent_runtime")
@@ -207,7 +207,7 @@ class AgentRuntime:
                     "turn_id": item.turn_id,
                 },
             )
-        except Exception as exc:
+        except Exception:
             self._fail(item, "agent_runtime_failed")
             self._dead_letter(raw_item, reason="agent_runtime_failed")
             LOG.exception(
@@ -315,7 +315,6 @@ class AgentRuntime:
             version += 1
             for job_id in turn_input.focus_job_ids:
                 recent_jobs = [item for item in recent_jobs if item.job_id != job_id]
-                from .graph import JobRef
                 recent_jobs.append(JobRef(job_id=job_id, owner_id=item.user_id))
         has_new_inputs = bool(turn_input.dataset_profiles)
         inherited_profiles = (
@@ -574,8 +573,10 @@ class AgentRuntime:
         self._ensure_active(item)
         result: list[object] = []
         errors: list[BaseException] = []
+        cancel_event = Event()
 
         def invoke() -> None:
+            token = bind_cancel_event(cancel_event)
             try:
                 with log_context(
                     trace_id=item.trace_id,
@@ -585,6 +586,8 @@ class AgentRuntime:
                     result.append(self.context.graph.invoke(*args))
             except BaseException as exc:  # preserve KeyboardInterrupt in tests/runtime
                 errors.append(exc)
+            finally:
+                reset_cancel_event(token)
 
         thread = Thread(target=invoke, name=f"agent-turn-{item.turn_id}", daemon=True)
         thread.start()
@@ -592,6 +595,10 @@ class AgentRuntime:
         remaining = self.turn_timeout_seconds if deadline is None else deadline - perf_counter()
         thread.join(timeout=max(0.0, remaining))
         if thread.is_alive():
+            # Python cannot safely kill a running thread. Signal cooperative
+            # cancellation so model/tool/job boundaries stop before causing
+            # further side effects; the daemon thread may finish unwinding.
+            cancel_event.set()
             raise AgentTurnTimeout(
                 f"Agent turn exceeded {self.turn_timeout_seconds:.3f}s"
             )

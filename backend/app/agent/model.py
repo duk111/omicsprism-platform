@@ -16,6 +16,7 @@ from .graph import (
     ResultQaModelOutput,
 )
 from .trace import ModelUsage, TraceRecorder
+from .cancellation import raise_if_cancelled
 class ModelBoundaryError(ValueError):
     """The graph model input or output violated its typed boundary."""
 
@@ -76,6 +77,7 @@ class VllmGraphModel:
         *,
         role: AgentRole,
     ) -> QaModelOutput | AnalysisModelOutput | ResultQaModelOutput | RouteClassification:
+        raise_if_cancelled()
         from .context import (
             AnalysisModelContext,
             QaModelContext,
@@ -262,6 +264,7 @@ class VllmGraphModel:
                     },
                 }
             self.last_request_payload = request_payload
+            raise_if_cancelled()
             response = self.client.post(self.endpoint, headers=headers, json=request_payload)
             if (
                 response.status_code == 400
@@ -276,6 +279,7 @@ class VllmGraphModel:
                 fallback_payload = dict(request_payload)
                 fallback_payload.pop("response_format", None)
                 self._structured_tools_supported = False
+                raise_if_cancelled()
                 response = self.client.post(
                     self.endpoint,
                     headers=headers,
@@ -283,6 +287,7 @@ class VllmGraphModel:
                 )
             self.last_usage = _usage_from_response(response)
             response.raise_for_status()
+            raise_if_cancelled()
             try:
                 message = response.json()["choices"][0]["message"]
                 if not isinstance(message, dict):
@@ -375,7 +380,7 @@ class VllmGraphModel:
                         self._remember_tool_call_id(chat_key, index, call_id.strip())
                 self._record_call(context, started, outcome="accepted")
                 return result
-        except httpx.HTTPStatusError as exc:
+        except httpx.HTTPStatusError:
             self._record_call(context, started, outcome="http_error", error_code="HTTPStatusError")
             raise
         except Exception as exc:

@@ -19,8 +19,6 @@ from backend.app.agent.runtime import AgentRuntime
 from backend.app.agent.schemas import (
     AgentFeedbackCreateRequest,
     AgentFeedbackRating,
-    AgentMessageRecord,
-    AgentThreadRecord,
 )
 from backend.app.agent.trace import AgentTraceEvent
 
@@ -166,7 +164,7 @@ def test_deleting_a_thread_removes_feedback_and_candidate() -> None:
     thread_id = _create_thread(client)
     turn_id, _ = _complete_turn(context, client, thread_id)
     message_id = f"assistant-{turn_id}"
-    response = client.put(
+    client.put(
         f"/api/agent/threads/{thread_id}/messages/{message_id}/feedback",
         json={"rating": "unhelpful", "failure_category": "other"},
     )

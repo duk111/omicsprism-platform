@@ -16,7 +16,6 @@ from backend.app.agent.graph import (
     AnalysisExecutionRequest,
     AgentRole,
     GraphState,
-    QaDecision,
     QaModelOutput,
 )
 from backend.app.agent.model import ModelBoundaryError, VllmGraphModel

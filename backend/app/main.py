@@ -12,7 +12,7 @@ from statistics import median
 from typing import Annotated, Any
 from uuid import uuid4
 
-from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, Response, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, Request, Response, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
@@ -44,7 +44,7 @@ from .models import (
     JobStatus,
     PreflightResponse,
 )
-from .observability import configure_logging, current_request_id, log_context
+from .observability import configure_logging, log_context
 from .preflight import PreflightService
 from .settings import load_settings
 

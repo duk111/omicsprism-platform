@@ -1886,7 +1886,6 @@ class PostgresAgentProductStore:
         return _job_wait_from_row(row)
 
     def save_job_completion_event(self, event: AgentJobCompletionEvent) -> None:
-        Jsonb = _jsonb_type()
         with self._connect() as conn:
             conn.execute(
                 """

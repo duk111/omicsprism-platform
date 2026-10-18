@@ -531,7 +531,7 @@ def test_message_cursor_and_sse_snapshot_support_disconnect_recovery() -> None:
     context = _context()
     client = _client(context)
     thread = _create_thread(client, "user-a")
-    turn_result = client.post(
+    client.post(
         f"/api/agent/threads/{thread['thread_id']}/turns",
         headers={"Idempotency-Key": "recover-key"},
         json={"message": "analyze"},

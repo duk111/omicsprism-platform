@@ -179,6 +179,9 @@ class JobRecord(JobTimingInfo):
     params: JobParams = Field(default_factory=dict)
     attempt: int = 0
     max_retries: int = 0
+    # Durable outbox state for queue publication. Older records predate this
+    # field and default to published, preserving their existing semantics.
+    dispatch_state: Literal["pending", "published"] = "published"
 
 
 class JobResponse(JobTimingInfo):

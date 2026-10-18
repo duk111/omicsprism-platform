@@ -11,7 +11,6 @@ from fastapi.testclient import TestClient
 from backend.app.agent.api import create_agent_router
 from backend.app.agent.bootstrap import AgentApiContext
 from backend.app.agent.graph import (
-    AgentDecision,
     AgentRole,
     AnalysisDecision,
     AnalysisModelOutput,
