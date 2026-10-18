@@ -5,7 +5,7 @@ import hashlib
 import io
 import json
 import re
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from collections import defaultdict
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
@@ -759,9 +759,16 @@ def _tool_result(
 
 
 def _allowed_result_artifact(artifact: str, job_type: AnalysisType | None) -> bool:
-    name = Path(artifact).name
-    if name != artifact or "/" in artifact or "\\" in artifact:
+    normalized = str(artifact).strip().replace("\\", "/")
+    path = PurePosixPath(normalized)
+    if (
+        not normalized
+        or path.is_absolute()
+        or any(part in {"", ".", ".."} for part in path.parts)
+        or (len(path.parts) > 1 and path.parts[0] not in {"outputs", "figure_data"})
+    ):
         return False
+    name = path.name
     differential = name in {"differential_gene_counts.csv", "union_significant_genes.csv"} or name.endswith((".sig.csv", ".all.csv"))
     dem = name in {"differential_metabolite_counts.csv", "union_significant_metabolites.csv"} or name.endswith((".sig.csv", ".all.csv"))
     correlation = name.startswith(("T01_", "T02_", "T03_", "T04_", "T05_", "T06_")) and name.endswith(".csv")

@@ -106,6 +106,31 @@ def test_get_job_and_query_result_are_user_bound() -> None:
     assert evidence.checksum == "sha256:fixture"
 
 
+def test_deg_significance_query_sorts_real_per_gene_rows_by_adjusted_p_value() -> None:
+    artifact = _artifact()
+    artifact.filename = "treatment.all.csv"
+    artifact.path = "outputs/treatment.all.csv"
+    job = _job(artifact=artifact).model_copy(update={"analysis_type": AnalysisType.DEG})
+    runtime = _runtime(
+        job,
+        "gene_id,log2FoldChange,padj\nGeneB,2.1,0.02\nGeneA,-3.0,0.001\n",
+    )
+
+    evidence = runtime.query_result(
+        "job-1", "outputs/treatment.all.csv", sort="padj asc", limit=1
+    )
+
+    assert evidence.ok
+    assert evidence.rows == [{
+        "_row_id": 2,
+        "gene_id": "GeneA",
+        "log2FoldChange": "-3.0",
+        "padj": "0.001",
+    }]
+    assert evidence.artifact == "outputs/treatment.all.csv"
+    assert evidence.checksum == "sha256:fixture"
+
+
 def test_result_artifact_allowlist_rejects_path_escape() -> None:
     result = _runtime(_job()).query_result("job-1", "../secret.csv")
 

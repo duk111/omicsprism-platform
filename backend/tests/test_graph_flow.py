@@ -30,6 +30,7 @@ from backend.app.agent.graph import (
 )
 from backend.app.agent.nodes.analysis import analysis_node
 from backend.app.agent.nodes.result_qa import ResultAccessError, result_qa_node
+from backend.app.agent.grounding import NO_EVIDENCE_TEXT
 from backend.app.agent.param_resolver import AnalysisProposal, ScopeSpec
 from backend.app.agent.schemas import AgentJobBlock, AgentTextBlock, ToolName, ToolResult
 from backend.app.models import JobStatus
@@ -374,6 +375,125 @@ def test_result_qa_queries_evidence_and_returns_verified_citations() -> None:
         query=ResultQuerySpec(artifact=artifact, resolve_entity="GeneA"),
     )]
     assert not submitter.requests
+
+
+def test_current_deg_job_significance_question_queries_sorted_table_and_cites_gene() -> None:
+    artifact = "treatment.all.csv"
+    summary = JobSummary(
+        job_id="job-current-deg",
+        owner_id="user-1",
+        status="succeeded",
+        artifacts=[artifact],
+    )
+    evidence = ToolResult(
+        tool=ToolName.QUERY_RESULT_EVIDENCE,
+        ok=True,
+        rows=[{
+            "_row_id": 18,
+            "gene_id": "GeneA",
+            "log2FoldChange": "-3.0",
+            "padj": "0.001",
+        }],
+        truncated=False,
+        row_count=1,
+        artifact=artifact,
+        checksum="sha256:deg-result",
+        filters={},
+        sort="padj asc",
+        error_code=None,
+    )
+    reader = _reader(summary)
+    querier = _querier(evidence)
+    model = ScriptedMainModel([AgentLoopOutput(decision=AgentDecision(
+        action="query_result",
+        result_query=ResultQuerySpec(artifact=artifact, sort="padj asc", limit=1),
+    ))])
+
+    result = GraphState.model_validate(build_agent_graph(
+        model, lambda _request: [], _submitter(), reader, querier
+    ).invoke(
+        _state(
+            user_message="\u5f53\u524d\u7ed3\u679c\u4e2d\u5dee\u5f02\u6700\u663e\u8457\u7684\u57fa\u56e0\u662f\u4ec0\u4e48\uff1f",
+            current_job=JobRef(job_id="job-current-deg", owner_id="user-1"),
+        ),
+        _config(),
+    ))
+
+    assert reader.requests == [JobLookupRequest(user_id="user-1", job_id="job-current-deg")]
+    assert querier.requests == [ResultEvidenceRequest(
+        user_id="user-1",
+        job_id="job-current-deg",
+        query=ResultQuerySpec(artifact=artifact, sort="padj asc", limit=1),
+    )]
+    claim = result.grounded_answer.claims[0]
+    assert "GeneA" in claim.text and "0.001" in claim.text
+    assert claim.citation.artifact == artifact
+    assert claim.citation.checksum == "sha256:deg-result"
+    assert claim.citation.row_ids == [18]
+
+
+def test_result_qa_explicitly_reports_empty_result_evidence() -> None:
+    artifact = "treatment.all.csv"
+    summary = JobSummary(
+        job_id="job-empty-deg", owner_id="user-1", status="succeeded", artifacts=[artifact]
+    )
+    evidence = ToolResult(
+        tool=ToolName.QUERY_RESULT_EVIDENCE,
+        ok=True,
+        rows=[],
+        truncated=False,
+        row_count=0,
+        artifact=artifact,
+        checksum="sha256:empty-deg",
+        filters={},
+        sort="padj asc",
+        error_code=None,
+    )
+    result = GraphState.model_validate(build_agent_graph(
+        ScriptedMainModel([AgentLoopOutput(decision=AgentDecision(
+            action="query_result",
+            result_query=ResultQuerySpec(artifact=artifact, sort="padj asc", limit=1),
+        ))]),
+        lambda _request: [], _submitter(), _reader(summary), _querier(evidence),
+    ).invoke(
+        _state(
+            user_message="\u5f53\u524d\u7ed3\u679c\u4e2d\u5dee\u5f02\u6700\u663e\u8457\u7684\u57fa\u56e0\u662f\u4ec0\u4e48\uff1f",
+            current_job=JobRef(job_id="job-empty-deg", owner_id="user-1"),
+        ),
+        _config(),
+    ))
+
+    assert result.grounded_answer is not None
+    assert result.grounded_answer.claims[0].text == NO_EVIDENCE_TEXT
+    assert result.grounded_answer.claims[0].citation.row_ids == []
+
+
+def test_result_qa_reports_inaccessible_current_job_artifact_without_claims() -> None:
+    artifact = "treatment.all.csv"
+    summary = JobSummary(
+        job_id="job-private-deg", owner_id="user-1", status="succeeded", artifacts=[artifact]
+    )
+
+    def inaccessible(_request: ResultEvidenceRequest) -> ToolResult:
+        raise LookupError("not found or not owned")
+
+    result = GraphState.model_validate(build_agent_graph(
+        ScriptedMainModel([AgentLoopOutput(decision=AgentDecision(
+            action="query_result",
+            result_query=ResultQuerySpec(artifact=artifact, sort="padj asc", limit=1),
+        ))]),
+        lambda _request: [], _submitter(), _reader(summary), inaccessible,
+    ).invoke(
+        _state(
+            user_message="\u5f53\u524d\u7ed3\u679c\u4e2d\u5dee\u5f02\u6700\u663e\u8457\u7684\u57fa\u56e0\u662f\u4ec0\u4e48\uff1f",
+            current_job=JobRef(job_id="job-private-deg", owner_id="user-1"),
+        ),
+        _config(),
+    ))
+
+    assert result.grounded_answer is None
+    assert result.response_text == "The requested result evidence was not found or is not accessible."
+    assert "Gene" not in result.response_text
 
 
 def test_get_job_uses_current_job_and_returns_compact_summary() -> None:

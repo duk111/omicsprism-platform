@@ -72,6 +72,10 @@ def test_explicit_result_query_with_pending_analysis_stays_result_qa() -> None:
     assert route(_state("Show the fold change result for GeneA")) is AgentRole.RESULT_QA
 
 
+def test_current_job_significance_question_routes_to_result_qa() -> None:
+    assert route(_state("\u5f53\u524d\u7ed3\u679c\u4e2d\u5dee\u5f02\u6700\u663e\u8457\u7684\u57fa\u56e0\u662f\u4ec0\u4e48\uff1f", pending=False, jobs=True)) is AgentRole.RESULT_QA
+
+
 def test_job_continuation_bypasses_message_rules() -> None:
     state = _state("What is FDR?", pending=False, jobs=False).model_copy(
         update={"turn_origin": "job_continuation"}

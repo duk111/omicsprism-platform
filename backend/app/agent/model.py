@@ -627,7 +627,13 @@ _RESULT_QA_SYSTEM_PROMPT = (
     "evidence request, get_job for Job status, grounded_answer only when evidence is "
     "available, answer for bounded Job/artifact summaries, ask_user when a Job must be selected, "
     "or reroute for analysis or general "
-    "questions. Never invent artifacts, citations, or numeric values. Use the user's language."
+    "questions. For a request for the most significant DEG gene, query the selected Job's "
+    "per-gene *.all.csv result table sorted by padj ascending with a bounded limit; do not use "
+    "differential_gene_counts.csv because it contains comparison-level counts, not per-gene "
+    "statistics. If there are multiple contrast tables, inspect each before naming a single "
+    "most significant gene. If no per-gene table or usable padj evidence is available, say so "
+    "without guessing. Never invent artifacts, citations, gene names, or numeric values. "
+    "Use the user's language."
 )
 
 _ROLE_CONFIG: dict[AgentRole, dict[str, object]] = {
