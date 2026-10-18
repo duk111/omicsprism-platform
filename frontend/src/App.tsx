@@ -1,6 +1,6 @@
 import { lazy, Suspense, useEffect, useMemo, useRef, useState } from "react";
 import { BrowserRouter, Navigate, Route, Routes, useLocation, useNavigate, useParams } from "react-router-dom";
-import type { AnalysisType, ImageInfo, JobFilesResponse, JobResponse, JobStatus } from "./api-types";
+import type { AnalysisType, ImageInfo, JobFilesResponse, JobResponse, JobStatus, PreflightResponse } from "./api-types";
 import { apiFetch, apiFetchJson, ApiRequestError, assetUrl, publicUrl } from "./api";
 import { formatSeconds } from "./app/jobs/progress";
 import { ANALYSIS_LABELS, STATUS_LABELS, formatDateTime } from "./app/jobs/jobUtils";
@@ -409,8 +409,12 @@ type FormState = {
   params: Record<string, string | number | boolean>;
   submitting: boolean;
   error: string | null;
-  preflightResult: string | null;
 };
+
+type PreflightState =
+  | { status: "idle" | "loading"; result: null; error: null }
+  | { status: "complete"; result: PreflightResponse; error: null }
+  | { status: "error"; result: null; error: string };
 
 const DEG_FIELDS: { name: string; label: string; required: boolean }[] = [
   { name: "counts", label: "Counts matrix (CSV)", required: true },
@@ -428,7 +432,7 @@ const DEM_FIELDS: { name: string; label: string; required: boolean }[] = [
   { name: "metadata", label: "Metadata table (CSV)", required: true },
 ];
 
-function AnalysisForm({ initialType, onProgress, onBack }: {
+export function AnalysisForm({ initialType, onProgress, onBack }: {
   initialType: AnalysisType; onProgress: (jobId: string) => void; onBack: () => void;
 }) {
   const [state, setState] = useState<FormState>({
@@ -437,20 +441,27 @@ function AnalysisForm({ initialType, onProgress, onBack }: {
     params: {},
     submitting: false,
     error: null,
-    preflightResult: null,
   });
+  const [preflight, setPreflight] = useState<PreflightState>({ status: "idle", result: null, error: null });
+  const preflightRequest = useRef(0);
   const [loadingExample, setLoadingExample] = useState(false);
 
   function setFile(name: string, file: File | null) {
-    setState(s => ({ ...s, files: { ...s.files, [name]: file }, error: null, preflightResult: null }));
+    preflightRequest.current += 1;
+    setPreflight({ status: "idle", result: null, error: null });
+    setState(s => ({ ...s, files: { ...s.files, [name]: file }, error: null }));
   }
 
   function setParam(name: string, value: string | number | boolean) {
+    preflightRequest.current += 1;
+    setPreflight({ status: "idle", result: null, error: null });
     setState(s => ({ ...s, params: { ...s.params, [name]: value }, error: null }));
   }
 
   function setType(t: AnalysisType) {
-    setState(s => ({ ...s, analysisType: t, files: {}, params: {}, error: null, preflightResult: null }));
+    preflightRequest.current += 1;
+    setPreflight({ status: "idle", result: null, error: null });
+    setState(s => ({ ...s, analysisType: t, files: {}, params: {}, error: null }));
   }
 
   function validateContrastFields(compareField: string, sameFieldsValue: string): string | null {
@@ -464,10 +475,7 @@ function AnalysisForm({ initialType, onProgress, onBack }: {
     return null;
   }
 
-  async function handleSubmit(e: React.FormEvent) {
-    e.preventDefault();
-    setState(s => ({ ...s, submitting: true, error: null }));
-
+  function buildAnalysisFormData(): FormData {
     const formData = new FormData();
     formData.set("analysis_type", state.analysisType);
     const fields =
@@ -476,25 +484,12 @@ function AnalysisForm({ initialType, onProgress, onBack }: {
       CORR_FIELDS;
     for (const f of fields) {
       const file = state.files[f.name];
-      if (f.required && !file) {
-        setState(s => ({ ...s, submitting: false, error: `${f.label} is required.` }));
-        return;
-      }
       if (file) formData.set(f.name, file);
     }
     if (state.analysisType === "deg") {
       const compareField = String(state.params.compare_field || "");
       const testedLevels = String(state.params.tested_levels || "");
       const referenceLevel = String(state.params.reference_level || "");
-      if (!compareField || !testedLevels || !referenceLevel) {
-        setState(s => ({ ...s, submitting: false, error: "compare_field, tested_levels, and reference_level are required." }));
-        return;
-      }
-      const contrastFieldError = validateContrastFields(compareField, String(state.params.same_fields || ""));
-      if (contrastFieldError) {
-        setState(s => ({ ...s, submitting: false, error: contrastFieldError }));
-        return;
-      }
       formData.set("compare_field", compareField);
       formData.set("tested_levels", testedLevels);
       formData.set("reference_level", referenceLevel);
@@ -507,15 +502,6 @@ function AnalysisForm({ initialType, onProgress, onBack }: {
       const compareField = String(state.params.compare_field || "");
       const testedLevels = String(state.params.tested_levels || "");
       const referenceLevel = String(state.params.reference_level || "");
-      if (!compareField || !testedLevels || !referenceLevel) {
-        setState(s => ({ ...s, submitting: false, error: "compare_field, tested_levels, and reference_level are required." }));
-        return;
-      }
-      const contrastFieldError = validateContrastFields(compareField, String(state.params.same_fields || ""));
-      if (contrastFieldError) {
-        setState(s => ({ ...s, submitting: false, error: contrastFieldError }));
-        return;
-      }
       formData.set("compare_field", compareField);
       formData.set("tested_levels", testedLevels);
       formData.set("reference_level", referenceLevel);
@@ -534,9 +520,53 @@ function AnalysisForm({ initialType, onProgress, onBack }: {
       formData.set("metab_log2", String(state.params.metab_log2 ?? DEFAULT_GMA_METAB_LOG2));
     } else {
     }
+    return formData;
+  }
+
+  async function handlePreflight() {
+    const requestId = ++preflightRequest.current;
+    setPreflight({ status: "loading", result: null, error: null });
+    try {
+      const result = await apiFetchJson("/api/jobs/preflight", { method: "POST", body: buildAnalysisFormData() }) as PreflightResponse;
+      if (preflightRequest.current === requestId) setPreflight({ status: "complete", result, error: null });
+    } catch (err) {
+      if (preflightRequest.current !== requestId) return;
+      const message = err instanceof ApiRequestError ? err.message : "Unable to check data. Please try again.";
+      setPreflight({ status: "error", result: null, error: message });
+    }
+  }
+
+  async function handleSubmit(e: React.FormEvent) {
+    e.preventDefault();
+    setState(s => ({ ...s, submitting: true, error: null }));
+
+    const fields =
+      state.analysisType === "deg" ? DEG_FIELDS :
+      state.analysisType === "dem" ? DEM_FIELDS :
+      CORR_FIELDS;
+    for (const f of fields) {
+      if (f.required && !state.files[f.name]) {
+        setState(s => ({ ...s, submitting: false, error: `${f.label} is required.` }));
+        return;
+      }
+    }
+    if (state.analysisType === "deg" || state.analysisType === "dem") {
+      const compareField = String(state.params.compare_field || "");
+      const testedLevels = String(state.params.tested_levels || "");
+      const referenceLevel = String(state.params.reference_level || "");
+      if (!compareField || !testedLevels || !referenceLevel) {
+        setState(s => ({ ...s, submitting: false, error: "compare_field, tested_levels, and reference_level are required." }));
+        return;
+      }
+      const contrastFieldError = validateContrastFields(compareField, String(state.params.same_fields || ""));
+      if (contrastFieldError) {
+        setState(s => ({ ...s, submitting: false, error: contrastFieldError }));
+        return;
+      }
+    }
 
     try {
-      const data = await apiFetchJson("/api/jobs", { method: "POST", body: formData });
+      const data = await apiFetchJson("/api/jobs", { method: "POST", body: buildAnalysisFormData() });
       onProgress(data.id);
     } catch (err) {
       const msg = err instanceof ApiRequestError ? err.message : "Submission failed.";
@@ -764,10 +794,22 @@ function AnalysisForm({ initialType, onProgress, onBack }: {
         )}
 
         {state.error && <p className="failure-text">{state.error}</p>}
-        {state.preflightResult && <pre className="log-box">{state.preflightResult}</pre>}
+        <section className="preflight-panel" aria-live="polite" aria-busy={preflight.status === "loading"}>
+          <div className="preflight-heading">
+            <div>
+              <h3>Data check</h3>
+              <p>Check input files and parameters before starting the analysis.</p>
+            </div>
+            <button className="secondary" type="button" onClick={handlePreflight} disabled={preflight.status === "loading" || state.submitting || loadingExample}>
+              {preflight.status === "loading" ? "Checking..." : "Check Data"}
+            </button>
+          </div>
+          {preflight.status === "error" && <p className="preflight-status is-error" role="alert">Data check failed: {preflight.error}</p>}
+          {preflight.status === "complete" && <PreflightPanel result={preflight.result} />}
+        </section>
 
         <div className="row-actions">
-          <button className="primary" type="submit" disabled={state.submitting || loadingExample}>
+          <button className="primary" type="submit" disabled={state.submitting || loadingExample || (preflight.status === "complete" && !preflight.result.can_submit)}>
             {state.submitting ? "Submitting..." : "Start analysis"}
           </button>
           <button
@@ -787,6 +829,42 @@ function AnalysisForm({ initialType, onProgress, onBack }: {
         </div>
       </form>
     </section>
+  );
+}
+
+function PreflightPanel({ result }: { result: PreflightResponse }) {
+  return (
+    <div className="preflight-result">
+      <p className={`preflight-status ${result.can_submit ? "is-ready" : "is-error"}`} role="status">
+        {result.can_submit ? "Data check passed. You can start the analysis." : "Data check found errors. Fix them and check again before starting."}
+      </p>
+      <div>
+        <h4>Input files</h4>
+        {result.files?.length ? (
+          <ul className="preflight-files">
+            {result.files.map(file => (
+              <li key={file.field}>
+                <strong>{file.filename}</strong> <span>({file.field}{file.rows != null ? `, ${file.rows} rows` : ""}{file.columns != null ? `, ${file.columns} columns` : ""})</span>
+              </li>
+            ))}
+          </ul>
+        ) : <p className="preflight-empty">No valid input files were found.</p>}
+      </div>
+      {!!result.errors?.length && <IssueList title="Errors" issues={result.errors} tone="error" />}
+      {!!result.warnings?.length && <IssueList title="Warnings" issues={result.warnings} tone="warning" />}
+    </div>
+  );
+}
+
+function IssueList({ title, issues, tone }: { title: string; issues: NonNullable<PreflightResponse["errors"]>; tone: "error" | "warning" }) {
+  return (
+    <div className={`preflight-issues is-${tone}`}>
+      <h4>{title}</h4>
+      <ul>{issues.map((issue, index) => <li key={`${issue.code}-${issue.field ?? ""}-${index}`}>
+        <span>{issue.field ? `${issue.field}: ` : ""}{issue.message}</span>
+        {issue.suggestions?.map(suggestion => <small key={suggestion}>{suggestion}</small>)}
+      </li>)}</ul>
+    </div>
   );
 }
 
