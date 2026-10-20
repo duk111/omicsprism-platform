@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 from typing import Iterable
 
 from fastapi import UploadFile
+from pydantic import ValidationError
 
 from .models import (
     AnalysisType,
@@ -16,6 +17,7 @@ from .models import (
     PreflightIssueCode,
     PreflightResponse,
 )
+from .agent.param_resolver import DEGParams, DEMParams, GMAParams, ScopeSpec
 
 
 @dataclass
@@ -116,6 +118,30 @@ def build_contrast_preview(
             suggestions=["Choose a metadata column containing the experimental groups."],
         ))
         return [], issues
+    observed_levels = {
+        row.get(compare_field, "").strip()
+        for row in rows
+        if row.get(compare_field, "").strip()
+    }
+    missing_tested = [level for level in tested_levels if level not in observed_levels]
+    if missing_tested:
+        issues.append(PreflightIssue(
+            code=PreflightIssueCode.INVALID_PARAMETER,
+            field="tested_levels",
+            message=f"tested level(s) {missing_tested} do not appear in metadata column '{compare_field}'",
+            context={"missing_levels": missing_tested, "observed_levels": sorted(observed_levels)},
+            suggestions=["Choose tested levels present in the samples retained for this analysis."],
+        ))
+    if reference_level not in observed_levels:
+        issues.append(PreflightIssue(
+            code=PreflightIssueCode.INVALID_PARAMETER,
+            field="reference_level",
+            message=f"reference level '{reference_level}' does not appear in metadata column '{compare_field}'",
+            context={"reference_level": reference_level, "observed_levels": sorted(observed_levels)},
+            suggestions=["Choose a reference level present in the samples retained for this analysis."],
+        ))
+    if missing_tested or reference_level not in observed_levels:
+        return [], issues
     missing_same = sorted(field for field in same_fields if field not in columns)
     if missing_same:
         issues.append(PreflightIssue(
@@ -163,7 +189,9 @@ def build_contrast_preview(
             field="contrast",
             severity="warning" if contrasts else "error",
             message="Some metadata strata do not meet contrast replicate requirements",
-            context={"min_replicates": min_replicates, "rejected_groups": rejected_groups},
+            context={"min_replicates": min_replicates, "rejected_groups": rejected_groups,
+                     "remaining_sample_count": len(rows), "valid_contrast_count": len(contrasts),
+                     "analysis_ready": bool(contrasts)},
             suggestions=["Choose distinct levels with enough biological replicates in each same_fields stratum."],
         ))
     return contrasts, issues
@@ -179,6 +207,7 @@ class PreflightService:
     ) -> PreflightResponse:
         issues: list[PreflightIssue] = []
         normalized_params = dict(params)
+        issues.extend(self._validate_analysis_params(analysis_type, params))
 
         if analysis_type == AnalysisType.DEG:
             counts = self._load_matrix("counts", files.get("counts"))
@@ -191,6 +220,11 @@ class PreflightService:
                 issues.extend(self._validate_deg_params(params, metadata))
             if counts and metadata:
                 issues.extend(self._validate_alignment(counts.sample_names, metadata.sample_ids, "counts", "metadata"))
+                common = set(counts.sample_names) & set(metadata.sample_ids)
+                if common:
+                    rows = [row for row in metadata.rows if row.get("sample_id", "").strip() in common]
+                    _, contrast_issues = build_contrast_preview(rows, params)
+                    issues.extend(contrast_issues)
             file_summaries = [self._matrix_summary(counts), self._group_summary(metadata)]
         elif analysis_type == AnalysisType.DEM:
             metabs = self._load_matrix("metabs", files.get("metabs"))
@@ -203,6 +237,11 @@ class PreflightService:
                 issues.extend(self._validate_deg_params(params, metadata))
             if metabs and metadata:
                 issues.extend(self._validate_alignment(metabs.sample_names, metadata.sample_ids, "metabs", "metadata"))
+                common = set(metabs.sample_names) & set(metadata.sample_ids)
+                if common:
+                    rows = [row for row in metadata.rows if row.get("sample_id", "").strip() in common]
+                    _, contrast_issues = build_contrast_preview(rows, params)
+                    issues.extend(contrast_issues)
             file_summaries = [self._matrix_summary(metabs), self._group_summary(metadata)]
         else:
             transcriptome = self._load_matrix("transcriptome", files.get("transcriptome"))
@@ -545,14 +584,17 @@ class PreflightService:
         issues: list[PreflightIssue] = []
         if set(left) != set(right):
             common = sorted(set(left) & set(right))
+            severity = "error" if not common else "warning"
             issues.append(
                 PreflightIssue(
                     code=PreflightIssueCode.SAMPLE_MISMATCH,
                     field=f"{left_field}/{right_field}",
-                    severity="warning",
-                    message="Sample names do not match",
-                    context={left_field: left, right_field: right, "common_samples": common, "common_sample_count": len(common)},
+                    severity=severity,
+                    message=("No common samples remain after aligning the input files" if not common else "Sample names do not match"),
+                    context={left_field: left, right_field: right, "common_samples": common, "common_sample_count": len(common),
+                             "analysis_ready": bool(common)},
                     suggestions=[
+                        "Provide at least one sample present in both input files." if not common else
                         "The analysis package will align samples by name and use the common sample set.",
                         "Check spelling differences or dropped samples if the common sample count is lower than expected.",
                     ],
@@ -570,6 +612,61 @@ class PreflightService:
                 )
             )
         return issues
+
+    def _validate_analysis_params(self, analysis_type: AnalysisType, params: JobParams) -> list[PreflightIssue]:
+        validation_errors: list[dict[str, object]] = []
+        try:
+            same_fields = [item.strip() for item in str(params.get("same_fields") or "").split(",") if item.strip()]
+            scope_mode = str(params.get("scope_mode") or "all")
+            if scope_mode == "stratified" and same_fields:
+                scope = ScopeSpec(mode="stratified", blocking_fields=same_fields)
+            else:
+                scope = ScopeSpec(mode="all")
+            contrast = {
+                "compare_field": str(params.get("compare_field") or ""),
+                "tested_level": str(params.get("tested_levels") or ""),
+                "reference_level": str(params.get("reference_level") or ""),
+                "scope": scope,
+            }
+            if analysis_type == AnalysisType.DEG:
+                DEGParams.model_validate({"contrast": contrast, "min_replicates": params.get("min_replicates", 2),
+                                          "padj_cutoff": params.get("padj_cutoff", 0.05),
+                                          "log2fc_cutoff": params.get("log2fc_cutoff", 1.0),
+                                          "min_total_count": params.get("min_total_count", 10)})
+            elif analysis_type == AnalysisType.DEM:
+                impute_method = str(params.get("impute_method", "half-min") or "half-min").strip().casefold()
+                if impute_method not in {"half-min", "median"}:
+                    validation_errors.append({"loc": ("impute_method",), "msg": "impute_method must be half-min or median"})
+                DEMParams.model_validate({"contrast": contrast, "min_replicates": params.get("min_replicates", 2),
+                                          "padj_cutoff": params.get("padj_cutoff", 0.05),
+                                          "log2fc_cutoff": params.get("log2fc_cutoff", 1.0),
+                                          "vip_cutoff": params.get("vip_cutoff", 1.0),
+                                          "pseudocount": params.get("pseudocount", 1e-9),
+                                          "max_missing_fraction": params.get("max_missing_fraction", 0.5),
+                                          "impute_method": impute_method,
+                                          "n_orthogonal_components": params.get("n_orthogonal_components", 1)})
+            else:
+                GMAParams.model_validate({"fdr_cutoff": params.get("fdr_cutoff", 0.05),
+                                          "enable_modules": params.get("enable_modules", True),
+                                          "trans_log2": params.get("trans_log2", True),
+                                          "metab_log2": params.get("metab_log2", True),
+                                          "max_missing_fraction": params.get("max_missing_fraction", 0.5)})
+                method = str(params.get("method") or "spearman").strip().casefold()
+                if method not in {"pearson", "spearman"}:
+                    validation_errors.append({"loc": ("method",), "msg": "method must be Pearson or Spearman"})
+        except ValidationError as exc:
+            validation_errors.extend(exc.errors())
+        except ValueError as exc:
+            validation_errors.append({"loc": ("parameters",), "msg": str(exc)})
+        if validation_errors:
+            return [PreflightIssue(
+                code=PreflightIssueCode.INVALID_PARAMETER,
+                field=str(error.get("loc", ("parameters",))[-1]),
+                message=str(error.get("msg", "invalid parameter")),
+                context={"parameter_errors": validation_errors},
+                suggestions=["Use values within the documented analysis parameter ranges."],
+            ) for error in validation_errors]
+        return []
 
     def _validate_deg_params(self, params: JobParams, metadata: GroupProfile) -> list[PreflightIssue]:
         issues: list[PreflightIssue] = []
@@ -602,32 +699,6 @@ class PreflightService:
                     suggestions=["Use only column names that exist in the metadata file, or leave same_fields empty."],
                 )
             )
-        if tested_levels and compare_field in metadata_cols:
-            observed = {row.get(compare_field, "").strip() for row in metadata.rows}
-            for level in tested_levels:
-                if level not in observed:
-                    issues.append(
-                        PreflightIssue(
-                            code=PreflightIssueCode.MATRIX_SCHEMA_INVALID,
-                            field="tested_levels",
-                            severity="warning",
-                            message=f"tested_level '{level}' does not appear in metadata column '{compare_field}'",
-                            context={"tested_level": level, "compare_field": compare_field, "observed_levels": sorted(observed)},
-                            suggestions=["No contrast will be generated for this level."],
-                        )
-                    )
-        if reference_level and compare_field in metadata_cols:
-            observed = {row.get(compare_field, "").strip() for row in metadata.rows}
-            if reference_level not in observed:
-                issues.append(
-                    PreflightIssue(
-                        code=PreflightIssueCode.MATRIX_SCHEMA_INVALID,
-                        field="reference_level",
-                        message=f"reference_level '{reference_level}' does not appear in metadata column '{compare_field}'",
-                        context={"reference_level": reference_level, "compare_field": compare_field, "observed_levels": sorted(observed)},
-                        suggestions=["Set reference_level to a value that exists in the compare_field column of metadata."],
-                    )
-                )
         return issues
 
     def _validate_group_membership(self, group_sample_ids: list[str], transcriptome_samples: list[str], metabolome_samples: list[str]) -> list[PreflightIssue]:
@@ -639,10 +710,13 @@ class PreflightService:
                 PreflightIssue(
                     code=PreflightIssueCode.SAMPLE_MISMATCH,
                     field="group",
-                    severity="warning",
-                    message="Group table samples do not match transcriptome/metabolome samples",
-                    context={"mismatched_samples": missing[:50]},
-                    suggestions=["The analysis package will use the intersection between group samples and matrix samples."],
+                    severity="error" if not allowed else "warning",
+                    message=("No group samples overlap both matrices" if not allowed else "Group table samples do not match transcriptome/metabolome samples"),
+                    context={"mismatched_samples": missing[:50], "common_samples": sorted(allowed),
+                             "common_sample_count": len(allowed), "remaining_group_sample_count": sum(sample_id in allowed for sample_id in group_sample_ids),
+                             "analysis_ready": bool(allowed)},
+                    suggestions=["Provide group samples present in both matrices." if not allowed else
+                                 "The analysis package will use the intersection between group samples and matrix samples."],
                 )
             )
         return issues

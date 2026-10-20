@@ -340,6 +340,7 @@ class PreflightIssueCode(str, Enum):
     SAMPLE_ORDER_MISMATCH = "sample_order_mismatch"
     NON_NUMERIC_VALUE = "non_numeric_value"
     INCONSISTENT_ROW_LENGTH = "inconsistent_row_length"
+    INVALID_PARAMETER = "invalid_parameter"
 
 
 class PreflightIssue(BaseModel):

@@ -74,12 +74,25 @@ def test_valid_request_returns_typed_preview_and_fingerprint() -> None:
     assert report.input_fingerprint.startswith("sha256:")
 
 
-def test_sample_alignment_failure_is_preserved_as_existing_preflight_warning() -> None:
+def test_partial_sample_alignment_blocks_when_remaining_replicates_are_insufficient() -> None:
     metadata = b"sample_id,treatment\ns1,control\ns2,control\ns3,salt\ns5,salt\n"
     report = validate_analysis_request(_request(), _refs(metadata=metadata))
 
+    assert not report.ok
+    assert any(issue.code == "sample_mismatch" for issue in report.warnings)
+    assert any(issue.code == "group_schema_invalid" for issue in report.blocking)
+
+
+def test_partial_sample_alignment_remains_submittable_when_contrast_survives() -> None:
+    counts = b"gene,s1,s2,s3,s4,s5\ng1,10,12,30,32,28\n"
+    metadata = b"sample_id,treatment\ns1,control\ns2,control\ns3,salt\ns4,salt\n"
+    report = validate_analysis_request(_request(), _refs(counts=counts, metadata=metadata))
+
     assert report.ok
     assert any(issue.code == "sample_mismatch" for issue in report.warnings)
+    assert report.preview is not None
+    assert report.preview.tested_count == 2
+    assert report.preview.reference_count == 2
 
 
 def test_negative_counts_are_blocking() -> None:

@@ -597,16 +597,6 @@ def _build_job_params(
     n_orthogonal_components: int | None,
 ) -> JobParams:
     if atype == AnalysisType.DEG:
-        if counts is None:
-            raise HTTPException(status_code=400, detail="counts is required for differential analysis")
-        if metadata is None:
-            raise HTTPException(status_code=400, detail="metadata is required for differential analysis")
-        if not compare_field:
-            raise HTTPException(status_code=400, detail="compare_field is required for differential analysis")
-        if not tested_levels:
-            raise HTTPException(status_code=400, detail="tested_levels is required for differential analysis")
-        if not reference_level:
-            raise HTTPException(status_code=400, detail="reference_level is required for differential analysis")
         return {
             "compare_field": compare_field,
             "tested_levels": tested_levels,
@@ -621,19 +611,7 @@ def _build_job_params(
         }
 
     if atype == AnalysisType.DEM:
-        if metabs is None:
-            raise HTTPException(status_code=400, detail="metabs is required for DEM analysis")
-        if metadata is None:
-            raise HTTPException(status_code=400, detail="metadata is required for DEM analysis")
-        if not compare_field:
-            raise HTTPException(status_code=400, detail="compare_field is required for DEM analysis")
-        if not tested_levels:
-            raise HTTPException(status_code=400, detail="tested_levels is required for DEM analysis")
-        if not reference_level:
-            raise HTTPException(status_code=400, detail="reference_level is required for DEM analysis")
         normalized_impute = (impute_method or "half-min").strip().lower()
-        if normalized_impute not in {"half-min", "median"}:
-            raise HTTPException(status_code=400, detail="impute_method must be half-min or median")
         return {
             "compare_field": compare_field,
             "tested_levels": tested_levels,
@@ -651,16 +629,7 @@ def _build_job_params(
             "n_orthogonal_components": n_orthogonal_components if n_orthogonal_components is not None else 1,
         }
 
-    if transcriptome is None:
-        raise HTTPException(status_code=400, detail="transcriptome is required for correlation analysis")
-    if metabolome is None:
-        raise HTTPException(status_code=400, detail="metabolome is required for correlation analysis")
-    if group is None:
-        raise HTTPException(status_code=400, detail="group is required for correlation analysis")
-
     normalized_method = (method or "Spearman").strip().lower()
-    if normalized_method not in {"pearson", "spearman"}:
-        raise HTTPException(status_code=400, detail="method must be Pearson or Spearman")
     return {
         "method": normalized_method,
         "fdr_cutoff": fdr_cutoff if fdr_cutoff is not None else 0.05,
