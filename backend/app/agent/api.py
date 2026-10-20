@@ -51,6 +51,7 @@ from .schemas import (
     AgentTextBlock,
     AgentThreadCreateRequest,
     AgentThreadDetailResponse,
+    AgentThreadRenameRequest,
     AgentThreadListResponse,
     AgentThreadRecord,
     AgentThreadResponse,
@@ -139,6 +140,21 @@ def create_agent_router(
             thread=_thread_response(thread),
             run=_run_response(thread.current_run_id, thread_id, focus, version),
         )
+
+    @router.patch("/threads/{thread_id}", response_model=AgentThreadResponse)
+    def rename_thread(
+        thread_id: str,
+        payload: AgentThreadRenameRequest,
+        user_id: str = Depends(session_dependency),
+        ctx: AgentApiContext = Depends(current_context),
+    ) -> AgentThreadResponse:
+        thread = _owned_thread(ctx, thread_id, user_id)
+        title = payload.title.strip()
+        if not title:
+            raise HTTPException(status_code=422, detail="Thread title must not be blank")
+        updated = thread.model_copy(update={"title": title, "updated_at": datetime.now(timezone.utc)})
+        ctx.product_store.save_thread(updated)
+        return _thread_response(updated)
 
     @router.get(
         "/threads/{thread_id}/pending-interrupt",

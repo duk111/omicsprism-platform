@@ -1,14 +1,12 @@
 import { apiFetch, apiFetchJson, apiUrl } from "../api";
 import { createClientId } from "../clientId";
 import type {
-  AgentFeedbackCreateRequest,
-  AgentFeedbackListResponse,
-  AgentFeedbackResponse,
   AgentInputBundleResponse,
   AgentJobWaitResponse,
   AgentJobWaitListResponse,
   AgentMessageListResponse,
   AgentThreadDetailResponse,
+  AgentThreadResponse,
   AgentThreadListResponse,
   AgentThreadResponse,
   AgentTraceEventListResponse,
@@ -33,6 +31,8 @@ export const agentApi = {
     apiFetchJson(root, json("POST", { focus_job_ids: focusJobIds })) as Promise<AgentThreadResponse>,
   getThread: (threadId: string) =>
     apiFetchJson(`${root}/${encodeURIComponent(threadId)}`) as Promise<AgentThreadDetailResponse>,
+  renameThread: (threadId: string, title: string) =>
+    apiFetchJson(`${root}/${encodeURIComponent(threadId)}`, json("PATCH", { title })) as Promise<AgentThreadResponse>,
   getPendingInterrupt: (threadId: string) =>
     apiFetchJson(`${root}/${encodeURIComponent(threadId)}/pending-interrupt`) as Promise<GraphPendingInterrupt | null>,
   listJobWaits: (threadId: string) =>
@@ -43,13 +43,6 @@ export const agentApi = {
     apiFetchJson(`${root}/${encodeURIComponent(threadId)}/messages${after ? `?after=${encodeURIComponent(after)}` : ""}`) as Promise<AgentMessageListResponse>,
   listTrace: (threadId: string, limit = 100) =>
     apiFetchJson(`${root}/${encodeURIComponent(threadId)}/trace?limit=${limit}`) as Promise<AgentTraceEventListResponse>,
-  listFeedback: (threadId: string) =>
-    apiFetchJson(`${root}/${encodeURIComponent(threadId)}/feedback`) as Promise<AgentFeedbackListResponse>,
-  saveFeedback: (threadId: string, messageId: string, payload: AgentFeedbackCreateRequest) =>
-    apiFetchJson(
-      `${root}/${encodeURIComponent(threadId)}/messages/${encodeURIComponent(messageId)}/feedback`,
-      json("PUT", payload),
-    ) as Promise<AgentFeedbackResponse>,
   listTurns: (threadId: string, after?: string) =>
     apiFetchJson(`${root}/${encodeURIComponent(threadId)}/turns${after ? `?after=${encodeURIComponent(after)}` : ""}`) as Promise<AgentTurnListResponse>,
   createTurn: (threadId: string, message: string, inputBundleId: string | null, focusJobIds: string[]) =>

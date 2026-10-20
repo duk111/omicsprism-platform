@@ -193,6 +193,9 @@ AgentMessageBlock = Annotated[
 class AgentThreadCreateRequest(ContractModel):
     focus_job_ids: list[str] = Field(default_factory=list, max_length=20)
 
+class AgentThreadRenameRequest(ContractModel):
+    title: str = Field(min_length=1, max_length=200)
+
 class AgentThreadRecord(ContractModel):
     thread_id: str = Field(min_length=1)
     user_id: str = Field(min_length=1)

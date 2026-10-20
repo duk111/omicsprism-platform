@@ -42,7 +42,7 @@
 .topbar {
   position: sticky;
   top: 0;
-  z-index: 10;
+  z-index: 40;
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -403,7 +403,7 @@ button:disabled,
 .welcome-title {
   margin: 0;
   color: #183b2b;
-  font-size: clamp(2.7rem, 6vw, 5.4rem);
+  font-size: clamp(2.7rem, 4.5vw, 5.4rem);
   font-weight: 850;
   letter-spacing: -0.055em;
   line-height: 0.98;
@@ -851,6 +851,73 @@ button:disabled,
   font-size: 0.85rem;
   font-weight: 700;
   color: var(--color-text);
+}
+
+.drop-label-row {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.data-type-help {
+  position: relative;
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  color: var(--color-text-secondary);
+  cursor: help;
+  outline: none;
+}
+
+.data-type-help:hover,
+.data-type-help:focus-visible {
+  color: var(--color-primary);
+  background: var(--color-primary-soft);
+}
+
+.data-type-tooltip {
+  position: absolute;
+  right: -8px;
+  bottom: calc(100% + 8px);
+  z-index: 30;
+  width: min(320px, calc(100vw - 48px));
+  padding: 9px 11px;
+  border: 1px solid #c7d9cf;
+  border-radius: 6px;
+  background: #17352a;
+  color: #f7fbf8;
+  box-shadow: 0 8px 22px rgba(23, 53, 42, 0.2);
+  font-size: 0.76rem;
+  font-weight: 500;
+  line-height: 1.45;
+  opacity: 0;
+  pointer-events: none;
+  transform: translateY(3px);
+  transition: opacity 0.14s ease, transform 0.14s ease;
+}
+
+.data-type-tooltip::after {
+  position: absolute;
+  right: 12px;
+  bottom: -5px;
+  width: 8px;
+  height: 8px;
+  border-right: 1px solid #c7d9cf;
+  border-bottom: 1px solid #c7d9cf;
+  background: #17352a;
+  content: "";
+  transform: rotate(45deg);
+}
+
+.data-type-help:hover .data-type-tooltip,
+.data-type-help:focus-visible .data-type-tooltip {
+  opacity: 1;
+  transform: translateY(0);
 }
 
 .drop-hint {

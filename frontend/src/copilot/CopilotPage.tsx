@@ -1,13 +1,12 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { AlertCircle, Bot, CheckCircle2, ChevronDown, CircleAlert, Clock3, FilePlus2, LoaderCircle, Menu, MessageSquarePlus, Paperclip, Send, Square, Trash2, Wifi, WifiOff, X } from "lucide-react";
+import { AlertCircle, Bot, Check, CheckCircle2, ChevronDown, CircleAlert, CircleHelp, Clock3, FilePlus2, LoaderCircle, Menu, MessageSquarePlus, MoreHorizontal, Paperclip, Pencil, Pin, PinOff, Send, Square, Trash2, Wifi, WifiOff, X } from "lucide-react";
 import { useSearchParams } from "react-router-dom";
-import type { AgentFeedbackCreateRequest, AgentFeedbackResponse, AgentJobWaitResponse, AgentMessageResponse, AgentRunResponse, AgentStreamEvent, AgentThreadResponse, AgentTraceEventResponse, AgentTurnResponse, GraphInterrupt, GraphPendingInterrupt, GraphTurnResult } from "../api-types";
+import type { AgentJobWaitResponse, AgentMessageResponse, AgentRunResponse, AgentStreamEvent, AgentThreadResponse, AgentTraceEventResponse, AgentTurnResponse, GraphInterrupt, GraphPendingInterrupt, GraphTurnResult } from "../api-types";
 import { ApiRequestError } from "../api";
 import { createClientId } from "../clientId";
 import { agentApi, isGraphTurnResult } from "./agentApi";
 import type { GraphResumeRequest } from "./agentApi";
 import { GraphInterruptPanel } from "./GraphInterruptPanel";
-import { FeedbackControls } from "./FeedbackControls";
 import { MessageBlocks } from "./MessageBlocks";
 import { TracePanel } from "./TracePanel";
 import "./copilot.css";
@@ -16,11 +15,29 @@ const INPUT_FIELDS = ["counts", "metadata", "transcriptome", "metabolome", "grou
 type InputField = typeof INPUT_FIELDS[number];
 const INPUT_FIELD_LABELS: Record<InputField, string> = {
   counts: "Counts matrix",
-  metadata: "Metadata table",
+  metadata: "Sample metadata table",
   transcriptome: "Transcriptome matrix",
   metabolome: "Metabolome matrix",
-  group: "GMA group table (sample_id/group1/group2)",
+  group: "Sample group table (sample_id/group1/group2)",
 };
+const INPUT_FIELD_DESCRIPTIONS: Record<InputField, string> = {
+  counts: "Raw gene counts with genes in rows and sample IDs in columns. Use integer counts for DEG.",
+  metadata: "Sample metadata mapping each sample ID to comparison groups and optional covariates.",
+  transcriptome: "Gene expression matrix with genes in rows and sample IDs in columns for GMA.",
+  metabolome: "Metabolite abundance matrix with metabolites in rows and sample IDs in columns.",
+  group: "Sample group table containing sample_id, group1, and group2 columns for GMA.",
+};
+const PINNED_THREADS_STORAGE_KEY = "omicsprism.copilot.pinned_threads";
+
+function loadPinnedThreadIds(): string[] {
+  try {
+    const value = JSON.parse(window.localStorage.getItem(PINNED_THREADS_STORAGE_KEY) || "[]");
+    return Array.isArray(value) ? value.filter(item => typeof item === "string") : [];
+  } catch {
+    return [];
+  }
+}
+
 type Attachment = { id: string; file: File; field: InputField };
 type PendingGraph = GraphPendingInterrupt;
 
@@ -33,10 +50,8 @@ export default function CopilotPage() {
   const [messages, setMessages] = useState<AgentMessageResponse[]>([]);
   const [turns, setTurns] = useState<AgentTurnResponse[]>([]);
   const [jobWaits, setJobWaits] = useState<AgentJobWaitResponse[]>([]);
-  const [feedbackByMessage, setFeedbackByMessage] = useState<Record<string, AgentFeedbackResponse>>({});
   const [traceEvents, setTraceEvents] = useState<AgentTraceEventResponse[]>([]);
   const [traceLoading, setTraceLoading] = useState(false);
-  const [savingFeedbackFor, setSavingFeedbackFor] = useState<string | null>(null);
   const [draft, setDraft] = useState("");
   const [attachments, setAttachments] = useState<Attachment[]>([]);
   const [loading, setLoading] = useState(true);
@@ -46,6 +61,11 @@ export default function CopilotPage() {
   const [pendingGraph, setPendingGraph] = useState<PendingGraph | null>(null);
   const [graphBusy, setGraphBusy] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
+  const [menuThreadId, setMenuThreadId] = useState<string | null>(null);
+  const [editingThreadId, setEditingThreadId] = useState<string | null>(null);
+  const [editingTitle, setEditingTitle] = useState("");
+  const [savingThreadId, setSavingThreadId] = useState<string | null>(null);
+  const [pinnedThreadIds, setPinnedThreadIds] = useState<string[]>(loadPinnedThreadIds);
   const [connection, setConnection] = useState<"live" | "recovering" | "offline">("recovering");
   const [railOpen, setRailOpen] = useState(false);
   const initialized = useRef(false);
@@ -65,18 +85,16 @@ export default function CopilotPage() {
   }, []);
 
   const recover = useCallback(async (threadId: string) => {
-    const [detail, messageList, turnList, interrupt, waitList, feedbackList, traceList] = await Promise.all([
+    const [detail, messageList, turnList, interrupt, waitList, traceList] = await Promise.all([
       agentApi.getThread(threadId),
       agentApi.listMessages(threadId),
       agentApi.listTurns(threadId),
       agentApi.getPendingInterrupt(threadId),
       agentApi.listJobWaits(threadId),
-      agentApi.listFeedback(threadId),
       agentApi.listTrace(threadId),
     ]);
     setRun(detail.run); setMessages(messageList.messages); setTurns(turnList.turns);
     setPendingGraph(interrupt); setJobWaits(waitList.waits);
-    setFeedbackByMessage(Object.fromEntries(feedbackList.feedback.map(item => [item.message_id, item])));
     setTraceEvents(traceList.events);
   }, []);
 
@@ -149,6 +167,12 @@ export default function CopilotPage() {
   const activeJobWaits = jobWaits.filter(wait => wait.wait_status === "waiting" || wait.wait_status === "resume_queued");
   const focusIds = run?.focus.in_scope_job_ids ?? [];
   const checkpointLabel = run ? `Version ${run.version}` : "Ready";
+  const visibleThreads = useMemo(() => [...threads].sort((left, right) => {
+    const leftPinned = pinnedThreadIds.includes(left.thread_id) ? 1 : 0;
+    const rightPinned = pinnedThreadIds.includes(right.thread_id) ? 1 : 0;
+    if (leftPinned !== rightPinned) return rightPinned - leftPinned;
+    return new Date(right.updated_at).valueOf() - new Date(left.updated_at).valueOf();
+  }), [pinnedThreadIds, threads]);
 
   async function send() {
     const text = draft.trim();
@@ -199,14 +223,45 @@ export default function CopilotPage() {
     finally { setCancelingWaitId(null); }
   }
 
-  async function saveFeedback(messageId: string, payload: AgentFeedbackCreateRequest) {
-    if (!activeId || savingFeedbackFor) return;
-    setSavingFeedbackFor(messageId); setNotice(null);
+  function togglePinned(threadId: string) {
+    setPinnedThreadIds(current => {
+      const next = current.includes(threadId)
+        ? current.filter(id => id !== threadId)
+        : [threadId, ...current];
+      window.localStorage.setItem(PINNED_THREADS_STORAGE_KEY, JSON.stringify(next));
+      return next;
+    });
+    setMenuThreadId(null);
+  }
+
+  function startRename(thread: AgentThreadResponse) {
+    setEditingThreadId(thread.thread_id);
+    setEditingTitle(thread.title || "New Copilot thread");
+    setMenuThreadId(null);
+  }
+
+  function cancelRename() {
+    setEditingThreadId(null);
+    setEditingTitle("");
+  }
+
+  async function saveRename(threadId: string) {
+    const title = editingTitle.trim();
+    if (!title) {
+      setNotice("Conversation name cannot be blank.");
+      return;
+    }
+    setSavingThreadId(threadId);
+    setNotice(null);
     try {
-      const feedback = await agentApi.saveFeedback(activeId, messageId, payload);
-      setFeedbackByMessage(current => ({ ...current, [messageId]: feedback }));
-    } catch (error) { setNotice(errorMessage(error)); }
-    finally { setSavingFeedbackFor(null); }
+      const updated = await agentApi.renameThread(threadId, title);
+      setThreads(current => current.map(thread => thread.thread_id === threadId ? updated : thread));
+      cancelRename();
+    } catch (error) {
+      setNotice(errorMessage(error));
+    } finally {
+      setSavingThreadId(null);
+    }
   }
 
   async function deleteConversation(threadId: string) {
@@ -214,11 +269,15 @@ export default function CopilotPage() {
     try {
       await agentApi.deleteThread(threadId);
       const remaining = threads.filter(item => item.thread_id !== threadId);
+      const nextPinned = pinnedThreadIds.filter(id => id !== threadId);
+      setPinnedThreadIds(nextPinned);
+      window.localStorage.setItem(PINNED_THREADS_STORAGE_KEY, JSON.stringify(nextPinned));
       setThreads(remaining);
       if (activeId === threadId) {
-        setActiveId(remaining[0]?.thread_id ?? null);
+        setActiveId(visibleThreads.find(item => item.thread_id !== threadId)?.thread_id ?? remaining[0]?.thread_id ?? null);
         if (!remaining.length) await createThread();
       }
+      setMenuThreadId(null);
     } catch (error) { setNotice(errorMessage(error)); }
   }
 
@@ -243,22 +302,47 @@ export default function CopilotPage() {
     <aside className={`copilot-rail${railOpen ? " rail-open" : ""}`} aria-label="Conversations">
       <div className="rail-heading"><div><span>Workspace</span><h1>Copilot</h1></div><button type="button" title="Close conversations" aria-label="Close conversations" onClick={() => setRailOpen(false)}><X size={19} /></button></div>
       <button type="button" className="new-thread" onClick={() => void createThread()}><MessageSquarePlus size={17} />New conversation</button>
-      <div className="thread-list">{threads.map(thread => <div className={`thread-item${thread.thread_id === activeId ? " active" : ""}`} key={thread.thread_id}><button type="button" className="thread-select" onClick={() => { setPendingGraph(null); setGraphBusy(false); setActiveId(thread.thread_id); setRailOpen(false); }}><strong>{thread.title || "Untitled conversation"}</strong><time>{relativeTime(thread.updated_at)}</time></button><button type="button" className="thread-delete" title="Delete conversation" aria-label={`Delete ${thread.title || "conversation"}`} onClick={() => void deleteConversation(thread.thread_id)}><Trash2 size={15} /></button></div>)}</div>
+      <div className="thread-list">{visibleThreads.map(thread => {
+        const isPinned = pinnedThreadIds.includes(thread.thread_id);
+        const isEditing = editingThreadId === thread.thread_id;
+        return <div className={`thread-item${thread.thread_id === activeId ? " active" : ""}${isPinned ? " pinned" : ""}${menuThreadId === thread.thread_id ? " menu-open" : ""}`} key={thread.thread_id}>
+          {isEditing ? (
+            <form className="thread-rename" onSubmit={event => { event.preventDefault(); if (!savingThreadId) void saveRename(thread.thread_id); }}>
+              <input autoFocus value={editingTitle} maxLength={200} aria-label="Conversation name" onChange={event => setEditingTitle(event.target.value)} />
+              <button type="submit" aria-label="Save conversation name" title="Save" disabled={savingThreadId === thread.thread_id}><Check size={15} /></button>
+              <button type="button" aria-label="Cancel rename" title="Cancel" onClick={cancelRename}><X size={15} /></button>
+            </form>
+          ) : (
+            <>
+              <button type="button" className="thread-select" onClick={() => { setMenuThreadId(null); setPendingGraph(null); setGraphBusy(false); setActiveId(thread.thread_id); setRailOpen(false); }}>
+                <strong>{isPinned && <Pin size={13} aria-label="Pinned" />}{thread.title || "Untitled conversation"}</strong>
+                <time>{relativeTime(thread.updated_at)}</time>
+              </button>
+              <button type="button" className="thread-menu-toggle" title="Conversation actions" aria-label={`Actions for ${thread.title || "conversation"}`} aria-expanded={menuThreadId === thread.thread_id} onClick={event => { event.stopPropagation(); setMenuThreadId(current => current === thread.thread_id ? null : thread.thread_id); }}><MoreHorizontal size={18} /></button>
+              {menuThreadId === thread.thread_id && <div className="thread-menu" role="menu">
+                <button type="button" role="menuitem" onClick={() => startRename(thread)}><Pencil size={15} />Rename</button>
+                <button type="button" role="menuitem" onClick={() => togglePinned(thread.thread_id)}>{isPinned ? <PinOff size={15} /> : <Pin size={15} />}{isPinned ? "Unpin" : "Pin to top"}</button>
+                <button type="button" className="thread-menu-danger" role="menuitem" onClick={() => void deleteConversation(thread.thread_id)}><Trash2 size={15} />Delete</button>
+              </div>}
+            </>
+          )}
+        </div>;
+      })}</div>
     </aside>
 
     <section className="conversation-panel">
       <header className="conversation-header"><div><span className="conversation-kicker">OmicsPrism Copilot</span><h2>{activeThread?.title || "New conversation"}</h2></div><div className={`connection-state ${connection}`} title="Connection status">{connection === "live" ? <Wifi size={15} /> : <WifiOff size={15} />}{statusLabel}</div></header>
       <div className="message-scroll" aria-live="polite">
-        {loading ? <EmptyState loading /> : messages.length === 0 ? <EmptyState /> : messages.map(message => <article className={`copilot-message ${message.role}`} key={message.message_id}><div className="message-author">{message.role === "assistant" ? <Bot size={16} /> : null}{message.role === "assistant" ? "Copilot" : "You"}</div><div className="message-body"><MessageBlocks message={message} onRetry={() => setDraft(latestUserText(messages))} />{message.role === "assistant" && <FeedbackControls feedback={feedbackByMessage[message.message_id]} busy={savingFeedbackFor === message.message_id} onSave={payload => saveFeedback(message.message_id, payload)} />}</div></article>)}
+        {loading ? <EmptyState loading /> : messages.length === 0 ? <EmptyState /> : messages.map(message => <article className={`copilot-message ${message.role}`} key={message.message_id}><div className="message-author">{message.role === "assistant" ? <Bot size={16} /> : null}{message.role === "assistant" ? "Copilot" : "You"}</div><div className="message-body"><MessageBlocks message={message} onRetry={() => setDraft(latestUserText(messages))} /></div></article>)}
         {pendingGraph && <GraphInterruptPanel interrupt={pendingGraph.interrupt} busy={graphBusy} onResume={request => void resumeGraph(request)} />}
         {activeJobWaits.map(wait => <JobWaitingState key={wait.wait_id} wait={wait} canceling={cancelingWaitId === wait.wait_id} onCancel={() => void cancelJobWait(wait)} />)}
-        {pendingTurn && !pendingGraph && <div className="working-state"><span /><span /><span /><em>Working on your request</em><button type="button" className="stop-request" disabled={canceling || !pendingTurnRecord} onClick={() => void cancelPendingTurn()} title="Stop request"><Square size={14} />Stop</button></div>}
+        {pendingTurn && !pendingGraph && <div className="working-state"><span /><span /><span /><em>Working on your request</em></div>}
         {notice && <div className="copilot-notice" role="alert"><AlertCircle size={17} /><span>{notice}</span><button type="button" aria-label="Dismiss" onClick={() => setNotice(null)}><X size={16} /></button></div>}
         <div ref={messageEnd} />
       </div>
       <div className="composer-zone">
-        {attachments.length > 0 && <div className="attachment-tray">{attachments.map(item => <div className="attachment-item" key={item.id}><FilePlus2 size={16} /><span title={item.file.name}>{item.file.name}</span><label>Role<select value={item.field} onChange={event => setAttachments(current => current.map(entry => entry.id === item.id ? { ...entry, field: event.target.value as InputField } : entry))}>{INPUT_FIELDS.map(field => <option key={field} value={field}>{INPUT_FIELD_LABELS[field]}</option>)}</select><ChevronDown size={14} /></label><button type="button" aria-label={`Remove ${item.file.name}`} onClick={() => setAttachments(current => current.filter(entry => entry.id !== item.id))}><X size={15} /></button></div>)}</div>}
-        <div className="composer"><input ref={fileInput} hidden type="file" multiple accept=".csv,text/csv" onChange={event => { addFiles(event.target.files); event.target.value = ""; }} /><button type="button" className="icon-button" title="Attach CSV files" aria-label="Attach CSV files" onClick={() => fileInput.current?.click()}><Paperclip size={19} /></button><textarea value={draft} rows={1} placeholder="Ask about an analysis or result" aria-label="Message Copilot" onChange={event => setDraft(event.target.value)} onKeyDown={event => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); void send(); } }} /><button type="button" className="send-button" aria-label="Send message" title="Send message" disabled={!draft.trim() || sending || pendingTurn} onClick={() => void send()}><Send size={18} /></button></div>
+        {attachments.length > 0 && <div className="attachment-tray">{attachments.map(item => <div className="attachment-item" key={item.id}><FilePlus2 size={16} /><span title={item.file.name}>{item.file.name}</span><label>Role<select value={item.field} title={INPUT_FIELD_DESCRIPTIONS[item.field]} aria-label={`Role for ${item.file.name}`} onChange={event => setAttachments(current => current.map(entry => entry.id === item.id ? { ...entry, field: event.target.value as InputField } : entry))}>{INPUT_FIELDS.map(field => <option key={field} value={field}>{INPUT_FIELD_LABELS[field]}</option>)}</select><span className="data-type-help attachment-help" tabIndex={0} aria-label={`About ${INPUT_FIELD_LABELS[item.field]}`}><CircleHelp size={14} aria-hidden="true" /><span className="data-type-tooltip" role="tooltip">{INPUT_FIELD_DESCRIPTIONS[item.field]}</span></span><ChevronDown size={14} /></label><button type="button" aria-label={`Remove ${item.file.name}`} onClick={() => setAttachments(current => current.filter(entry => entry.id !== item.id))}><X size={15} /></button></div>)}</div>}
+        <div className="composer"><input ref={fileInput} hidden type="file" multiple accept=".csv,text/csv" onChange={event => { addFiles(event.target.files); event.target.value = ""; }} /><button type="button" className="icon-button" title="Attach CSV files" aria-label="Attach CSV files" onClick={() => fileInput.current?.click()}><Paperclip size={19} /></button><textarea value={draft} rows={1} placeholder="Ask about an analysis or result" aria-label="Message Copilot" onChange={event => setDraft(event.target.value)} onKeyDown={event => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); void send(); } }} />{pendingTurn ? <button type="button" className="stop-composer-button" aria-label="Stop request" title="Stop request" disabled={canceling || !pendingTurnRecord} onClick={() => void cancelPendingTurn()}><Square size={17} fill="currentColor" /></button> : <button type="button" className="send-button" aria-label="Send message" title="Send message" disabled={!draft.trim() || sending} onClick={() => void send()}><Send size={18} /></button>}</div>
       </div>
     </section>
 

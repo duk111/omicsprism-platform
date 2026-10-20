@@ -123,6 +123,8 @@ class RedisJobQueue:
             self._client = redis.Redis.from_url(
                 self.redis_url,
                 decode_responses=True,
+                # Redis 3.x does not implement the RESP3 HELLO handshake.
+                protocol=2,
                 socket_connect_timeout=10,
                 socket_timeout=30,
                 health_check_interval=30,

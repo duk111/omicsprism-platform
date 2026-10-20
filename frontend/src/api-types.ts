@@ -153,6 +153,10 @@ export interface AgentThreadCreateRequest {
   focus_job_ids?: string[];
 }
 
+export interface AgentThreadRenameRequest {
+  title: string;
+}
+
 export interface AgentThreadDetailResponse {
   thread: AgentThreadResponse;
   run: AgentRunResponse;

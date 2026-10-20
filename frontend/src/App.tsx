@@ -1,4 +1,5 @@
 import { lazy, Suspense, useEffect, useMemo, useRef, useState } from "react";
+import { CircleHelp } from "lucide-react";
 import { BrowserRouter, Navigate, Route, Routes, useLocation, useNavigate, useParams } from "react-router-dom";
 import type { AnalysisType, ImageInfo, JobFilesResponse, JobResponse, JobStatus, PreflightResponse } from "./api-types";
 import { apiFetch, apiFetchJson, ApiRequestError, assetUrl, publicUrl } from "./api";
@@ -11,7 +12,7 @@ import "./App.css";
 const CopilotPage = lazy(() => import("./copilot/CopilotPage"));
 const FigureViewer = lazy(() => import("./viewer/FigureViewer"));
 
-type AnalysisTab = "home" | "new" | "jobs" | "download" | "tutorial" | "contact";
+type AnalysisTab = "home" | "jobs" | "download" | "tutorial" | "contact";
 
 const FULL_ANALYSIS_LABELS: Record<AnalysisType, string> = {
   deg: "Differentially Expressed Genes",
@@ -84,13 +85,12 @@ function AppRoutes() {
   const openProgress = (jobId: string) => navigate(`/jobs/${encodeURIComponent(jobId)}`);
 
   return (
-    <div className="platform-shell">
+    <div className={`platform-shell${location.pathname === "/copilot" ? " copilot-shell" : ""}`}>
       <header className="topbar">
         <button className="brand" type="button" onClick={() => navigate("/home")}>OmicsPrism</button>
         <nav className="topnav">
           <button type="button" className={location.pathname === "/" || location.pathname === "/home" ? "active-nav" : ""} onClick={() => navigate("/home")}>Home</button>
           <button type="button" className={location.pathname === "/copilot" ? "active-nav" : ""} onClick={() => navigate("/copilot")}>Copilot</button>
-          <button type="button" className={location.pathname === "/new" ? "active-nav" : ""} onClick={() => navigate("/new")}>New Analysis</button>
           <button type="button" className={location.pathname === "/jobs" || location.pathname.startsWith("/jobs/") ? "active-nav" : ""} onClick={() => navigate("/jobs")}>My Jobs</button>
           <button type="button" className={location.pathname === "/download" ? "active-nav" : ""} onClick={() => navigate("/download")}>Download</button>
           <HelpMenu active={isHelpPage} onTutorial={() => navigate("/help/tutorial")} onContact={() => navigate("/help/contact")} />
@@ -99,7 +99,7 @@ function AppRoutes() {
       <Routes>
         <Route path="/" element={<AnalysisPage tab="home" onSelectType={openAnalysis} onProgress={openProgress} />} />
         <Route path="/home" element={<AnalysisPage tab="home" onSelectType={openAnalysis} onProgress={openProgress} />} />
-        <Route path="/new" element={<AnalysisPage tab="new" onSelectType={openAnalysis} onProgress={openProgress} />} />
+        <Route path="/new" element={<Navigate to="/home" replace />} />
         <Route path="/deg" element={<AnalysisFormRoute analysisType="deg" />} />
         <Route path="/dem" element={<AnalysisFormRoute analysisType="dem" />} />
         <Route path="/gma" element={<AnalysisFormRoute analysisType="gma" />} />
@@ -147,8 +147,8 @@ function JobResultsRoute() {
 /* Analysis Page: form + job list                                     */
 /* ------------------------------------------------------------------ */
 
-function DropZone({ label, required, file, onFile }: {
-  label: string; required: boolean; file: File | null; onFile: (f: File | null) => void;
+function DropZone({ label, description, required, file, onFile }: {
+  label: string; description: string; required: boolean; file: File | null; onFile: (f: File | null) => void;
 }) {
   const [over, setOver] = useState(false);
 
@@ -166,7 +166,13 @@ function DropZone({ label, required, file, onFile }: {
       onDragLeave={() => setOver(false)}
       onDrop={handleDrop}
     >
-      <span className="drop-label">{label}{required && " *"}</span>
+      <span className="drop-label-row">
+        <span className="drop-label">{label}{required && " *"}</span>
+        <span className="data-type-help" tabIndex={0} aria-label={`About ${label}`}>
+          <CircleHelp size={15} aria-hidden="true" />
+          <span className="data-type-tooltip" role="tooltip">{description}</span>
+        </span>
+      </span>
       {file ? (
         <span className="drop-file">
           <span className="drop-file-name">{file.name}</span>
@@ -185,18 +191,6 @@ function DropZone({ label, required, file, onFile }: {
         onChange={e => onFile(e.target.files?.[0] ?? null)}
       />
     </label>
-  );
-}
-
-function AnalysisTabs({ tab }: { tab?: AnalysisTab }) {
-  const navigate = useNavigate();
-  return (
-    <div className="tab-bar">
-      <button className={tab === "home" ? "primary" : "secondary"} type="button" onClick={() => navigate("/home")}>Home</button>
-      <button className={tab === "new" ? "primary" : "secondary"} type="button" onClick={() => navigate("/new")}>New Analysis</button>
-      <button className={tab === "jobs" ? "primary" : "secondary"} type="button" onClick={() => navigate("/jobs")}>My Jobs</button>
-      <button className={tab === "download" ? "primary" : "secondary"} type="button" onClick={() => navigate("/download")}>Download</button>
-    </div>
   );
 }
 
@@ -259,8 +253,8 @@ function AnalysisPage({
   onProgress: (jobId: string) => void;
 }) {
   return (
-    <main className={`${tab === "home" || tab === "new" ? "page home-page" : tab === "download" || tab === "tutorial" || tab === "contact" ? "page" : "page narrow"}`}>
-      {(tab === "home" || tab === "new") && (
+    <main className={`${tab === "home" ? "page home-page" : tab === "download" || tab === "tutorial" || tab === "contact" ? "page" : "page narrow"}`}>
+      {tab === "home" && (
         <WelcomeCards onSelect={onSelectType} />
       )}
       {tab === "jobs" && <JobList onProgress={onProgress} />}
@@ -338,7 +332,7 @@ function TutorialPage() {
         </section>
         <section>
           <span>03</span>
-          <div><h2>Configure and submit</h2><p>Upload the required CSV files, review the selected parameters, and create the analysis job from New Analysis.</p></div>
+          <div><h2>Configure and submit</h2><p>Upload the required CSV files, review the selected parameters, and create the analysis job from Home.</p></div>
         </section>
         <section>
           <span>04</span>
@@ -418,19 +412,28 @@ type PreflightState =
 
 const DEG_FIELDS: { name: string; label: string; required: boolean }[] = [
   { name: "counts", label: "Counts matrix (CSV)", required: true },
-  { name: "metadata", label: "Metadata table (CSV)", required: true },
+  { name: "metadata", label: "Sample metadata table (CSV)", required: true },
 ];
 
 const CORR_FIELDS: { name: string; label: string; required: boolean }[] = [
   { name: "transcriptome", label: "Transcriptome matrix (CSV)", required: true },
   { name: "metabolome", label: "Metabolome matrix (CSV)", required: true },
-  { name: "group", label: "Group table (CSV)", required: true },
+  { name: "group", label: "Sample group table (CSV)", required: true },
 ];
 
 const DEM_FIELDS: { name: string; label: string; required: boolean }[] = [
   { name: "metabs", label: "Metabolite abundance matrix (CSV)", required: true },
-  { name: "metadata", label: "Metadata table (CSV)", required: true },
+  { name: "metadata", label: "Sample metadata table (CSV)", required: true },
 ];
+
+const INPUT_DESCRIPTIONS: Record<string, string> = {
+  counts: "Raw gene counts with genes in rows and sample IDs in columns. Use integer counts for DEG.",
+  metadata: "Sample metadata mapping each sample ID to comparison groups and optional covariates.",
+  transcriptome: "Gene expression matrix with genes in rows and sample IDs in columns for GMA.",
+  metabolome: "Metabolite abundance matrix with metabolites in rows and sample IDs in columns.",
+  metabs: "Metabolite abundance matrix with metabolites in rows and sample IDs in columns.",
+  group: "Sample group table containing sample_id, group1, and group2 columns for GMA.",
+};
 
 export function AnalysisForm({ initialType, onProgress, onBack }: {
   initialType: AnalysisType; onProgress: (jobId: string) => void; onBack: () => void;
@@ -596,6 +599,7 @@ export function AnalysisForm({ initialType, onProgress, onBack }: {
             <DropZone
               key={f.name}
               label={f.label}
+              description={INPUT_DESCRIPTIONS[f.name]}
               required={f.required}
               file={state.files[f.name] ?? null}
               onFile={file => setFile(f.name, file)}
@@ -1039,7 +1043,6 @@ function ProgressPage({
 
   return (
     <main className="page narrow">
-      <AnalysisTabs />
       <section className="panel">
         <div className="panel-head">
           <div>

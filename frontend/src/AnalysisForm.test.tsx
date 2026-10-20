@@ -119,7 +119,7 @@ describe("AnalysisForm preflight", () => {
     apiFetchJsonMock.mockResolvedValueOnce(passingResult).mockResolvedValueOnce({ id: "job-1" });
     renderForm();
     await uploadCounts(user);
-    const metadataInput = screen.getByText("Metadata table (CSV) *").closest("label")?.querySelector("input");
+    const metadataInput = screen.getByText("Sample metadata table (CSV) *").closest("label")?.querySelector("input");
     if (!metadataInput) throw new Error("Metadata file input not found");
     await user.upload(metadataInput, new File(["sample_id,group1\ns1,A"], "metadata.csv", { type: "text/csv" }));
     await user.type(screen.getByPlaceholderText("e.g. group1"), "group1");
