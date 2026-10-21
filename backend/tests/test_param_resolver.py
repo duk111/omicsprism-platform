@@ -7,6 +7,7 @@ from backend.app.agent.param_resolver import (
     AnalysisProposal,
     ContrastSpec,
     DEGParams,
+    GMAParams,
     ScopeSpec,
     infer_analysis_type,
     resolve_analysis_request,
@@ -139,6 +140,64 @@ def test_gma_requires_a_group_profile() -> None:
 
     assert result.params is None
     assert result.missing[0].field == "group"
+
+
+def test_gma_parameter_updates_merge_with_prior_values_across_turns() -> None:
+    group = _group_profile()
+    prior = GMAParams(
+        fdr_cutoff=0.2,
+        trans_log2=False,
+        metab_log2=True,
+        max_missing_fraction=0,
+    )
+
+    first = resolve_analysis_request(
+        "",
+        [group],
+        AnalysisProposal(analysis_type="GMA", requested_params={"metab_log2": False}),
+        prior_params=prior,
+    )
+    assert first.params is not None
+    assert first.legacy_params() == {
+        "fdr_cutoff": 0.2,
+        "enable_modules": True,
+        "trans_log2": False,
+        "metab_log2": False,
+        "max_missing_fraction": 0,
+    }
+
+    second = resolve_analysis_request(
+        "",
+        [group],
+        AnalysisProposal(analysis_type="GMA", requested_params={"fdr_cutoff": 0.1}),
+        prior_params=first.params,
+    )
+    assert second.params is not None
+    assert second.legacy_params() == {
+        "fdr_cutoff": 0.1,
+        "enable_modules": True,
+        "trans_log2": False,
+        "metab_log2": False,
+        "max_missing_fraction": 0,
+    }
+
+
+def test_gma_without_parameter_patch_keeps_prior_values() -> None:
+    prior = GMAParams(
+        fdr_cutoff=0.2,
+        enable_modules=False,
+        trans_log2=False,
+        metab_log2=False,
+        max_missing_fraction=0,
+    )
+    result = resolve_analysis_request(
+        "",
+        [_group_profile()],
+        AnalysisProposal(analysis_type="GMA"),
+        prior_params=prior,
+    )
+
+    assert result.params == prior
 
 
 def test_control_marker_is_used_only_when_it_is_unique() -> None:

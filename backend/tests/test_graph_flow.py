@@ -10,6 +10,7 @@ from backend.app.agent.dataset_profile import build_dataset_profiles
 from backend.app.agent.graph import (
     AnalysisExecutionRequest,
     AgentDecision,
+    ConfirmationResume,
     DatasetLoadRequest,
     DatasetProfileRef,
     GraphState,
@@ -28,10 +29,10 @@ from backend.app.agent.graph import (
     StepBudget,
     build_agent_graph,
 )
-from backend.app.agent.nodes.analysis import analysis_node
+from backend.app.agent.nodes.analysis import analysis_node, run_analysis
 from backend.app.agent.nodes.result_qa import ResultAccessError, result_qa_node
 from backend.app.agent.grounding import NO_EVIDENCE_TEXT
-from backend.app.agent.param_resolver import AnalysisProposal, ScopeSpec
+from backend.app.agent.param_resolver import AnalysisProposal, GMAParams, ScopeSpec
 from backend.app.agent.schemas import AgentJobBlock, AgentTextBlock, ToolName, ToolResult
 from backend.app.models import JobStatus
 from backend.app.agent.validation import DatasetRef
@@ -129,6 +130,27 @@ def _dataset_refs(
         DatasetRef(
             dataset_id=f"dataset-{role}",
             owner_id=owner_id,
+            role=role,
+            filename=filename,
+            checksum="sha256:" + sha256(content).hexdigest(),
+            content=content,
+            profile=profiles[role],
+        )
+        for role, (filename, content) in inputs.items()
+    ]
+
+
+def _gma_dataset_refs() -> list[DatasetRef]:
+    inputs = {
+        "transcriptome": ("transcriptome.csv", b"gene,s1,s2,s3,s4\ng1,1,2,3,4\n"),
+        "metabolome": ("metabolome.csv", b"metab,s1,s2,s3,s4\nm1,1,2,3,4\n"),
+        "group": ("group.csv", b"sample_id,group1,group2\ns1,control,a\ns2,control,a\ns3,treat,b\ns4,treat,b\n"),
+    }
+    profiles = {item.role: item for item in build_dataset_profiles(inputs)}
+    return [
+        DatasetRef(
+            dataset_id=f"dataset-{role}",
+            owner_id="user-1",
             role=role,
             filename=filename,
             checksum="sha256:" + sha256(content).hexdigest(),
@@ -724,6 +746,80 @@ def test_complete_analysis_request_is_resolved_and_validated_before_confirmation
         user_id="user-1",
         dataset_ids=["dataset-counts", "dataset-metadata"],
     )]
+
+
+def test_gma_revision_confirmation_matches_submitted_job_params() -> None:
+    refs = _gma_dataset_refs()
+    loader = RecordingDatasetLoader(refs)
+    submitter = _submitter()
+    state = _state(
+        thread_id="gma-revision",
+        user_message="Run GMA",
+        dataset_profiles=_profile_refs(refs),
+        decision=AgentDecision(
+            action="run_analysis",
+            analysis_type="GMA",
+            proposal=AnalysisProposal(
+                analysis_type="GMA",
+                requested_params={
+                    "fdr_cutoff": 0.2,
+                    "trans_log2": False,
+                    "metab_log2": True,
+                    "max_missing_fraction": 0.25,
+                },
+            ),
+        ),
+    )
+    first = analysis_node(loader, submitter)(state)
+    candidate_state = state.model_copy(update=first.update)
+    candidate_state = candidate_state.model_copy(update={
+        "pending_analysis": candidate_state.pending_analysis.model_copy(update={"status": "consumed"}),
+    })
+    planned = analysis_node(loader, submitter)(candidate_state)
+    first_state = candidate_state.model_copy(update=planned.update)
+    prior = first_state.pending_plan.params
+    assert prior is not None
+
+    revised_state = first_state.model_copy(update={
+        "user_message": "change metab_log2 to false",
+        "decision": AgentDecision(
+            action="run_analysis",
+            analysis_type="GMA",
+            proposal=AnalysisProposal(
+                analysis_type="GMA",
+                requested_params={"metab_log2": False},
+            ),
+        ),
+        "confirmed_params": prior,
+        "pending_interrupt": None,
+        "pending_plan": None,
+    })
+    revised = analysis_node(loader, submitter)(revised_state)
+    revised_state = revised_state.model_copy(update=revised.update)
+    confirmation = revised_state.pending_interrupt.model_dump(mode="python")
+    expected = {
+        "fdr_cutoff": 0.2,
+        "enable_modules": True,
+        "trans_log2": False,
+        "metab_log2": False,
+        "max_missing_fraction": 0.25,
+    }
+    assert confirmation["resolved_params"] == {"analysis_type": "GMA", **expected}
+    assert revised_state.pending_plan.params.legacy_params() == expected
+
+    run_analysis(
+        revised_state,
+        revised_state.pending_interrupt,
+        ConfirmationResume(
+            plan_id=confirmation["plan_id"],
+            plan_version=confirmation["plan_version"],
+            approve=True,
+            idempotency_key="gma-revision-run",
+        ),
+        loader,
+        submitter,
+    )
+    assert submitter.requests[0].resolved_params.legacy_params() == expected
 
 
 def test_fixed_scope_preview_matches_execution_inputs() -> None:

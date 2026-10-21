@@ -296,7 +296,8 @@ def resolve_analysis_request(
                 params=None,
                 missing=[MissingParam(field="group", options=["group"], reason=reason)],
             )
-        return _build_params(analysis_type, proposal.requested_params, None)
+        merged = _merge_params(proposal, prior_params)
+        return _build_params(analysis_type, merged, None)
     if analysis_type in {"DEG", "DEM"} and metadata is None:
         return ResolvedRequest(
             analysis_type=analysis_type,
