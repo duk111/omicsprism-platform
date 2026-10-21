@@ -597,7 +597,7 @@ def _build_job_params(
     n_orthogonal_components: int | None,
 ) -> JobParams:
     if atype == AnalysisType.DEG:
-        return {
+        params = {
             "compare_field": compare_field,
             "tested_levels": tested_levels,
             "reference_level": reference_level,
@@ -606,9 +606,12 @@ def _build_job_params(
             "min_total_count": min_total_count if min_total_count is not None else 10,
             "min_replicates": min_replicates if min_replicates is not None else 2,
             "same_fields": same_fields or "",
-            "normalize": bool(normalize) if normalize is not None else True,
-            "filter_low_expression": bool(filter_low_expression) if filter_low_expression is not None else True,
         }
+        if normalize is not None:
+            params["normalize"] = normalize
+        if filter_low_expression is not None:
+            params["filter_low_expression"] = filter_low_expression
+        return params
 
     if atype == AnalysisType.DEM:
         normalized_impute = (impute_method or "half-min").strip().lower()
@@ -629,14 +632,16 @@ def _build_job_params(
             "n_orthogonal_components": n_orthogonal_components if n_orthogonal_components is not None else 1,
         }
 
-    normalized_method = (method or "Spearman").strip().lower()
-    return {
-        "method": normalized_method,
+    params = {
         "fdr_cutoff": fdr_cutoff if fdr_cutoff is not None else 0.05,
         "enable_modules": True if enable_modules is None else bool(enable_modules),
+        "max_missing_fraction": max_missing_fraction if max_missing_fraction is not None else 0.5,
         "trans_log2": bool(trans_log2) if trans_log2 is not None else True,
         "metab_log2": bool(metab_log2) if metab_log2 is not None else True,
     }
+    if method is not None:
+        params["method"] = method.strip().lower()
+    return params
 
 
 def _parse_analysis_type(analysis_type: str) -> AnalysisType:

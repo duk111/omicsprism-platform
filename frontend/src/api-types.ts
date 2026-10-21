@@ -365,8 +365,6 @@ export interface DEGParams {
   padj_cutoff?: number;
   log2fc_cutoff?: number;
   min_total_count?: number;
-  normalize?: boolean;
-  filter_low_expression?: boolean;
 }
 
 export interface DEMParams {

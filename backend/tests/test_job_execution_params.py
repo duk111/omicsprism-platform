@@ -1,8 +1,13 @@
 from datetime import datetime, timezone
+from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
 from backend.app import job_execution
+from backend.app.agent.param_resolver import _build_params
+from backend.app.main import _build_job_params
+from omicsprism.io import load_as_anndata, preprocess_adata
 from backend.app.models import AnalysisType, JobRecord, JobStatus
 
 
@@ -153,4 +158,185 @@ def test_dem_runner_rejects_negative_component_count_before_pipeline(monkeypatch
     with pytest.raises(ValueError, match="n_orthogonal_components"):
         _capture_dem_params(monkeypatch, tmp_path, {"n_orthogonal_components": -1})
     assert not pipeline_called
+
+
+def test_gma_runner_maps_supported_parameters_to_core_and_preprocessing(monkeypatch, tmp_path) -> None:
+    config_values: dict[str, object] = {}
+    preprocess_values: dict[str, object] = {}
+
+    def config_factory(**kwargs):
+        config_values.update(kwargs)
+        return SimpleNamespace(**kwargs, log_level="INFO", knn_neighbors=5)
+
+    class Engine:
+        def __init__(self, adata, cfg):
+            self.cfg = cfg
+
+        def run_all(self, *, generate_plots):
+            assert generate_plots is True
+
+    monkeypatch.setattr(job_execution, "AnalysisConfig", config_factory)
+    monkeypatch.setattr(job_execution, "load_as_anndata", lambda *_args, **_kwargs: object())
+    monkeypatch.setattr(
+        job_execution,
+        "preprocess_adata",
+        lambda _adata, **kwargs: preprocess_values.update(kwargs) or object(),
+    )
+    monkeypatch.setattr(job_execution, "MultiOmicsEngine", Engine)
+    monkeypatch.setattr(job_execution, "_zip_directory", lambda *_args: tmp_path / "results.zip")
+
+    job_execution._run_correlation_job(
+        _job({
+            "fdr_cutoff": 0.2,
+            "enable_modules": False,
+            "max_missing_fraction": 0.25,
+            "trans_log2": False,
+            "metab_log2": False,
+        }, AnalysisType.GMA),
+        object(),
+        tmp_path,
+        tmp_path,
+        {
+            "group": tmp_path / "group.csv",
+            "transcriptome": tmp_path / "transcriptome.csv",
+            "metabolome": tmp_path / "metabolome.csv",
+        },
+        lambda *_args: None,
+    )
+
+    assert config_values["fdr_alpha"] == 0.2
+    assert config_values["enable_module_detection"] is False
+    assert config_values["missing_feature_threshold"] == 0.25
+    assert config_values["trans_log2"] is False
+    assert config_values["metab_log2"] is False
+    assert preprocess_values == {
+        "missing_feature_threshold": 0.25,
+        "knn_neighbors": 5,
+        "trans_log2": False,
+        "metab_log2": False,
+    }
+
+
+def test_gma_runner_uses_platform_defaults_and_rejects_core_invalid_threshold(monkeypatch, tmp_path) -> None:
+    captured: dict[str, object] = {}
+
+    def config_factory(**kwargs):
+        captured.update(kwargs)
+        return SimpleNamespace(**kwargs, log_level="INFO", knn_neighbors=5)
+
+    monkeypatch.setattr(job_execution, "AnalysisConfig", config_factory)
+    monkeypatch.setattr(job_execution, "load_as_anndata", lambda *_args, **_kwargs: object())
+    monkeypatch.setattr(job_execution, "preprocess_adata", lambda adata, **_kwargs: adata)
+    monkeypatch.setattr(job_execution, "MultiOmicsEngine", lambda *_args: SimpleNamespace(run_all=lambda **_kwargs: None))
+    monkeypatch.setattr(job_execution, "_zip_directory", lambda *_args: tmp_path / "results.zip")
+
+    job_execution._run_correlation_job(
+        _job({}, AnalysisType.GMA), object(), tmp_path, tmp_path,
+        {"group": tmp_path / "group.csv", "transcriptome": tmp_path / "t.csv", "metabolome": tmp_path / "m.csv"},
+        lambda *_args: None,
+    )
+    assert captured["trans_log2"] is True
+    assert captured["metab_log2"] is True
+    assert captured["fdr_alpha"] == 0.05
+    assert captured["enable_module_detection"] is True
+    assert captured["missing_feature_threshold"] == 0.5
+
+    with pytest.raises(ValueError, match="max_missing_fraction"):
+        job_execution._run_correlation_job(
+            _job({"max_missing_fraction": 1}, AnalysisType.GMA), object(), tmp_path, tmp_path,
+            {"group": tmp_path / "group.csv", "transcriptome": tmp_path / "t.csv", "metabolome": tmp_path / "m.csv"},
+            lambda *_args: None,
+        )
+
+
+def test_agent_parameter_resolution_rejects_unsupported_options_and_keeps_zero_false() -> None:
+    deg = _build_params("DEG", {"normalize": False}, None)
+    gma_unsupported = _build_params("GMA", {"method": "pearson"}, None)
+    gma = _build_params("GMA", {
+        "fdr_cutoff": 0.1,
+        "enable_modules": False,
+        "trans_log2": False,
+        "metab_log2": False,
+        "max_missing_fraction": 0,
+    }, None)
+
+    assert deg.params is None and deg.missing[0].field == "normalize"
+    assert gma_unsupported.params is None and gma_unsupported.missing[0].field == "method"
+    assert gma.params is not None
+    assert gma.legacy_params() == {
+        "fdr_cutoff": 0.1,
+        "enable_modules": False,
+        "trans_log2": False,
+        "metab_log2": False,
+        "max_missing_fraction": 0,
+    }
+
+
+def test_api_gma_params_survive_job_record_storage_shape() -> None:
+    params = _build_job_params(
+        atype=AnalysisType.GMA,
+        counts=None, metadata=None, metabs=None, transcriptome=None, metabolome=None, group=None,
+        compare_field=None, tested_levels=None, reference_level=None,
+        padj_cutoff=None, log2fc_cutoff=None, min_total_count=None, min_replicates=None,
+        same_fields=None, normalize=None, filter_low_expression=None, method=None,
+        fdr_cutoff=0.2, enable_modules=False, vip_cutoff=None, pseudocount=None,
+        max_missing_fraction=0, impute_method=None, log_transform=None,
+        trans_log2=False, metab_log2=False, n_orthogonal_components=None,
+    )
+    job = _job(params, AnalysisType.GMA)
+    restored = JobRecord.model_validate_json(job.model_dump_json())
+
+    assert restored.params == {
+        "fdr_cutoff": 0.2,
+        "enable_modules": False,
+        "max_missing_fraction": 0,
+        "trans_log2": False,
+        "metab_log2": False,
+    }
+
+    defaults = _build_job_params(
+        atype=AnalysisType.GMA,
+        counts=None, metadata=None, metabs=None, transcriptome=None, metabolome=None, group=None,
+        compare_field=None, tested_levels=None, reference_level=None,
+        padj_cutoff=None, log2fc_cutoff=None, min_total_count=None, min_replicates=None,
+        same_fields=None, normalize=None, filter_low_expression=None, method=None,
+        fdr_cutoff=None, enable_modules=None, vip_cutoff=None, pseudocount=None,
+        max_missing_fraction=None, impute_method=None, log_transform=None,
+        trans_log2=None, metab_log2=None, n_orthogonal_components=None,
+    )
+    agent_defaults = _build_params("GMA", {}, None).legacy_params()
+    assert defaults == agent_defaults == {
+        "fdr_cutoff": 0.05,
+        "enable_modules": True,
+        "max_missing_fraction": 0.5,
+        "trans_log2": True,
+        "metab_log2": True,
+    }
+
+
+def test_real_gma_example_preprocessing_uses_requested_parameters() -> None:
+    platform_root = Path(__file__).resolve().parents[2]
+    examples = platform_root / "frontend" / "public" / "examples" / "gma"
+    adata = load_as_anndata(
+        examples / "DEAT.csv",
+        examples / "ym_metab.csv",
+        group_table_path=examples / "group.csv",
+    )
+    adata = adata[:8, :20].copy()
+    metabolomics = adata.obsm["metabolomics"].iloc[:, :10].copy()
+    adata.obsm["metabolomics"] = metabolomics
+    adata.uns["metabolite_names"] = metabolomics.columns.astype(str).tolist()
+
+    processed = preprocess_adata(
+        adata,
+        missing_feature_threshold=0.4,
+        trans_log2=False,
+        metab_log2=False,
+    )
+
+    assert processed.uns["preprocess_summary"]["missing_feature_threshold"] == 0.4
+    assert processed.uns["preprocess_summary"]["log_transform"] == {
+        "transcriptome": False,
+        "metabolomics": False,
+    }
 

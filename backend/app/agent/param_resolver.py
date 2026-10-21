@@ -160,16 +160,11 @@ class DEGParams(_ContrastParams):
     padj_cutoff: float = Field(default=0.05, ge=0, le=1)
     log2fc_cutoff: float = Field(default=1.0, ge=0)
     min_total_count: int = Field(default=10, ge=0)
-    normalize: bool = True
-    filter_low_expression: bool = True
-
     def _legacy_extra_params(self) -> dict[str, ParamValue]:
         return {
             "padj_cutoff": self.padj_cutoff,
             "log2fc_cutoff": self.log2fc_cutoff,
             "min_total_count": self.min_total_count,
-            "normalize": self.normalize,
-            "filter_low_expression": self.filter_low_expression,
         }
 
 
@@ -183,7 +178,7 @@ class DEMParams(_ContrastParams):
     impute_method: str = "half-min"
     normalize: bool = True
     log_transform: bool = True
-    n_orthogonal_components: int = Field(default=1, ge=1)
+    n_orthogonal_components: int = Field(default=1, ge=0)
 
     def _legacy_extra_params(self) -> dict[str, ParamValue]:
         return {
@@ -203,11 +198,11 @@ class GMAParams(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     analysis_type: Literal["GMA"] = "GMA"
-    fdr_cutoff: float = Field(default=0.05, ge=0, le=1)
+    fdr_cutoff: float = Field(default=0.05, gt=0, le=1)
     enable_modules: bool = True
     trans_log2: bool = True
     metab_log2: bool = True
-    max_missing_fraction: float = Field(default=0.5, ge=0, le=1)
+    max_missing_fraction: float = Field(default=0.5, ge=0, lt=1)
 
     def legacy_params(self) -> dict[str, ParamValue]:
         return self.model_dump(exclude={"analysis_type"})
@@ -433,6 +428,22 @@ def _build_params(
     candidate: tuple[str, str, str, ScopeSpec] | None,
 ) -> ResolvedRequest:
     merged = dict(params)
+    unsupported = {
+        "DEG": {"normalize", "filter_low_expression"},
+        "GMA": {"method"},
+    }.get(analysis_type, set())
+    requested_unsupported = sorted(unsupported.intersection(merged))
+    if requested_unsupported:
+        field = requested_unsupported[0]
+        return ResolvedRequest(
+            analysis_type=analysis_type,
+            params=None,
+            partial_params=_scalar_params(merged),
+            missing=[MissingParam(
+                field=field,
+                reason=f"{field} is not supported by the current OmicsPrism core",
+            )],
+        )
     if candidate is not None:
         field, tested, reference, scope = candidate
         merged.update({"compare_field": field, "tested_levels": tested, "reference_level": reference, "scope": scope})

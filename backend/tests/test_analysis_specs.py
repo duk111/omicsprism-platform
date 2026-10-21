@@ -58,6 +58,13 @@ def test_registry_filters_parameters_to_analysis_whitelist() -> None:
     assert effective["padj_cutoff"] == 0.05
 
 
+def test_registry_no_longer_advertises_deg_options_unsupported_by_core() -> None:
+    registry = AnalysisSpecRegistry()
+    allowed = {rule.name for rule in registry.get(AnalysisType.DEG).parameter_rules}
+    assert "normalize" not in allowed
+    assert "filter_low_expression" not in allowed
+
+
 def test_registry_normalizes_role_aliases_and_evaluates_capabilities() -> None:
     registry = AnalysisSpecRegistry()
 

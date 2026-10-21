@@ -615,6 +615,15 @@ class PreflightService:
 
     def _validate_analysis_params(self, analysis_type: AnalysisType, params: JobParams) -> list[PreflightIssue]:
         validation_errors: list[dict[str, object]] = []
+        unsupported = {
+            AnalysisType.DEG: {"normalize", "filter_low_expression"},
+            AnalysisType.GMA: {"method"},
+        }.get(analysis_type, set())
+        for name in sorted(unsupported.intersection(params)):
+            validation_errors.append({
+                "loc": (name,),
+                "msg": f"{name} is not supported by the current OmicsPrism core",
+            })
         try:
             same_fields = [item.strip() for item in str(params.get("same_fields") or "").split(",") if item.strip()]
             scope_mode = str(params.get("scope_mode") or "all")
@@ -651,9 +660,11 @@ class PreflightService:
                                           "trans_log2": params.get("trans_log2", True),
                                           "metab_log2": params.get("metab_log2", True),
                                           "max_missing_fraction": params.get("max_missing_fraction", 0.5)})
-                method = str(params.get("method") or "spearman").strip().casefold()
-                if method not in {"pearson", "spearman"}:
-                    validation_errors.append({"loc": ("method",), "msg": "method must be Pearson or Spearman"})
+                if params.get("method") is not None:
+                    validation_errors.append({
+                        "loc": ("method",),
+                        "msg": "method is not supported by the current OmicsPrism core",
+                    })
         except ValidationError as exc:
             validation_errors.extend(exc.errors())
         except ValueError as exc:

@@ -216,6 +216,27 @@ def test_preflight_rejects_invalid_dem_parameters() -> None:
     assert {item.field for item in result.errors} >= {"max_missing_fraction", "impute_method"}
 
 
+def test_preflight_rejects_unsupported_parameters_and_gma_engine_bounds() -> None:
+    deg = PreflightService().preflight(
+        AnalysisType.DEG,
+        params=_deg_params(normalize=False),
+        files=_deg_uploads(b"sample_id,treatment\ns1,control\ns2,control\ns3,salt\ns4,salt\n"),
+    )
+    gma = PreflightService().preflight(
+        AnalysisType.GMA,
+        params={"method": "pearson", "max_missing_fraction": 1},
+        files={
+            "transcriptome": UploadFile(filename="transcriptome.csv", file=io.BytesIO(b"gene,s1,s2\ng1,1,2\n")),
+            "metabolome": UploadFile(filename="metabolome.csv", file=io.BytesIO(b"metab,s1,s2\nm1,1,2\n")),
+            "group": UploadFile(filename="group.csv", file=io.BytesIO(b"sample_id,group1,group2\ns1,a,x\ns2,b,y\n")),
+        },
+    )
+    assert not deg.can_submit
+    assert any(issue.field == "normalize" for issue in deg.errors)
+    assert not gma.can_submit
+    assert {issue.field for issue in gma.errors} >= {"method", "max_missing_fraction"}
+
+
 def test_preflight_accepts_normal_dem_and_gma_inputs() -> None:
     dem = PreflightService().preflight(
         AnalysisType.DEM,

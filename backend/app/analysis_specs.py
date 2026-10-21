@@ -113,8 +113,6 @@ _DEFAULT_SPECS = {
             ParameterRule("log2fc_cutoff", default=1.0),
             ParameterRule("min_total_count", default=10),
             ParameterRule("min_replicates", default=2),
-            ParameterRule("normalize", default=True),
-            ParameterRule("filter_low_expression", default=True),
         ),
     ),
     AnalysisType.DEM: AnalysisSpec(

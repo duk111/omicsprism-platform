@@ -8,7 +8,6 @@ import type {
   AgentThreadDetailResponse,
   AgentThreadResponse,
   AgentThreadListResponse,
-  AgentThreadResponse,
   AgentTraceEventListResponse,
   AgentTurnListResponse,
   AgentTurnResponse,

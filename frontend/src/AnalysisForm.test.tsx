@@ -1,4 +1,4 @@
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AnalysisForm } from "./App";
@@ -136,5 +136,21 @@ describe("AnalysisForm preflight", () => {
     for (const key of ["analysis_type", "counts", "metadata", "compare_field", "tested_levels", "reference_level", "padj_cutoff", "log2fc_cutoff"]) {
       expect(submitBody.get(key)).toBe(preflightBody.get(key));
     }
+  });
+
+  it("preserves legal zero values in numeric form fields", async () => {
+    const user = userEvent.setup();
+    apiFetchJsonMock.mockResolvedValue(passingResult);
+    renderForm();
+    await uploadCounts(user);
+
+    const cutoff = screen.getByText("Adjusted p-value cutoff").parentElement?.querySelector("input");
+    if (!cutoff) throw new Error("Adjusted p-value input not found");
+    fireEvent.change(cutoff, { target: { value: "0" } });
+    await user.click(screen.getByRole("button", { name: "Check Data" }));
+    await screen.findByText("Data check passed. You can start the analysis.");
+
+    const body = apiFetchJsonMock.mock.calls[0][1].body as FormData;
+    expect(body.get("padj_cutoff")).toBe("0");
   });
 });

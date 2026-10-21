@@ -494,14 +494,21 @@ def _run_correlation_job(
         group_table_path=str(group_path),
         report_formats=("html",),
         generate_reports=True,
+        fdr_alpha=_numeric_param(job.params, "fdr_cutoff", 0.05, minimum=0, maximum=1),
+        enable_module_detection=_coerce_bool(job.params.get("enable_modules"), True),
+        missing_feature_threshold=_numeric_param(
+            job.params, "max_missing_fraction", 0.5, minimum=0, maximum=None,
+        ),
         trans_log2=_coerce_bool(job.params.get("trans_log2"), True),
         metab_log2=_coerce_bool(job.params.get("metab_log2"), True),
     )
 
+    if cfg.missing_feature_threshold >= 1:
+        raise ValueError("max_missing_fraction must be less than 1")
+
     logger = get_logger(log_file=output_dir / "omicsprism.log", level=cfg.log_level)
     logger.info("Launching OmicsPrism platform job: %s", job.id)
     logger.info("Input directory: %s", input_dir.resolve())
-    logger.info("Correlation method requested by UI: %s", job.params.get("method") or "spearman")
     logger.info(
         "Correlation preprocessing log2 flags: transcriptome=%s metabolome=%s",
         cfg.trans_log2,
