@@ -593,18 +593,75 @@ def _progress_heartbeat(
 def _write_figure_data(out_dir: Path, page_id: str, payload: dict) -> None:
     """Write a figure_data JSON for the given interactive page ID."""
     import json
+    import numpy as np
+    import pandas as pd
+
+    def _json_default(value: object) -> object:
+        if isinstance(value, np.integer):
+            return int(value)
+        if isinstance(value, np.floating):
+            return float(value)
+        if isinstance(value, np.ndarray):
+            return value.tolist()
+        if isinstance(value, (pd.Index, pd.Series)):
+            return value.tolist()
+        raise TypeError(f"Object of type {type(value)!r} is not JSON serializable")
+
     figure_data_dir = out_dir / "figure_data"
     figure_data_dir.mkdir(parents=True, exist_ok=True)
-    (figure_data_dir / f"{page_id}.json").write_text(
-        json.dumps(payload, ensure_ascii=False, default=str), encoding="utf-8"
+    serialized = json.dumps(
+        payload,
+        ensure_ascii=False,
+        allow_nan=False,
+        default=_json_default,
     )
+    (figure_data_dir / f"{page_id}.json").write_text(serialized, encoding="utf-8")
+
+
+def _volcano_shapes(log2fc_cutoff: float, padj_cutoff: float) -> list[dict]:
+    """Build finite Plotly threshold shapes for a volcano plot."""
+    shapes = [
+        {"type": "line", "x0": log2fc_cutoff, "x1": log2fc_cutoff,
+         "y0": 0, "y1": 1, "yref": "paper",
+         "line": {"color": "#aaa", "dash": "dash", "width": 1}},
+        {"type": "line", "x0": -log2fc_cutoff, "x1": -log2fc_cutoff,
+         "y0": 0, "y1": 1, "yref": "paper",
+         "line": {"color": "#aaa", "dash": "dash", "width": 1}},
+    ]
+    if padj_cutoff > 0:
+        threshold_y = -math.log10(padj_cutoff)
+        if math.isfinite(threshold_y):
+            shapes.append({
+                "type": "line", "x0": 0, "x1": 1, "xref": "paper",
+                "y0": threshold_y, "y1": threshold_y,
+                "line": {"color": "#aaa", "dash": "dash", "width": 1},
+            })
+    return shapes
+
+
+def _volcano_coordinates(
+    fold_change: object,
+    padj: object,
+) -> tuple[object, object]:
+    """Return finite plotting coordinates while preserving missing values."""
+    import numpy as np
+    import pandas as pd
+
+    fc = pd.to_numeric(fold_change, errors="coerce")
+    pvalues = pd.to_numeric(padj, errors="coerce")
+    finite_positive = pvalues[np.isfinite(pvalues) & (pvalues > 0)]
+    min_positive = float(finite_positive.min()) if not finite_positive.empty else 1e-300
+
+    plot_pvalues = pd.Series(np.nan, index=pvalues.index, dtype=float)
+    finite_nonnegative = np.isfinite(pvalues) & (pvalues >= 0)
+    plot_pvalues.loc[finite_nonnegative] = pvalues.loc[finite_nonnegative].clip(lower=min_positive)
+    return fc, -np.log10(plot_pvalues)
 
 
 def _generate_deg_figure_data(out_dir: Path, params: dict) -> None:
     """Generate figure_data JSON files for DEG (differential gene expression) analysis."""
-    import pandas as pd
     import numpy as np
-
+    import pandas as pd
     padj_cutoff = _numeric_param(params, "padj_cutoff", 0.05, minimum=0, maximum=1)
     log2fc_cutoff = _numeric_param(params, "log2fc_cutoff", 1.0, minimum=0)
 
@@ -624,22 +681,25 @@ def _generate_deg_figure_data(out_dir: Path, params: dict) -> None:
         gene_col = next((c for c in ("gene_id", "gene", "Gene") if c in df.columns), None)
         df["_gene"] = df[gene_col].astype(str) if gene_col else df.index.astype(str)
 
-        min_pos = float(df.loc[df["padj"] > 0, "padj"].min()) if (df["padj"] > 0).any() else 1e-300
-        df["_neg_log10"] = -np.log10(df["padj"].clip(lower=min_pos).fillna(1.0))
-        df["_sig"] = (df["padj"].notna() & (df["padj"] < padj_cutoff))
+        df["_fc_for_plot"], df["_neg_log10"] = _volcano_coordinates(
+            df["log2FoldChange"], df["padj"]
+        )
+        padj_values = pd.to_numeric(df["padj"], errors="coerce")
+        df["_sig"] = (padj_values.notna() & (padj_values < padj_cutoff))
         df["_status"] = "Non-significant"
-        df.loc[df["_sig"] & (df["log2FoldChange"] >= log2fc_cutoff), "_status"] = "Up"
-        df.loc[df["_sig"] & (df["log2FoldChange"] <= -log2fc_cutoff), "_status"] = "Down"
+        df.loc[df["_sig"] & (df["_fc_for_plot"] >= log2fc_cutoff), "_status"] = "Up"
+        df.loc[df["_sig"] & (df["_fc_for_plot"] <= -log2fc_cutoff), "_status"] = "Down"
 
         color_map = {"Up": "#C53030", "Down": "#2B6CB0", "Non-significant": "#B8B8B8"}
         traces = []
         for status in ("Non-significant", "Down", "Up"):
             sub = df[df["_status"] == status]
+            sub = sub[np.isfinite(sub["_fc_for_plot"]) & np.isfinite(sub["_neg_log10"])]
             if sub.empty:
                 continue
             traces.append({
                 "type": "scatter", "mode": "markers", "name": status,
-                "x": sub["log2FoldChange"].tolist(), "y": sub["_neg_log10"].tolist(),
+                "x": sub["_fc_for_plot"].tolist(), "y": sub["_neg_log10"].tolist(),
                 "text": sub["_gene"].tolist(), "hoverinfo": "text+x+y",
                 "marker": {"size": 4, "color": color_map[status], "opacity": 0.7},
             })
@@ -669,17 +729,7 @@ def _generate_deg_figure_data(out_dir: Path, params: dict) -> None:
                 "xaxis": {"title": "log2 Fold Change"},
                 "yaxis": {"title": "-log10(adjusted p-value)"},
                 "showlegend": True,
-                "shapes": [
-                    {"type": "line", "x0": log2fc_cutoff, "x1": log2fc_cutoff,
-                     "y0": 0, "y1": 1, "yref": "paper",
-                     "line": {"color": "#aaa", "dash": "dash", "width": 1}},
-                    {"type": "line", "x0": -log2fc_cutoff, "x1": -log2fc_cutoff,
-                     "y0": 0, "y1": 1, "yref": "paper",
-                     "line": {"color": "#aaa", "dash": "dash", "width": 1}},
-                    {"type": "line", "x0": 0, "x1": 1, "xref": "paper",
-                     "y0": -np.log10(padj_cutoff), "y1": -np.log10(padj_cutoff),
-                     "line": {"color": "#aaa", "dash": "dash", "width": 1}},
-                ],
+                "shapes": _volcano_shapes(log2fc_cutoff, padj_cutoff),
             },
             "config": {"displayModeBar": True, "displaylogo": False, "responsive": True},
             "all_traces": volcano_traces_by_contrast,
@@ -697,9 +747,8 @@ def _generate_deg_figure_data(out_dir: Path, params: dict) -> None:
 
 def _generate_dem_figure_data(out_dir: Path, params: dict) -> None:
     """Generate figure_data JSON files for DEM (differential expression of metabolites) analysis."""
-    import pandas as pd
     import numpy as np
-
+    import pandas as pd
     padj_cutoff = _numeric_param(params, "padj_cutoff", 0.05, minimum=0, maximum=1)
     log2fc_cutoff = _numeric_param(params, "log2fc_cutoff", 1.0, minimum=0)
 
@@ -720,22 +769,23 @@ def _generate_dem_figure_data(out_dir: Path, params: dict) -> None:
         feat_col = next((c for c in ("metabolite_id", "metabolite", "Metabolite", "feature") if c in df.columns), None)
         df["_feat"] = df[feat_col].astype(str) if feat_col else df.index.astype(str)
 
-        min_pos = float(df.loc[df[padj_col] > 0, padj_col].min()) if (df[padj_col] > 0).any() else 1e-300
-        df["_neg_log10"] = -np.log10(df[padj_col].clip(lower=min_pos).fillna(1.0))
-        df["_sig"] = df[padj_col].notna() & (df[padj_col] < padj_cutoff)
+        df["_fc_for_plot"], df["_neg_log10"] = _volcano_coordinates(df[fc_col], df[padj_col])
+        padj_values = pd.to_numeric(df[padj_col], errors="coerce")
+        df["_sig"] = padj_values.notna() & (padj_values < padj_cutoff)
         df["_status"] = "Non-significant"
-        df.loc[df["_sig"] & (df[fc_col] >= log2fc_cutoff), "_status"] = "Up"
-        df.loc[df["_sig"] & (df[fc_col] <= -log2fc_cutoff), "_status"] = "Down"
+        df.loc[df["_sig"] & (df["_fc_for_plot"] >= log2fc_cutoff), "_status"] = "Up"
+        df.loc[df["_sig"] & (df["_fc_for_plot"] <= -log2fc_cutoff), "_status"] = "Down"
 
         color_map = {"Up": "#C53030", "Down": "#2B6CB0", "Non-significant": "#B8B8B8"}
         traces = []
         for status in ("Non-significant", "Down", "Up"):
             sub = df[df["_status"] == status]
+            sub = sub[np.isfinite(sub["_fc_for_plot"]) & np.isfinite(sub["_neg_log10"])]
             if sub.empty:
                 continue
             traces.append({
                 "type": "scatter", "mode": "markers", "name": status,
-                "x": sub[fc_col].tolist(), "y": sub["_neg_log10"].tolist(),
+                "x": sub["_fc_for_plot"].tolist(), "y": sub["_neg_log10"].tolist(),
                 "text": sub["_feat"].tolist(), "hoverinfo": "text+x+y",
                 "marker": {"size": 4, "color": color_map[status], "opacity": 0.7},
             })
@@ -764,17 +814,7 @@ def _generate_dem_figure_data(out_dir: Path, params: dict) -> None:
                 "xaxis": {"title": "log2 Fold Change"},
                 "yaxis": {"title": "-log10(adjusted p-value)"},
                 "showlegend": True,
-                "shapes": [
-                    {"type": "line", "x0": log2fc_cutoff, "x1": log2fc_cutoff,
-                     "y0": 0, "y1": 1, "yref": "paper",
-                     "line": {"color": "#aaa", "dash": "dash", "width": 1}},
-                    {"type": "line", "x0": -log2fc_cutoff, "x1": -log2fc_cutoff,
-                     "y0": 0, "y1": 1, "yref": "paper",
-                     "line": {"color": "#aaa", "dash": "dash", "width": 1}},
-                    {"type": "line", "x0": 0, "x1": 1, "xref": "paper",
-                     "y0": -np.log10(padj_cutoff), "y1": -np.log10(padj_cutoff),
-                     "line": {"color": "#aaa", "dash": "dash", "width": 1}},
-                ],
+                "shapes": _volcano_shapes(log2fc_cutoff, padj_cutoff),
             },
             "config": {"displayModeBar": True, "displaylogo": False, "responsive": True},
             "all_traces": volcano_traces_by_contrast,
