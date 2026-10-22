@@ -13,7 +13,7 @@ from psycopg.rows import dict_row
 from psycopg_pool import ConnectionPool
 
 from ..analysis_specs import AnalysisSpecRegistry, canonical_input_role
-from ..job_execution import JobExecutor
+from ..job_execution import JobExecutor, publish_job
 from ..job_store import JobStorageService
 from ..models import (
     AnalysisType,
@@ -196,10 +196,7 @@ def create_agent_api_context(
             if existing.dispatch_state == "pending":
                 raise_if_cancelled()
                 with dispatch_lock:
-                    job_executor.enqueue(existing.id)
-                    existing.dispatch_state = "published"
-                    existing.updated_at = datetime.now(timezone.utc)
-                    job_store.save(existing)
+                    publish_job(job_store, job_executor, existing)
             return _JobSubmission(JobRef(job_id=existing.id, owner_id=request.user_id), False)
 
         input_records = [
@@ -291,10 +288,7 @@ def create_agent_api_context(
             ))
         with dispatch_lock:
             raise_if_cancelled()
-            job_executor.enqueue(job_id)
-            job.dispatch_state = "published"
-            job.updated_at = datetime.now(timezone.utc)
-            job_store.save(job)
+            publish_job(job_store, job_executor, job)
         return _JobSubmission(JobRef(job_id=job_id, owner_id=request.user_id), True)
 
     def submit_job(request: AnalysisExecutionRequest) -> JobRef:

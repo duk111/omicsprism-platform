@@ -28,6 +28,12 @@ class JobRepository(Protocol):
     def list_internal(self, include_deleted: bool = False) -> list[JobRecord]:
         ...
 
+    def claim_queued(self, job_id: str, *, now: datetime) -> JobRecord | None:
+        ...
+
+    def mark_published(self, job_id: str, *, now: datetime) -> JobRecord:
+        ...
+
 
 class LocalJsonJobRepository:
     """Local JSON-backed repository; replace this for a DB-backed implementation."""
@@ -73,6 +79,27 @@ class LocalJsonJobRepository:
                 continue
         jobs.sort(key=lambda item: item.created_at, reverse=True)
         return jobs
+
+    def claim_queued(self, job_id: str, *, now: datetime) -> JobRecord | None:
+        job = self.get_internal(job_id)
+        if job.status is not JobStatus.QUEUED:
+            return None
+        job.status = JobStatus.RUNNING
+        job.started_at = now
+        job.completed_at = None
+        job.attempt += 1
+        job.error = None
+        job.updated_at = now
+        self.save(job)
+        return job
+
+    def mark_published(self, job_id: str, *, now: datetime) -> JobRecord:
+        job = self.get_internal(job_id)
+        job.dispatch_state = "published"
+        job.dispatch_error = None
+        job.updated_at = now
+        self.save(job)
+        return job
 
     def _job_path(self, job_id: str) -> Path:
         return self.runs_dir / job_id / "job.json"
@@ -237,6 +264,53 @@ class PostgresJobRepository:
                 rows = cur.fetchall()
         return [JobRecord.model_validate(row[0]) for row in rows]
 
+    def claim_queued(self, job_id: str, *, now: datetime) -> JobRecord | None:
+        try:
+            from psycopg.types.json import Jsonb
+        except ImportError as exc:  # pragma: no cover - dependency guard
+            raise RuntimeError("Install psycopg[binary]>=3.1.18 to use PostgreSQL storage") from exc
+        with self._connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute("select payload from jobs where id = %s for update", (job_id,))
+                row = cur.fetchone()
+                if row is None:
+                    raise HTTPException(status_code=404, detail="Job not found")
+                job = JobRecord.model_validate(row[0])
+                if job.status is not JobStatus.QUEUED:
+                    return None
+                job.status = JobStatus.RUNNING
+                job.started_at = now
+                job.completed_at = None
+                job.attempt += 1
+                job.error = None
+                job.updated_at = now
+                cur.execute(
+                    "update jobs set status = %s, updated_at = %s, payload = %s where id = %s",
+                    (job.status.value, job.updated_at, Jsonb(job.model_dump(mode="json")), job.id),
+                )
+                return job
+
+    def mark_published(self, job_id: str, *, now: datetime) -> JobRecord:
+        try:
+            from psycopg.types.json import Jsonb
+        except ImportError as exc:  # pragma: no cover - dependency guard
+            raise RuntimeError("Install psycopg[binary]>=3.1.18 to use PostgreSQL storage") from exc
+        with self._connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute("select payload from jobs where id = %s for update", (job_id,))
+                row = cur.fetchone()
+                if row is None:
+                    raise HTTPException(status_code=404, detail="Job not found")
+                job = JobRecord.model_validate(row[0])
+                job.dispatch_state = "published"
+                job.dispatch_error = None
+                job.updated_at = now
+                cur.execute(
+                    "update jobs set updated_at = %s, payload = %s where id = %s",
+                    (now, Jsonb(job.model_dump(mode="json")), job.id),
+                )
+                return job
+
     def _connect(self):
         try:
             import psycopg
@@ -274,6 +348,26 @@ class JobStorageService:
 
     def list_internal(self, include_deleted: bool = False) -> list[JobRecord]:
         return self.repository.list_internal(include_deleted=include_deleted)
+
+    def claim_for_execution(self, job_id: str, *, now: datetime | None = None) -> JobRecord | None:
+        with self._job_lock(job_id):
+            return self.repository.claim_queued(job_id, now=now or datetime.now(timezone.utc))
+
+    def mark_published(self, job_id: str, *, now: datetime | None = None) -> JobRecord:
+        """Update only outbox fields on the latest record after enqueue succeeds."""
+        with self._job_lock(job_id):
+            return self.repository.mark_published(job_id, now=now or datetime.now(timezone.utc))
+
+    def record_dispatch_failure(self, job_id: str, error: str, *, now: datetime | None = None) -> None:
+        with self._job_lock(job_id):
+            job = self.repository.get_internal(job_id)
+            if job.status is not JobStatus.QUEUED or job.dispatch_state != "pending":
+                return
+            job.dispatch_attempts += 1
+            job.dispatch_last_attempt_at = now or datetime.now(timezone.utc)
+            job.dispatch_error = error
+            job.updated_at = job.dispatch_last_attempt_at
+            self.repository.save(job)
 
     def update(
         self,

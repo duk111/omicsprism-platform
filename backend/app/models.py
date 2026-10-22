@@ -182,6 +182,9 @@ class JobRecord(JobTimingInfo):
     # Durable outbox state for queue publication. Older records predate this
     # field and default to published, preserving their existing semantics.
     dispatch_state: Literal["pending", "published"] = "published"
+    dispatch_attempts: int = 0
+    dispatch_last_attempt_at: datetime | None = None
+    dispatch_error: str | None = None
 
 
 class JobResponse(JobTimingInfo):

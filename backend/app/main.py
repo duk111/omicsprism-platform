@@ -45,6 +45,7 @@ from .models import (
     PreflightResponse,
 )
 from .observability import configure_logging, log_context
+from .job_execution import publish_job
 from .preflight import PreflightService
 from .settings import load_settings
 
@@ -374,12 +375,17 @@ async def create_job(
         estimated_range_min_seconds=timing["estimated_range_min_seconds"],
         estimated_range_max_seconds=timing["estimated_range_max_seconds"],
         estimated_range_label=timing["estimated_range_label"],
+        dispatch_state="pending",
     )
     JOB_STORE.save(job)
 
-    if JOB_EXECUTOR is None:
-        raise HTTPException(status_code=503, detail="Job executor is not configured")
-    JOB_EXECUTOR.enqueue(job_id)
+    try:
+        publish_job(JOB_STORE, JOB_EXECUTOR, job)
+    except Exception as exc:
+        LOG.exception("job publish failed", extra={"job_id": job_id, "event": "job.enqueue_failed"})
+        if JOB_EXECUTOR is None:
+            raise HTTPException(status_code=503, detail="Job executor is not configured") from exc
+        raise HTTPException(status_code=503, detail="Job queued for retry after publish failure") from exc
     LOG.info("job submitted", extra={"job_id": job_id, "analysis_type": atype.value})
     return _to_job_response(job)
 

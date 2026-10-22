@@ -89,6 +89,38 @@ class JobExecutor(Protocol):
         ...
 
 
+def publish_job(job_store: JobStorageService, executor: JobExecutor | None, job: JobRecord) -> None:
+    """Publish a durable pending job and mark it published only after enqueue succeeds."""
+    if executor is None:
+        raise RuntimeError("Job executor is not configured")
+    try:
+        executor.enqueue(job.id)
+    except Exception as exc:
+        try:
+            record_failure = getattr(job_store, "record_dispatch_failure", None)
+            if callable(record_failure):
+                record_failure(job.id, str(exc))
+            else:  # Compatibility with small test/adaptor stores.
+                job.dispatch_attempts += 1
+                job.dispatch_error = str(exc)
+                job_store.save(job)
+        except Exception:
+            LOG.exception("failed to persist job publish failure", extra={"job_id": job.id})
+        raise
+    job.dispatch_state = "published"
+    job.dispatch_error = None
+    mark_published = getattr(job_store, "mark_published", None)
+    if callable(mark_published):
+        persisted = mark_published(job.id)
+    else:  # Compatibility with small test/adaptor stores.
+        job.updated_at = datetime.now(timezone.utc)
+        job_store.save(job)
+        persisted = job
+    job.dispatch_state = persisted.dispatch_state
+    job.dispatch_error = persisted.dispatch_error
+    job.updated_at = persisted.updated_at
+
+
 class JobRunner(Protocol):
     """Runs a persisted job and owns status transitions after enqueue."""
 
@@ -176,6 +208,7 @@ class RedisWorker:
         job_timeout_seconds: int = 7200,
         watchdog_interval_seconds: float = 15.0,
         idle_sleep_seconds: float = 0.2,
+        dispatch_retry_delay_seconds: float = 5.0,
     ) -> None:
         self.queue = queue
         self.runner = runner
@@ -183,6 +216,7 @@ class RedisWorker:
         self.job_timeout_seconds = max(1, job_timeout_seconds)
         self.watchdog_interval_seconds = max(1.0, watchdog_interval_seconds)
         self.idle_sleep_seconds = idle_sleep_seconds
+        self.dispatch_retry_delay_seconds = max(0.0, dispatch_retry_delay_seconds)
 
     def expire_overdue_once(self, *, now: datetime | None = None) -> int:
         if self.job_store is None:
@@ -217,13 +251,21 @@ class RedisWorker:
         for job in self.job_store.list_internal(include_deleted=False):
             if job.status is not JobStatus.QUEUED or job.dispatch_state != "pending":
                 continue
+            now = datetime.now(timezone.utc)
+            if (
+                job.dispatch_last_attempt_at is not None
+                and (now - job.dispatch_last_attempt_at).total_seconds() < self.dispatch_retry_delay_seconds
+            ):
+                continue
             try:
                 self.queue.enqueue(job.id)
-                job.dispatch_state = "published"
-                job.updated_at = datetime.now(timezone.utc)
-                self.job_store.save(job)
+                self.job_store.mark_published(job.id, now=now)
                 published += 1
-            except Exception:
+            except Exception as exc:
+                try:
+                    self.job_store.record_dispatch_failure(job.id, str(exc), now=now)
+                except Exception:
+                    LOG.exception("failed to record pending job publish failure", extra={"job_id": job.id})
                 LOG.exception(
                     "failed to publish pending job",
                     extra={"job_id": job.id, "event": "job.enqueue_retry_failed"},
@@ -270,15 +312,15 @@ class OmicsPrismJobRunner:
         self.remaining_seconds = remaining_seconds
 
     def run(self, job_id: str) -> None:
-        job = self.store.get_internal(job_id)
-        if job.status == JobStatus.CANCELLED:
-            LOG.info("skip cancelled job", extra={"job_id": job_id, "event": "job.skip_cancelled"})
+        job = self.store.claim_for_execution(job_id)
+        if job is None:
+            LOG.info("skip duplicate or terminal job", extra={"job_id": job_id, "event": "job.skip_not_queued"})
             return
         paths = self.files.paths(job_id)
         input_dir = paths.input_dir
         output_dir = paths.output_dir
         output_dir.mkdir(parents=True, exist_ok=True)
-        attempt = job.attempt + 1
+        attempt = job.attempt
 
         def report(progress: int, step: str) -> None:
             current = self.store.get_internal(job_id)
@@ -301,13 +343,9 @@ class OmicsPrismJobRunner:
                 self.store.update(
                     job,
                     status=JobStatus.RUNNING,
-                    error=None,
-                    started_at=datetime.now(timezone.utc),
-                    completed_at=None,
                     progress=5,
                     progress_step="Preparing data",
                     estimated_remaining_seconds=self.remaining_seconds(job, 5),
-                    attempt=attempt,
                 )
                 paths_by_field = self.files.resolve_inputs_by_field(job)
                 self._raise_if_stopped(job_id)
