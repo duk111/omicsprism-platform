@@ -24,14 +24,20 @@ def canonical_input_role(role: str) -> str:
     return CANONICAL_ROLE_ALIASES.get(normalized, normalized)
 
 
-def analysis_engine_role(role: str) -> str:
+def analysis_engine_role(role: str, analysis_type: AnalysisType | str | None = None) -> str:
     """Map canonical roles to the existing analysis engine's file keys."""
 
     canonical = canonical_input_role(role)
-    return next(
-        (alias for alias, target in CANONICAL_ROLE_ALIASES.items() if target == canonical),
-        canonical,
-    )
+    # DEM's legacy differential pipeline still consumes ``metabs``. GMA's
+    # core pipeline consumes the canonical ``metabolome`` role. Keep this
+    # compatibility mapping at the execution boundary instead of applying the
+    # DEM alias to every analysis.
+    analysis_name = str(getattr(analysis_type, "value", analysis_type)).upper() if analysis_type is not None else None
+    if analysis_name == "GMA":
+        return canonical
+    if analysis_name == "DEM" and canonical == "metabolome":
+        return "metabs"
+    return canonical
 
 
 @dataclass(frozen=True)
@@ -150,7 +156,6 @@ _DEFAULT_SPECS = {
         ),
         parameter_rules=(
             ParameterRule("fdr_cutoff", default=0.05),
-            ParameterRule("enable_modules", default=True),
             ParameterRule("trans_log2", default=True),
             ParameterRule("metab_log2", default=True),
             ParameterRule("max_missing_fraction", default=0.5),
@@ -171,8 +176,8 @@ class AnalysisSpecRegistry:
     def canonical_role(self, role: str) -> str:
         return canonical_input_role(role)
 
-    def engine_role(self, role: str) -> str:
-        return analysis_engine_role(role)
+    def engine_role(self, role: str, analysis_type: AnalysisType | str | None = None) -> str:
+        return analysis_engine_role(role, analysis_type)
 
     def accepted_input_roles(self) -> frozenset[str]:
         return CANONICAL_INPUT_ROLES | frozenset(CANONICAL_ROLE_ALIASES)

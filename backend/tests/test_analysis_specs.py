@@ -82,3 +82,12 @@ def test_registry_normalizes_role_aliases_and_evaluates_capabilities() -> None:
     assert readiness["DEG"].missing_roles == []
     assert readiness["DEM"].missing_roles == ["metabolome"]
     assert readiness["GMA"].missing_roles == ["group", "metabolome", "transcriptome"]
+
+
+def test_execution_role_mapping_is_analysis_specific() -> None:
+    registry = AnalysisSpecRegistry()
+
+    assert registry.engine_role("metabolome", AnalysisType.DEM) == "metabs"
+    assert registry.engine_role("metabs", AnalysisType.DEM) == "metabs"
+    assert registry.engine_role("metabolome", AnalysisType.GMA) == "metabolome"
+    assert registry.engine_role("metabs", AnalysisType.GMA) == "metabolome"

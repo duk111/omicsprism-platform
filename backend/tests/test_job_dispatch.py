@@ -120,6 +120,39 @@ def test_publish_state_write_preserves_worker_progress(tmp_path) -> None:
     assert persisted.dispatch_state == "published"
 
 
+@pytest.mark.xfail(
+    strict=True,
+    reason="separate API and worker processes can overwrite dispatch_state in LocalJsonJobRepository",
+)
+def test_cross_process_json_store_preserves_published_state_after_worker_progress(tmp_path) -> None:
+    """Regression reproducer for Redis + local JSON storage write races.
+
+    JobStorageService locks are process-local. A worker can hold a stale JobRecord
+    returned by claim_for_execution and save it after the API marks the outbox
+    record published, restoring dispatch_state='pending'.
+    """
+    api_store = JobStorageService(LocalJsonJobRepository(tmp_path))
+    worker_store = JobStorageService(LocalJsonJobRepository(tmp_path))
+    job = _job()
+    api_store.save(job)
+    claimed: dict[str, JobRecord | None] = {"job": None}
+
+    class _ClaimingExecutor(_Executor):
+        def enqueue(self, job_id: str) -> None:
+            claimed["job"] = worker_store.claim_for_execution(job_id)
+
+    publish_job(api_store, _ClaimingExecutor(), job)
+    assert claimed["job"] is not None
+    worker_store.update(
+        claimed["job"],
+        status=JobStatus.RUNNING,
+        progress=55,
+        progress_step="Running analysis",
+    )
+
+    assert worker_store.get_internal(job.id).dispatch_state == "published"
+
+
 def test_concurrent_duplicate_deliveries_claim_once(tmp_path) -> None:
     store = JobStorageService(LocalJsonJobRepository(tmp_path))
     store.save(_job())

@@ -656,7 +656,6 @@ class PreflightService:
                                           "n_orthogonal_components": params.get("n_orthogonal_components", 1)})
             else:
                 GMAParams.model_validate({"fdr_cutoff": params.get("fdr_cutoff", 0.05),
-                                          "enable_modules": params.get("enable_modules", True),
                                           "trans_log2": params.get("trans_log2", True),
                                           "metab_log2": params.get("metab_log2", True),
                                           "max_missing_fraction": params.get("max_missing_fraction", 0.5)})

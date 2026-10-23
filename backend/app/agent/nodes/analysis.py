@@ -362,9 +362,25 @@ def _handle_confirmation(
     if resumed.approve is not True:
         if resumed.message is None:
             raise ExecutionRejected("confirmation message is required")
+        revision_proposal = AnalysisProposal.from_legacy(
+            payload.analysis_type,
+            payload.resolved_params.legacy_params(),
+        )
+        revision_pending = PendingAnalysisClarification(
+            status="active",
+            analysis_type=payload.analysis_type,
+            question="What would you like to change in this analysis plan?",
+            missing=[],
+            source_message=state.user_message,
+            input_bundle_id=state.active_input_bundle_id,
+            source_action="propose_plan",
+            proposal=revision_proposal,
+            candidate_validation=state.validation_report,
+        )
         return Command(
             update={
                 "pending_interrupt": None,
+                "pending_analysis": revision_pending,
                 "decision": None,
                 "user_message": resumed.message,
                 "response_text": None,
@@ -376,7 +392,7 @@ def _handle_confirmation(
         return Command(
             update={
                 "pending_interrupt": None,
-                "response_text": "Analysis was not submitted because the step budget was exhausted.",
+                "response_text": "Analysis was not submitted because the execution step limit was reached.",
                 "outcome": "needs_input",
                 "failure_code": "missing_analysis_parameter",
             },
@@ -508,7 +524,10 @@ def _is_chinese(text: str) -> bool:
 
 
 def _localized_error(state: GraphState, chinese: str, english: str) -> str:
-    return chinese if _is_chinese(state.user_message) else english
+    # Error and validation notices use one stable UI language. Normal analysis
+    # plans may still follow the user's language, but failure popups must not
+    # depend on mojibake-prone localized literals.
+    return english
 
 
 def _missing_inputs_message(state: GraphState) -> str:

@@ -9,6 +9,12 @@ const jobMessage = { message_id: "job-message-1", thread_id: "thread-1", run_id:
 async function mockCopilot(page: Page, mode: "plan" | "evidence" | "offline") {
   let resumed = false;
   await page.route("**/api/agent/threads/**/stream", route => route.fulfill({ status: 200, contentType: "text/event-stream", body: "" }));
+  await page.route("**/api/jobs/**", async route => {
+    const path = new URL(route.request().url()).pathname;
+    if (path.endsWith("/progress")) return json(route, 200, { job_id: "job-1", status: "succeeded", progress: 100, progress_step: "Analysis complete", error: null });
+    if (path.endsWith("/progress/events")) return route.fulfill({ status: 200, contentType: "text/event-stream", body: "event: complete\ndata: {}\n\n" });
+    return route.fallback();
+  });
   await page.route("**/api/agent/**", async route => {
     const request = route.request();
     const url = new URL(request.url());
@@ -17,6 +23,9 @@ async function mockCopilot(page: Page, mode: "plan" | "evidence" | "offline") {
     if (request.method() === "POST" && path.endsWith("/input-bundles")) return json(route, 201, { bundle_id: "bundle-1", thread_id: "thread-1", status: "active", expires_at: "2026-08-03T09:00:00Z", created_at: now, files: [{ file_id: "file-1", field: "counts", filename: "counts.csv", checksum: "sha256:file", content_type: "text/csv", size_bytes: 12, created_at: now }] });
     if (request.method() === "POST" && path.endsWith("/turns")) return json(route, 202, confirmation);
     if (request.method() === "POST" && path.endsWith("/resume")) { resumed = true; return json(route, 200, { checkpoint_turn_id: "turn-1", turn: { ...confirmation.turn, status: "completed", completed_at: now }, message: jobMessage }); }
+    if (path.endsWith("/pending-interrupt")) return json(route, 200, mode === "plan" ? confirmation : null);
+    if (path.endsWith("/job-waits")) return json(route, 200, { waits: [], next_cursor: null });
+    if (path.endsWith("/trace")) return json(route, 200, { events: [], next_cursor: null });
     if (path.endsWith("/messages")) {
       const evidence = [{ message_id: "evidence-1", thread_id: "thread-1", run_id: "run-1", role: "assistant", blocks: [{ type: "evidence", claims: [{ text: "T02 contains 14 high-confidence associations.", citation: { artifact: "T02_High_Confidence_Network.csv", checksum: "sha256:a2a84e1c786525426799f0c6593075f", row_ids: [2, 5, 9] } }] }], created_at: now }];
       const error = [{ message_id: "error-1", thread_id: "thread-1", run_id: "run-1", role: "assistant", blocks: [{ type: "error", code: "model_unavailable", user_message: "Copilot model is temporarily unavailable.", retryable: true, request_id: "request-1" }], created_at: now }];

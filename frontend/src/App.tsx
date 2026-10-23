@@ -1,4 +1,5 @@
 import { lazy, Suspense, useEffect, useMemo, useRef, useState } from "react";
+import type { ReactNode } from "react";
 import { CircleHelp } from "lucide-react";
 import { BrowserRouter, Navigate, Route, Routes, useLocation, useNavigate, useParams } from "react-router-dom";
 import type { AnalysisType, ImageInfo, JobFilesResponse, JobResponse, JobStatus, PreflightResponse } from "./api-types";
@@ -166,6 +167,7 @@ function DropZone({ label, description, required, file, onFile }: {
   return (
     <label
       className={`drop-zone${over ? " drop-active" : ""}${file ? " drop-has-file" : ""}`}
+      title={description}
       onDragOver={e => { e.preventDefault(); setOver(true); }}
       onDragLeave={() => setOver(false)}
       onDrop={handleDrop}
@@ -439,6 +441,30 @@ const INPUT_DESCRIPTIONS: Record<string, string> = {
   group: "Sample group table containing sample_id, group1, and group2 columns for GMA.",
 };
 
+const PARAMETER_DESCRIPTIONS: Record<string, string> = {
+  compare_field: "Metadata column used to define the comparison groups.",
+  tested_levels: "One or more tested group levels from the comparison field.",
+  reference_level: "Reference or control group level used for the comparison.",
+  same_fields: "Optional blocking fields used to form within-stratum comparisons, such as batch or line.",
+  padj_cutoff: "Maximum adjusted p-value accepted as statistically significant.",
+  log2fc_cutoff: "Minimum absolute log2 fold-change required for a differential result.",
+  min_total_count: "Minimum total count required for a gene to remain in DEG filtering.",
+  min_replicates: "Minimum number of samples required in each comparison group.",
+  vip_cutoff: "Minimum OPLS-DA VIP score required for a DEM result.",
+  max_missing_fraction: "Maximum fraction of samples that may be missing for one feature before it is filtered out.",
+  n_orthogonal_components: "Number of orthogonal components used by the DEM OPLS-DA model.",
+  impute_method: "Method used to fill missing metabolite values after feature filtering.",
+  normalize: "Apply median normalization across samples before DEM testing.",
+  log_transform: "Apply a log2 transformation before DEM testing.",
+  fdr_cutoff: "Maximum false discovery rate accepted for gene-metabolite associations.",
+  trans_log2: "Apply log2(x+1) to the transcriptome before GMA preprocessing.",
+  metab_log2: "Apply log2(x+1) to the metabolome before GMA preprocessing.",
+};
+
+function ParameterLabel({ name, children }: { name: string; children: ReactNode }) {
+  return <span className="parameter-label">{children}<span className="data-type-help" tabIndex={0} aria-label={`About ${children}`}><CircleHelp size={15} aria-hidden="true" /><span className="data-type-tooltip" role="tooltip">{PARAMETER_DESCRIPTIONS[name] ?? "Analysis parameter."}</span></span></span>;
+}
+
 export function AnalysisForm({ initialType, onProgress, onBack }: {
   initialType: AnalysisType; onProgress: (jobId: string) => void; onBack: () => void;
 }) {
@@ -526,7 +552,6 @@ export function AnalysisForm({ initialType, onProgress, onBack }: {
       formData.set("trans_log2", String(state.params.trans_log2 ?? DEFAULT_GMA_TRANS_LOG2));
       formData.set("metab_log2", String(state.params.metab_log2 ?? DEFAULT_GMA_METAB_LOG2));
       formData.set("fdr_cutoff", String(state.params.fdr_cutoff ?? 0.05));
-      formData.set("enable_modules", String(state.params.enable_modules ?? true));
       formData.set("max_missing_fraction", String(state.params.max_missing_fraction ?? 0.5));
     } else {
     }
@@ -618,7 +643,7 @@ export function AnalysisForm({ initialType, onProgress, onBack }: {
           <div className="field-group">
             <h3>Differential expression parameters</h3>
             <label className="field">
-              <span>Compare field *</span>
+              <ParameterLabel name="compare_field">Compare field *</ParameterLabel>
               <input
                 type="text"
                 placeholder="e.g. group1"
@@ -627,7 +652,7 @@ export function AnalysisForm({ initialType, onProgress, onBack }: {
               />
             </label>
             <label className="field">
-              <span>Tested levels (comma-separated) *</span>
+              <ParameterLabel name="tested_levels">Tested levels (comma-separated) *</ParameterLabel>
               <input
                 type="text"
                 placeholder="e.g. Treatment_A,Treatment_B"
@@ -636,7 +661,7 @@ export function AnalysisForm({ initialType, onProgress, onBack }: {
               />
             </label>
             <label className="field">
-              <span>Reference level *</span>
+              <ParameterLabel name="reference_level">Reference level *</ParameterLabel>
               <input
                 type="text"
                 placeholder="e.g. Control"
@@ -645,7 +670,7 @@ export function AnalysisForm({ initialType, onProgress, onBack }: {
               />
             </label>
             <label className="field">
-              <span>Same fields (comma-separated, optional)</span>
+              <ParameterLabel name="same_fields">Same fields (comma-separated, optional)</ParameterLabel>
               <input
                 type="text"
                 placeholder="e.g. batch,time"
@@ -655,24 +680,24 @@ export function AnalysisForm({ initialType, onProgress, onBack }: {
             </label>
             <div className="field-row">
               <label className="field">
-                <span>Adjusted p-value cutoff</span>
-                <input type="number" step="0.01" min="0" max="1" value={String(state.params.padj_cutoff ?? 0.05)}
+                <ParameterLabel name="padj_cutoff">Adjusted p-value cutoff</ParameterLabel>
+                <input type="number" step="0.001" min="0.001" max="1" value={String(state.params.padj_cutoff ?? 0.05)}
                   onChange={e => setParam("padj_cutoff", parseNumericInput(e.target.value))} />
               </label>
               <label className="field">
-                <span>|log2FC| cutoff</span>
+                <ParameterLabel name="log2fc_cutoff">|log2FC| cutoff</ParameterLabel>
                 <input type="number" step="0.1" min="0" value={String(state.params.log2fc_cutoff ?? 1.0)}
                   onChange={e => setParam("log2fc_cutoff", parseNumericInput(e.target.value))} />
               </label>
             </div>
             <div className="field-row">
               <label className="field">
-                <span>Min total count</span>
+                <ParameterLabel name="min_total_count">Min total count</ParameterLabel>
                 <input type="number" min="0" value={String(state.params.min_total_count ?? 10)}
                   onChange={e => setParam("min_total_count", parseNumericInput(e.target.value))} />
               </label>
               <label className="field">
-                <span>Min replicates</span>
+                <ParameterLabel name="min_replicates">Min replicates</ParameterLabel>
                 <input type="number" min="2" value={String(state.params.min_replicates ?? 2)}
                   onChange={e => setParam("min_replicates", parseNumericInput(e.target.value))} />
               </label>
@@ -684,38 +709,38 @@ export function AnalysisForm({ initialType, onProgress, onBack }: {
           <div className="field-group">
             <h3>DEM parameters</h3>
             <label className="field">
-              <span>Compare field *</span>
+              <ParameterLabel name="compare_field">Compare field *</ParameterLabel>
               <input type="text" placeholder="e.g. group1"
                 value={String(state.params.compare_field || "")}
                 onChange={e => setParam("compare_field", e.target.value)} />
             </label>
             <label className="field">
-              <span>Tested levels (comma-separated) *</span>
+              <ParameterLabel name="tested_levels">Tested levels (comma-separated) *</ParameterLabel>
               <input type="text" placeholder="e.g. Treatment_A,Treatment_B"
                 value={String(state.params.tested_levels || "")}
                 onChange={e => setParam("tested_levels", e.target.value)} />
             </label>
             <label className="field">
-              <span>Reference level *</span>
+              <ParameterLabel name="reference_level">Reference level *</ParameterLabel>
               <input type="text" placeholder="e.g. Control"
                 value={String(state.params.reference_level || "")}
                 onChange={e => setParam("reference_level", e.target.value)} />
             </label>
             <label className="field">
-              <span>Same fields (comma-separated, optional)</span>
+              <ParameterLabel name="same_fields">Same fields (comma-separated, optional)</ParameterLabel>
               <input type="text" placeholder="e.g. batch,time"
                 value={String(state.params.same_fields || "")}
                 onChange={e => setParam("same_fields", e.target.value)} />
             </label>
             <div className="field-row">
               <label className="field">
-                <span>Adjusted p-value cutoff</span>
+                <ParameterLabel name="padj_cutoff">Adjusted p-value cutoff</ParameterLabel>
                 <input type="number" step="0.01" min="0" max="1"
                   value={String(state.params.padj_cutoff ?? 0.05)}
                   onChange={e => setParam("padj_cutoff", parseNumericInput(e.target.value))} />
               </label>
               <label className="field">
-                <span>|log2FC| cutoff</span>
+                <ParameterLabel name="log2fc_cutoff">|log2FC| cutoff</ParameterLabel>
                 <input type="number" step="0.1" min="0"
                   value={String(state.params.log2fc_cutoff ?? 1.0)}
                   onChange={e => setParam("log2fc_cutoff", parseNumericInput(e.target.value))} />
@@ -723,13 +748,13 @@ export function AnalysisForm({ initialType, onProgress, onBack }: {
             </div>
             <div className="field-row">
               <label className="field">
-                <span>VIP cutoff</span>
+                <ParameterLabel name="vip_cutoff">VIP cutoff</ParameterLabel>
                 <input type="number" step="0.1" min="0"
                   value={String(state.params.vip_cutoff ?? 1.0)}
                   onChange={e => setParam("vip_cutoff", parseNumericInput(e.target.value))} />
               </label>
               <label className="field">
-                <span>Min replicates</span>
+                <ParameterLabel name="min_replicates">Min replicates</ParameterLabel>
                 <input type="number" min="2"
                   value={String(state.params.min_replicates ?? 2)}
                   onChange={e => setParam("min_replicates", parseNumericInput(e.target.value))} />
@@ -737,20 +762,20 @@ export function AnalysisForm({ initialType, onProgress, onBack }: {
             </div>
             <div className="field-row">
               <label className="field">
-                <span>Max missing fraction</span>
+                <ParameterLabel name="max_missing_fraction">Max missing fraction</ParameterLabel>
                 <input type="number" step="0.05" min="0" max="1"
                   value={String(state.params.max_missing_fraction ?? 0.5)}
                   onChange={e => setParam("max_missing_fraction", parseNumericInput(e.target.value))} />
               </label>
               <label className="field">
-                <span>Orthogonal components</span>
+                <ParameterLabel name="n_orthogonal_components">Orthogonal components</ParameterLabel>
                 <input type="number" min="0" max="5"
                   value={String(state.params.n_orthogonal_components ?? 1)}
                   onChange={e => setParam("n_orthogonal_components", parseNumericInput(e.target.value))} />
               </label>
             </div>
             <label className="field">
-              <span>Impute method</span>
+              <ParameterLabel name="impute_method">Impute method</ParameterLabel>
               <select
                 value={String(state.params.impute_method || "half-min")}
                 onChange={e => setParam("impute_method", e.target.value)}
@@ -764,13 +789,13 @@ export function AnalysisForm({ initialType, onProgress, onBack }: {
                 <input type="checkbox"
                   checked={Boolean(state.params.normalize ?? true)}
                   onChange={e => setParam("normalize", e.target.checked)} />
-                <span>Median normalize</span>
+                <ParameterLabel name="normalize">Median normalize</ParameterLabel>
               </label>
               <label className="field checkbox-field">
                 <input type="checkbox"
                   checked={Boolean(state.params.log_transform ?? true)}
                   onChange={e => setParam("log_transform", e.target.checked)} />
-                <span>Log2 transform</span>
+                <ParameterLabel name="log_transform">Log2 transform</ParameterLabel>
               </label>
             </div>
           </div>
@@ -781,13 +806,13 @@ export function AnalysisForm({ initialType, onProgress, onBack }: {
             <h3>GMA parameters</h3>
             <div className="field-row">
               <label className="field">
-                <span>FDR cutoff</span>
-                <input type="number" step="0.01" min="0.000001" max="1"
+                <ParameterLabel name="fdr_cutoff">FDR cutoff</ParameterLabel>
+                <input type="number" step="0.001" min="0.001" max="1"
                   value={String(state.params.fdr_cutoff ?? 0.05)}
                   onChange={e => setParam("fdr_cutoff", parseNumericInput(e.target.value))} />
               </label>
               <label className="field">
-                <span>Max missing fraction</span>
+                <ParameterLabel name="max_missing_fraction">Max missing fraction</ParameterLabel>
                 <input type="number" step="0.05" min="0" max="0.99"
                   value={String(state.params.max_missing_fraction ?? 0.5)}
                   onChange={e => setParam("max_missing_fraction", parseNumericInput(e.target.value))} />
@@ -800,7 +825,7 @@ export function AnalysisForm({ initialType, onProgress, onBack }: {
                   checked={Boolean(state.params.trans_log2 ?? DEFAULT_GMA_TRANS_LOG2)}
                   onChange={e => setParam("trans_log2", e.target.checked)}
                 />
-                <span>Log2 transform transcriptome</span>
+                <ParameterLabel name="trans_log2">Log2 transform transcriptome</ParameterLabel>
               </label>
               <label className="field checkbox-field">
                 <input
@@ -808,15 +833,9 @@ export function AnalysisForm({ initialType, onProgress, onBack }: {
                   checked={Boolean(state.params.metab_log2 ?? DEFAULT_GMA_METAB_LOG2)}
                   onChange={e => setParam("metab_log2", e.target.checked)}
                 />
-                <span>Log2 transform metabolome</span>
+                <ParameterLabel name="metab_log2">Log2 transform metabolome</ParameterLabel>
               </label>
             </div>
-            <label className="field checkbox-field">
-              <input type="checkbox"
-                checked={Boolean(state.params.enable_modules ?? true)}
-                onChange={e => setParam("enable_modules", e.target.checked)} />
-              <span>Enable module detection</span>
-            </label>
           </div>
         )}
 

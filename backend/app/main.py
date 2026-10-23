@@ -592,7 +592,7 @@ def _build_job_params(
     filter_low_expression: bool | None,
     method: str | None,
     fdr_cutoff: float | None,
-    enable_modules: bool | None,
+    enable_modules: bool | None = None,
     vip_cutoff: float | None,
     pseudocount: float | None,
     max_missing_fraction: float | None,
@@ -640,7 +640,7 @@ def _build_job_params(
 
     params = {
         "fdr_cutoff": fdr_cutoff if fdr_cutoff is not None else 0.05,
-        "enable_modules": True if enable_modules is None else bool(enable_modules),
+        "enable_modules": True,
         "max_missing_fraction": max_missing_fraction if max_missing_fraction is not None else 0.5,
         "trans_log2": bool(trans_log2) if trans_log2 is not None else True,
         "metab_log2": bool(metab_log2) if metab_log2 is not None else True,

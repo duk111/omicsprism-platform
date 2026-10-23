@@ -474,7 +474,13 @@ class VllmGraphModel:
             latency_ms=round((perf_counter() - started) * 1000, 3),
             retry_count=0,
             outcome=outcome,
-            failure_code="model_unavailable" if outcome in {"http_error", "rejected"} else None,
+            failure_code=(
+                "role_schema_validation_failed"
+                if error_code == "ModelBoundaryError"
+                else "model_unavailable"
+                if outcome in {"http_error", "rejected"}
+                else None
+            ),
         )
 
     def _tool_call_id(self, chat_key: tuple[str, str, str, str], index: int) -> str:

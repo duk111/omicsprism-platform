@@ -160,7 +160,6 @@ def test_gma_parameter_updates_merge_with_prior_values_across_turns() -> None:
     assert first.params is not None
     assert first.legacy_params() == {
         "fdr_cutoff": 0.2,
-        "enable_modules": True,
         "trans_log2": False,
         "metab_log2": False,
         "max_missing_fraction": 0,
@@ -175,7 +174,6 @@ def test_gma_parameter_updates_merge_with_prior_values_across_turns() -> None:
     assert second.params is not None
     assert second.legacy_params() == {
         "fdr_cutoff": 0.1,
-        "enable_modules": True,
         "trans_log2": False,
         "metab_log2": False,
         "max_missing_fraction": 0,
@@ -185,7 +183,6 @@ def test_gma_parameter_updates_merge_with_prior_values_across_turns() -> None:
 def test_gma_without_parameter_patch_keeps_prior_values() -> None:
     prior = GMAParams(
         fdr_cutoff=0.2,
-        enable_modules=False,
         trans_log2=False,
         metab_log2=False,
         max_missing_fraction=0,

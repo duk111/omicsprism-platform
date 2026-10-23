@@ -384,6 +384,10 @@ function latestUserText(messages: AgentMessageResponse[]) { for (const message o
 function guessField(name: string): InputField {
   const value = name.toLowerCase();
   return INPUT_FIELDS.find(field => value.includes(field))
-    || (value.includes("count") ? "counts" : value.includes("metab") ? "metabolome" : "metadata");
+    || (value.includes("count") ? "counts"
+      : value.includes("metab") ? "metabolome"
+      : value.includes("deat") || value.includes("transcript") || value.includes("gene_expression")
+        ? "transcriptome"
+        : value.includes("group") ? "group" : "metadata");
 }
 function relativeTime(value: string) { const date = new Date(value); if (Number.isNaN(date.valueOf())) return ""; const days = Math.floor((Date.now() - date.valueOf()) / 86400000); return days < 1 ? "Today" : days === 1 ? "Yesterday" : `${days}d ago`; }

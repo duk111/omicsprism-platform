@@ -32,13 +32,14 @@ from ..schemas import AgentEvidenceBlock, GroundedAnswer, ToolName, ToolResult
 from ..message_blocks import text_block
 from ..trace import TraceRecorder, stable_hash
 from ..router import _is_explicit_jobs_listing as _router_is_explicit_jobs_listing
+from ..model import ModelBoundaryError
 
 
 _MODEL_FALLBACK_QUESTION = (
-    "我暂时无法可靠判断你的意图。请说明你是想了解一般知识、运行分析，"
-    "还是查询已有任务或结果。"
+    "I could not reliably determine the requested operation. Please say whether you want "
+    "general information, an analysis, or a query about an existing Job or result."
 )
-_STEP_BUDGET_QUESTION = "当前请求已达到执行步数上限，请重新描述你要完成的操作。"
+_STEP_BUDGET_QUESTION = "This request reached the execution step limit. Please start the analysis again with a narrower request."
 _MODEL_RETRY_INSTRUCTION = (
     "上一次结构化响应未通过校验。请重新输出完整对象：如果 action=answer，"
     "必须填写非空 answer；如果 action=ask_user，必须填写非空 question；"
@@ -129,6 +130,18 @@ def _run_agent_loop(
                         role=role,
                         output_model=effective_output_model,
                     )
+                except ModelBoundaryError as exc:
+                    model_failure_code = "role_schema_validation_failed"
+                    LOG.warning(
+                        "model response failed the role boundary",
+                        extra={
+                            "event": "agent.model.rejected",
+                            "error_code": type(exc).__name__,
+                        },
+                        exc_info=True,
+                    )
+                    budget = _advance_model_budget(budget, getattr(model, "last_usage", None))
+                    continue
                 except (Exception, ValidationError) as exc:
                     if isinstance(exc, ValidationError):
                         model_failure_code = "role_schema_validation_failed"

@@ -251,7 +251,7 @@ def test_schema_failure_retries_once_then_asks_user() -> None:
     assert len(model.contexts) == 2
     assert result.decision is not None
     assert result.decision.action == "ask_user"
-    assert "无法可靠判断" in (result.response_text or "")
+    assert "I could not reliably determine" in (result.response_text or "")
 
 
 def test_propose_plan_routes_through_analysis_validation() -> None:
@@ -799,7 +799,6 @@ def test_gma_revision_confirmation_matches_submitted_job_params() -> None:
     confirmation = revised_state.pending_interrupt.model_dump(mode="python")
     expected = {
         "fdr_cutoff": 0.2,
-        "enable_modules": True,
         "trans_log2": False,
         "metab_log2": False,
         "max_missing_fraction": 0.25,

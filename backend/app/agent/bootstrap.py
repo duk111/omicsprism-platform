@@ -206,7 +206,10 @@ def create_agent_api_context(
         scoped_by_id = {item.dataset_id: item for item in request.scoped_inputs}
         inputs: list[UploadedFileInfo] = []
         spec_registry = AnalysisSpecRegistry()
-        execution_alias = spec_registry.engine_role
+        execution_alias = lambda role: spec_registry.engine_role(
+            role,
+            request.resolved_params.analysis_type,
+        )
         for item in input_records:
             execution_item = item.model_copy(update={"field": execution_alias(item.field)})
             scoped = scoped_by_id.get(item.file_id)

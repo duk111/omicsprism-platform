@@ -188,7 +188,6 @@ def test_gma_runner_maps_supported_parameters_to_core_and_preprocessing(monkeypa
     job_execution._run_correlation_job(
         _job({
             "fdr_cutoff": 0.2,
-            "enable_modules": False,
             "max_missing_fraction": 0.25,
             "trans_log2": False,
             "metab_log2": False,
@@ -205,7 +204,7 @@ def test_gma_runner_maps_supported_parameters_to_core_and_preprocessing(monkeypa
     )
 
     assert config_values["fdr_alpha"] == 0.2
-    assert config_values["enable_module_detection"] is False
+    assert config_values["enable_module_detection"] is True
     assert config_values["missing_feature_threshold"] == 0.25
     assert config_values["trans_log2"] is False
     assert config_values["metab_log2"] is False
@@ -254,7 +253,6 @@ def test_agent_parameter_resolution_rejects_unsupported_options_and_keeps_zero_f
     gma_unsupported = _build_params("GMA", {"method": "pearson"}, None)
     gma = _build_params("GMA", {
         "fdr_cutoff": 0.1,
-        "enable_modules": False,
         "trans_log2": False,
         "metab_log2": False,
         "max_missing_fraction": 0,
@@ -265,7 +263,6 @@ def test_agent_parameter_resolution_rejects_unsupported_options_and_keeps_zero_f
     assert gma.params is not None
     assert gma.legacy_params() == {
         "fdr_cutoff": 0.1,
-        "enable_modules": False,
         "trans_log2": False,
         "metab_log2": False,
         "max_missing_fraction": 0,
@@ -279,7 +276,7 @@ def test_api_gma_params_survive_job_record_storage_shape() -> None:
         compare_field=None, tested_levels=None, reference_level=None,
         padj_cutoff=None, log2fc_cutoff=None, min_total_count=None, min_replicates=None,
         same_fields=None, normalize=None, filter_low_expression=None, method=None,
-        fdr_cutoff=0.2, enable_modules=False, vip_cutoff=None, pseudocount=None,
+        fdr_cutoff=0.2, vip_cutoff=None, pseudocount=None,
         max_missing_fraction=0, impute_method=None, log_transform=None,
         trans_log2=False, metab_log2=False, n_orthogonal_components=None,
     )
@@ -288,7 +285,7 @@ def test_api_gma_params_survive_job_record_storage_shape() -> None:
 
     assert restored.params == {
         "fdr_cutoff": 0.2,
-        "enable_modules": False,
+        "enable_modules": True,
         "max_missing_fraction": 0,
         "trans_log2": False,
         "metab_log2": False,
@@ -305,9 +302,15 @@ def test_api_gma_params_survive_job_record_storage_shape() -> None:
         trans_log2=None, metab_log2=None, n_orthogonal_components=None,
     )
     agent_defaults = _build_params("GMA", {}, None).legacy_params()
-    assert defaults == agent_defaults == {
+    assert defaults == {
         "fdr_cutoff": 0.05,
         "enable_modules": True,
+        "max_missing_fraction": 0.5,
+        "trans_log2": True,
+        "metab_log2": True,
+    }
+    assert agent_defaults == {
+        "fdr_cutoff": 0.05,
         "max_missing_fraction": 0.5,
         "trans_log2": True,
         "metab_log2": True,

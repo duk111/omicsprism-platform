@@ -532,8 +532,8 @@ def _run_correlation_job(
         group_table_path=str(group_path),
         report_formats=("html",),
         generate_reports=True,
-        fdr_alpha=_numeric_param(job.params, "fdr_cutoff", 0.05, minimum=0, maximum=1),
-        enable_module_detection=_coerce_bool(job.params.get("enable_modules"), True),
+        fdr_alpha=_numeric_param(job.params, "fdr_cutoff", 0.05, minimum=0.001, maximum=1),
+        enable_module_detection=True,
         missing_feature_threshold=_numeric_param(
             job.params, "max_missing_fraction", 0.5, minimum=0, maximum=None,
         ),

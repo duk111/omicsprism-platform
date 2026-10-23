@@ -39,7 +39,7 @@ from backend.app.agent.context import (
     JobContextRef,
     ToolObservationContext,
 )
-from backend.app.agent.param_resolver import ContrastSpec, DEGParams
+from backend.app.agent.param_resolver import ContrastSpec, DEGParams, GMAParams
 from backend.app.agent.product_store import (
     AgentResourceNotFound,
     InMemoryAgentProductStore,
@@ -244,6 +244,60 @@ def test_context_builds_one_graph_with_owned_deterministic_adapters(
     assert executor.enqueued == [first.job_id]
     assert files.copies == [(first.job_id, "file-1")]
     assert jobs.records[first.job_id].owner_id == "user-1"
+
+
+def test_gma_agent_submission_persists_metabolome_engine_role(monkeypatch: pytest.MonkeyPatch) -> None:
+    store = _product_store()
+    now = datetime.now(timezone.utc)
+    for file_id, field, filename, content, storage_key in [
+        ("file-transcriptome", "transcriptome", "DEAT.csv", COUNTS, "agent-inputs/bundle-1/DEAT.csv"),
+        ("file-metabolome", "metabolome", "ym_metab.csv", COUNTS, "agent-inputs/bundle-1/ym_metab.csv"),
+        ("file-group", "group", "group.csv", b"sample_id,group1,group2\ns1,control,b1\ns2,salt,b1\n", "agent-inputs/bundle-1/group.csv"),
+    ]:
+        store.append_input_file(AgentInputFileRecord(
+            file_id=file_id,
+            bundle_id="bundle-1",
+            user_id="user-1",
+            field=field,
+            filename=filename,
+            storage_key=storage_key,
+            checksum="sha256:" + sha256(content).hexdigest(),
+            content_type="text/csv",
+            size_bytes=len(content),
+            created_at=now,
+        ))
+    files = _Files()
+    files.payloads.update({
+        "agent-inputs/bundle-1/DEAT.csv": COUNTS,
+        "agent-inputs/bundle-1/ym_metab.csv": COUNTS,
+        "agent-inputs/bundle-1/group.csv": b"sample_id,group1,group2\ns1,control,b1\ns2,salt,b1\n",
+    })
+    jobs = _Jobs()
+    executor = _Executor()
+    captured: list[tuple[object, ...]] = []
+    _patch_stores(monkeypatch, store)
+    monkeypatch.setattr(bootstrap, "VllmGraphModel", lambda **_kwargs: object())
+    monkeypatch.setattr(bootstrap, "_create_postgres_checkpointer", lambda _url: object())
+    monkeypatch.setattr(
+        bootstrap,
+        "build_agent_graph",
+        lambda *args, **kwargs: captured.append((*args, kwargs)) or object(),
+    )
+    context = bootstrap.create_agent_api_context(
+        _settings(agent_model_url="http://model-host:8000", agent_model_name="model"),
+        files=files,
+        job_store=jobs,
+        job_executor=executor,
+    )
+    submit_job = captured[-1][2]
+    assert callable(submit_job)
+    request = AnalysisExecutionRequest(
+        user_id="user-1", thread_id="thread-1", dataset_ids=["file-transcriptome", "file-metabolome", "file-group"],
+        resolved_params=GMAParams(), input_fingerprint="sha256:" + "1" * 64, idempotency_key="gma-run",
+    )
+    ref = submit_job(request)
+    fields = {item.field for item in jobs.records[ref.job_id].inputs}
+    assert fields == {"transcriptome", "metabolome", "group"}
 
 
 def test_production_tool_executor_loads_owned_inputs_and_dispatches_read_only_tool(

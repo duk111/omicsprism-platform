@@ -300,6 +300,13 @@ class ClarificationResolver:
 
     def __call__(self, request: ClarificationResolverInput) -> ClarificationResolverOutput:
         self.last_usage = None
+        # Deterministic replies must not depend on the optional LLM resolver.
+        # This covers confirmation, cancellation, ordinal contrast selection,
+        # and explicit parameter edits; it prevents a model schema failure from
+        # breaking the confirmation path.
+        deterministic = self._deterministic(request)
+        if deterministic.intent != "unrelated":
+            return deterministic
         if self.model is not None:
             method = getattr(self.model, "resolve_clarification", None)
             if not callable(method):
@@ -322,7 +329,7 @@ class ClarificationResolver:
                 except Exception:
                     self.last_usage = getattr(self.model, "last_usage", None)
                     pass
-        return self._deterministic(request)
+        return deterministic
 
     def resolve(self, request: ClarificationResolverInput) -> ClarificationResolverOutput:
         """Named alias for callers that prefer an explicit resolver method."""
@@ -406,7 +413,10 @@ class ClarificationResolver:
                     confidence=0.95,
                     reason="用户复述了候选 contrast。",
                 )
-        if any(token in lowered for token in ("yes", "confirm", "proceed", "run", "submit", "continue", "确认", "继续", "执行", "提交", "好的", "可以", "就这样")):
+        if any(token in lowered for token in (
+            "yes", "confirm", "proceed", "run", "submit", "continue",
+            "确认", "确定", "继续", "执行", "提交", "好的", "可以", "就这样",
+        )):
             return ClarificationResolverOutput(
                 intent="confirm", confidence=0.9, reason="用户确认沿用当前分析参数。"
             )

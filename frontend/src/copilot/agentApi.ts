@@ -2,6 +2,8 @@ import { apiFetch, apiFetchJson, apiUrl } from "../api";
 import { createClientId } from "../clientId";
 import type {
   AgentInputBundleResponse,
+  AgentFeedbackCreateRequest,
+  AgentFeedbackResponse,
   AgentJobWaitResponse,
   AgentJobWaitListResponse,
   AgentMessageListResponse,
@@ -40,6 +42,11 @@ export const agentApi = {
     apiFetchJson(`${root}/${encodeURIComponent(threadId)}/job-waits/${encodeURIComponent(waitId)}/cancel`, { method: "POST" }) as Promise<AgentJobWaitResponse>,
   listMessages: (threadId: string, after?: string) =>
     apiFetchJson(`${root}/${encodeURIComponent(threadId)}/messages${after ? `?after=${encodeURIComponent(after)}` : ""}`) as Promise<AgentMessageListResponse>,
+  saveFeedback: (threadId: string, messageId: string, payload: AgentFeedbackCreateRequest) =>
+    apiFetchJson(
+      `${root}/${encodeURIComponent(threadId)}/messages/${encodeURIComponent(messageId)}/feedback`,
+      json("PUT", payload),
+    ) as Promise<AgentFeedbackResponse>,
   listTrace: (threadId: string, limit = 100) =>
     apiFetchJson(`${root}/${encodeURIComponent(threadId)}/trace?limit=${limit}`) as Promise<AgentTraceEventListResponse>,
   listTurns: (threadId: string, after?: string) =>

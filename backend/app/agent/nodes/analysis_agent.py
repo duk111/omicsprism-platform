@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from collections.abc import Callable
 from typing import Any
 
@@ -24,7 +25,7 @@ from ..graph import (
     ToolExecutor,
 )
 from ..message_blocks import text_block
-from ..param_resolver import AnalysisProposal, ContrastSpec, GMAParams, DEGParams, DEMParams, ScopeSpec
+from ..param_resolver import AnalysisProposal, ContrastSpec, GMAParams, DEGParams, DEMParams, ScopeSpec, infer_analysis_type
 from ..schemas import ToolName
 from ..trace import TraceRecorder
 from .main import (
@@ -62,6 +63,7 @@ def analysis_agent_node(
             or _looks_like_capability_query(state.user_message)
         ):
             result = loop(state)
+            result = _stabilize_successful_analysis_tools(state, result)
             result = _normalize_analysis_response(state, result)
             result = _materialize_human_clarification(state, result)
             if (
@@ -73,6 +75,73 @@ def analysis_agent_node(
         return _resolve_pending_turn(state, resolver)
 
     return run
+
+
+def _stabilize_successful_analysis_tools(
+    state: GraphState,
+    result: dict[str, object],
+) -> dict[str, object]:
+    """Turn a successful metadata/contrast tool result into a deterministic plan proposal.
+
+    Smaller OpenAI-compatible models often keep calling a read-only tool after
+    it already returned the needed facts. The resolver is the authoritative
+    boundary, so feed it the bounded tool result directly instead of spending
+    another model step or asking for parameters that are already present.
+    """
+    observations = result.get("tool_observations")
+    if not isinstance(observations, list):
+        return result
+    successful = [
+        item for item in observations
+        if getattr(item, "outcome", None) == "ok"
+        and getattr(getattr(item, "tool", None), "value", getattr(item, "tool", None))
+        in {ToolName.ENUMERATE_CONTRASTS.value, ToolName.DESCRIBE_METADATA.value}
+    ]
+    if not successful:
+        return result
+    analysis_type = infer_analysis_type(
+        state.user_message,
+        [getattr(getattr(item, "profile", item), "role", "") for item in state.dataset_profiles],
+    )
+    if analysis_type is None:
+        roles = [getattr(getattr(item, "profile", item), "role", "") for item in state.dataset_profiles]
+        analysis_type = infer_analysis_type(state.user_message, roles)
+    if analysis_type is None:
+        return result
+    proposal = AnalysisProposal(analysis_type=analysis_type)
+    for item in reversed(successful):
+        try:
+            payload = json.loads(str(getattr(item, "summary", "{}")))
+        except (TypeError, ValueError, json.JSONDecodeError):
+            continue
+        candidates = payload.get("candidates") if isinstance(payload, dict) else None
+        if isinstance(candidates, list):
+            executable = [candidate for candidate in candidates if isinstance(candidate, dict) and candidate.get("executable")]
+            chosen = executable[0] if executable else next((c for c in candidates if isinstance(c, dict)), None)
+            if chosen:
+                proposal = proposal.model_copy(update={
+                    "compare_field": str(chosen.get("compare_field") or "").strip() or None,
+                    "tested_level": str(chosen.get("tested_level") or "").strip() or None,
+                    "reference_level": str(chosen.get("reference_level") or "").strip() or None,
+                    "scope": (
+                        ScopeSpec.model_validate(chosen["scope"])
+                        if isinstance(chosen.get("scope"), dict)
+                        else proposal.scope
+                    ),
+                })
+                break
+    return {
+        **result,
+        "decision": AgentDecision(
+            action="propose_plan",
+            analysis_type=analysis_type,
+            proposal=proposal,
+        ),
+        "response_text": None,
+        "response_blocks": [],
+        "outcome": None,
+        "failure_code": None,
+    }
 
 
 def _materialize_human_clarification(
@@ -92,12 +161,7 @@ def _materialize_human_clarification(
         return result
     question = decision.question or "Please clarify the analysis settings."
     if _has_chinese(state.user_message) != _has_chinese(question):
-        question = (
-            "请补充分析类型、比较字段、测试组、参考组或范围；"
-            "我会先根据当前数据列出候选分析计划。"
-            if _has_chinese(state.user_message)
-            else "Please provide the analysis type, comparison field, groups, or scope so I can build a candidate plan."
-        )
+        question = "Please provide the analysis type, comparison field, groups, or scope so I can build a candidate plan."
     proposal = decision.proposal
     if proposal is None:
         proposal = AnalysisProposal(analysis_type=decision.analysis_type)
@@ -274,7 +338,7 @@ def _resolve_pending_turn(
         or state.step_budget.used_tokens >= state.step_budget.max_tokens
     ):
         return _ask_user_update(
-            "当前请求已达到执行步数上限，请重新描述你要完成的操作。",
+            "This request reached the execution step limit. Please start the analysis again with a narrower request.",
             state.step_budget,
         )
     request = ClarificationResolverInput(
@@ -298,7 +362,7 @@ def _resolve_pending_turn(
         }
     if result.intent == "cancel":
         cancelled = pending.model_copy(update={"status": "cancelled"})
-        text = "已取消当前分析，不会提交任务。"
+        text = "The current analysis was cancelled. No Job will be submitted."
         return {
             "decision": AgentDecision(action="ask_user", question=text),
             "response_text": text,
@@ -309,7 +373,7 @@ def _resolve_pending_turn(
             "step_budget": budget,
         }
     if result.intent == "param_question":
-        text = result.answer_text or "请指出你想了解的参数名称。"
+        text = result.answer_text or "Please name the parameter you want to understand."
         return {
             "decision": AgentDecision(action="ask_user", question=text),
             "response_text": text,

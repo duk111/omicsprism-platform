@@ -198,8 +198,7 @@ class GMAParams(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     analysis_type: Literal["GMA"] = "GMA"
-    fdr_cutoff: float = Field(default=0.05, gt=0, le=1)
-    enable_modules: bool = True
+    fdr_cutoff: float = Field(default=0.05, ge=0.001, le=1)
     trans_log2: bool = True
     metab_log2: bool = True
     max_missing_fraction: float = Field(default=0.5, ge=0, lt=1)

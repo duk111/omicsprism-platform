@@ -14,7 +14,9 @@ from backend.app.agent.graph import (
     GraphState,
     PendingAnalysisClarification,
 )
-from backend.app.agent.nodes.analysis_agent import analysis_agent_node
+from backend.app.agent.nodes.analysis_agent import analysis_agent_node, _stabilize_successful_analysis_tools
+from backend.app.agent.graph import ToolObservation
+from backend.app.agent.schemas import ToolName
 from backend.app.agent.param_resolver import AnalysisProposal, ScopeSpec
 
 
@@ -72,6 +74,33 @@ def test_deterministic_resolver_maps_multiple_threshold_edits() -> None:
 
     assert result.intent == "edit_params"
     assert result.proposal_patch == {"min_replicates": 1, "log2fc_cutoff": 0.5}
+
+
+def test_confirmation_reply_is_deterministic_even_when_model_is_unavailable() -> None:
+    class BrokenModel:
+        def resolve_clarification(self, _request):
+            raise RuntimeError("model unavailable")
+
+    result = ClarificationResolver(BrokenModel())(ClarificationResolverInput(
+        user_reply="确认",
+        param_spec=param_specs_for_analysis("GMA"),
+    ))
+
+    assert result.intent == "confirm"
+
+
+def test_parameter_edit_is_deterministic_even_when_model_is_unavailable() -> None:
+    class BrokenModel:
+        def resolve_clarification(self, _request):
+            raise RuntimeError("model unavailable")
+
+    result = ClarificationResolver(BrokenModel())(ClarificationResolverInput(
+        user_reply="set fdr cutoff to 0.2",
+        param_spec=param_specs_for_analysis("GMA"),
+    ))
+
+    assert result.intent == "edit_params"
+    assert result.proposal_patch == {"fdr_cutoff": 0.2}
 
 
 def test_deterministic_resolver_maps_scope_edit_without_hardcoded_user_field_names() -> None:
@@ -188,4 +217,27 @@ def test_invalid_threshold_patch_is_rejected_before_analysis_resolution() -> Non
 
     assert result["decision"].action == "ask_user"
     assert result["pending_analysis"].status == "active"
-    assert "校验" in result["response_text"]
+    assert "validation" in result["response_text"]
+
+
+def test_successful_contrast_tool_result_is_converted_to_plan_without_another_model_step() -> None:
+    state = GraphState(
+        thread_id="contrast-thread",
+        user_id="user-1",
+        user_message="Run a DEG analysis comparing salt versus control using treatment.",
+        dataset_profiles=[],
+    )
+    observation = ToolObservation(
+        tool=ToolName.ENUMERATE_CONTRASTS,
+        call_id="call-1",
+        arguments={},
+        summary='{"ok":true,"candidates":[{"compare_field":"treatment","tested_level":"salt","reference_level":"control","scope":{"mode":"all","fixed_filters":{},"blocking_fields":[]},"executable":true,"tested_count":3,"reference_count":3}]}',
+        outcome="ok",
+    )
+    result = _stabilize_successful_analysis_tools(state, {"tool_observations": [observation]})
+
+    assert result["decision"].action == "propose_plan"
+    assert result["decision"].analysis_type == "DEG"
+    assert result["decision"].proposal.compare_field == "treatment"
+    assert result["decision"].proposal.tested_level == "salt"
+    assert result["decision"].proposal.reference_level == "control"
