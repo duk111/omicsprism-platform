@@ -11,7 +11,7 @@ from pydantic import BaseModel
 
 from pydantic import ValidationError
 
-from ..grounding import GroundedAnswerPipeline
+from ..grounding import GroundedAnswerPipeline, fallback_query_context
 from ..graph import (
     AgentDecision,
     AgentRole,
@@ -77,6 +77,8 @@ def _run_agent_loop(
         terminal_only = False
         pipeline = GroundedAnswerPipeline()
         latest_evidence: ToolResult | None = None
+        latest_fact: tuple[ToolName, str] | None = None
+        result_scope = role == AgentRole.RESULT_QA or AgentRole.RESULT_QA in state.visited_roles
         while True:
             if (
                 budget.used_model_steps >= budget.max_model_steps
@@ -264,8 +266,11 @@ def _run_agent_loop(
                         tool_executor,
                         trace_recorder,
                     )
-                    if evidence is not None:
-                        latest_evidence = evidence
+                    latest_evidence = evidence
+                    if request.tool is ToolName.QUERY_ARTIFACT:
+                        latest_fact = None
+                    elif tool_outcome == "ok":
+                        latest_fact = (request.tool, summary)
                     observations.append(ToolObservation(
                         tool=request.tool,
                         call_id=native_call_id or f"call-{len(observations) + 1}",
@@ -312,7 +317,7 @@ def _run_agent_loop(
                     }
                 if decision.tool is ToolName.QUERY_ARTIFACT and latest_evidence is not None:
                     answer = pipeline.answer(latest_evidence, draft=None, repair=None)
-                    response_text = _grounded_answer_text(answer)
+                    response_text = _grounded_answer_text(answer, latest_evidence)
                     return {
                         "decision": AgentDecision(action="grounded_answer"),
                         "grounded_answer": answer,
@@ -351,6 +356,8 @@ def _run_agent_loop(
                         "I need a verified result artifact before I can answer this question.",
                         budget,
                         observations,
+                        outcome="unresolved",
+                        failure_code="result_evidence_required",
                     )
                 answer = pipeline.answer(
                     latest_evidence,
@@ -360,14 +367,43 @@ def _run_agent_loop(
                 return {
                     "decision": decision,
                     "grounded_answer": answer,
-                    "response_text": _grounded_answer_text(answer),
+                    "response_text": _grounded_answer_text(answer, latest_evidence),
                     "response_blocks": [
-                        text_block(_grounded_answer_text(answer)),
+                        text_block(_grounded_answer_text(answer, latest_evidence)),
                         AgentEvidenceBlock(claims=answer.claims),
                     ],
                     "step_budget": budget,
                     "tool_observations": observations,
                 }
+            if result_scope and decision.action in {"answer", "ask_user"}:
+                # Free prose (including a clarification) is not a scientific
+                # data boundary. Never recover evidence from serialized history.
+                if latest_evidence is not None:
+                    answer = pipeline.answer(latest_evidence)
+                    response_text = _grounded_answer_text(answer, latest_evidence)
+                    return {
+                        "decision": AgentDecision(action="grounded_answer", grounded_answer=answer),
+                        "grounded_answer": answer,
+                        "response_text": response_text,
+                        "response_blocks": [text_block(response_text), AgentEvidenceBlock(claims=answer.claims)],
+                        "outcome": "completed", "failure_code": None,
+                        "step_budget": budget, "tool_observations": observations,
+                    }
+                if latest_fact is not None and latest_fact[0] in {ToolName.LIST_JOBS, ToolName.DESCRIBE_ARTIFACTS}:
+                    tool, summary = latest_fact
+                    response_text = (_list_jobs_response(summary) if tool is ToolName.LIST_JOBS else summary[:1200])
+                    return {
+                        "decision": AgentDecision(action="answer"),
+                        "grounded_answer": None,
+                        "response_text": response_text,
+                        "response_blocks": [text_block(response_text)],
+                        "outcome": "completed", "failure_code": None,
+                        "step_budget": budget, "tool_observations": observations,
+                    }
+                return _ask_user_update(
+                    "尚未取得可验证的结果证据，无法确认具体科研结果。请指定有权限访问的 Job、结果表及查询条件。",
+                    budget, observations, outcome="unresolved", failure_code="result_evidence_required",
+                )
             if decision.action != "tool_call":
                 response_text = _response_text(output)
                 return {
@@ -420,8 +456,11 @@ def _run_agent_loop(
                 tool_executor,
                 trace_recorder,
             )
-            if evidence is not None:
-                latest_evidence = evidence
+            latest_evidence = evidence
+            if request.tool is ToolName.QUERY_ARTIFACT:
+                latest_fact = None
+            elif tool_outcome == "ok":
+                latest_fact = (request.tool, summary)
             observations.append(ToolObservation(
                 tool=request.tool,
                 call_id=native_call_id or f"call-{len(observations) + 1}",
@@ -805,16 +844,17 @@ def _contains_internal_action(value: str) -> bool:
     return bool(re.search(r"(?<![A-Za-z0-9_])(ask_user|tool_call|reroute)(?![A-Za-z0-9_])", value, re.IGNORECASE))
 
 
-def _grounded_answer_text(answer: GroundedAnswer) -> str:
+def _grounded_answer_text(answer: GroundedAnswer, evidence: ToolResult | None = None) -> str:
     lines: list[str] = []
-    length = 0
+    prefix = fallback_query_context(answer, evidence)
+    length = len(prefix)
     for claim in answer.claims:
         extra = len(claim.text) + (1 if lines else 0)
         if length + extra > 1200:
             break
         lines.append(claim.text)
         length += extra
-    return "\n".join(lines) or "The artifact did not contain evidence rows."
+    return prefix + ("\n".join(lines) or "The artifact did not contain evidence rows.")
 
 
 def _as_grounding_evidence(result: object) -> ToolResult | None:

@@ -63,9 +63,14 @@ def test_reupload_routes_to_analysis_and_does_not_use_old_job() -> None:
     assert route(_state("\u91cd\u65b0\u4e0a\u4f20\u6570\u636e")) is AgentRole.ANALYSIS
 
 
-def test_explicit_job_request_requires_existing_job_context() -> None:
+def test_explicit_job_request_requires_result_boundary_even_without_job_context() -> None:
     assert route(_state("show job status", pending=False, jobs=True)) is AgentRole.RESULT_QA
-    assert route(_state("show job status", pending=False, jobs=False)) is AgentRole.QA
+    assert route(_state("show job status", pending=False, jobs=False)) is AgentRole.RESULT_QA
+
+
+def test_evidence_gate_preserves_analysis_commands_and_parameter_edits() -> None:
+    assert route(_state("Run DEG with padj cutoff 0.01", pending=False, jobs=False)) is AgentRole.ANALYSIS
+    assert route(_state("set padj cutoff to 0.01", pending=True, jobs=False)) is AgentRole.ANALYSIS
 
 
 def test_explicit_result_query_with_pending_analysis_stays_result_qa() -> None:

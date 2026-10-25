@@ -1593,8 +1593,9 @@ def test_tool_failure_is_returned_to_model_before_terminal_failure() -> None:
     ), _config("tool-error-recovery"))
     state = GraphState.model_validate(result)
 
-    assert state.outcome == "completed"
-    assert state.response_text == "The requested job is not accessible."
+    assert state.outcome == "unresolved"
+    assert state.failure_code == "result_evidence_required"
+    assert state.grounded_answer is None
     assert state.tool_observations[-1].outcome == "failed"
     assert '"error_code":"permission_denied"' in state.tool_observations[-1].summary
 

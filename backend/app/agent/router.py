@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import re
+
 from .graph import AgentRole, GraphState, RouteTarget
 
 
@@ -20,14 +22,54 @@ def route(state: GraphState) -> AgentRole | RouteTarget | None:
     if state.turn_origin == "job_continuation":
         return AgentRole.RESULT_QA
 
+    # Definitions of result terminology do not assert facts about a Job.
+    # Keep this anchored: "what is padj for GeneA in this job" is not a definition.
+    if re.fullmatch(
+        r"\s*(?:what is|what are|define|explain|什么是|什么叫|解释)\s*(?:(?:a|an|the)\s+)?"
+        r"(?:padj|padj_bh|pvalue|log2foldchange|log2fc|fold change|fdr|vip)\s*[?？。.]?\s*",
+        message, re.IGNORECASE,
+    ):
+        return AgentRole.QA
+
+    # History can identify a result follow-up, but cannot serve as new evidence.
+    if has_jobs and re.search(
+        r"explain|elaborate|rewrite|shorter|summari[sz]e|再解释|继续解释|简短|总结|改写", message, re.IGNORECASE,
+    ) and any(
+        item.role == "assistant" and re.search(
+            r"(?:gene_id|metabolite_id)\s*=|(?:padj(?:_bh)?|log2FoldChange|PearsonR|EdgeWeight)\s*(?:=|is|为)?\s*[+-]?\d",
+            item.text,
+        )
+        for item in state.recent_messages.messages[-2:]
+    ):
+        return AgentRole.RESULT_QA
+
+    if re.search(r"which.*(?:gene|metabolite)|哪些.*(?:基因|代谢物)|哪个.*(?:基因|代谢物)", message, re.IGNORECASE) and any(
+        marker in message.casefold() for marker in ("significant", "upregulated", "downregulated", "显著", "上调", "下调")
+    ):
+        return AgentRole.RESULT_QA
+
     if pending is not None and pending.status == "active":
-        if _is_explicit_knowledge_question(message):
-            return AgentRole.QA
         if has_jobs and _is_explicit_result_request(message):
             return AgentRole.RESULT_QA
+        if _is_explicit_knowledge_question(message):
+            return AgentRole.QA
         if _is_explicit_analysis_request(message) or _is_analysis_followup(message):
             return AgentRole.ANALYSIS
         return AgentRole.ANALYSIS
+
+    # A result question without a selected Job still needs the result boundary.
+    # Parameter edits and explicit new-analysis commands keep their existing path.
+    if not has_jobs and not re.match(
+        r"\s*(?:run\b|start\b|perform\b|execute\b|analyze\b|compare\b|运行|开始|执行|比较)",
+        message, re.IGNORECASE,
+    ) and re.search(
+        r"show\b|query\b|lookup\b|job\b|current\b|my\b|\b(?:Gene|Met)[A-Za-z0-9_-]+\b|当前|我的|查询|查看|任务状态",
+        message, re.IGNORECASE,
+    ) and any(marker in message.casefold() for marker in (
+        "result", "artifact", "padj", "pvalue", "log2fc", "log2foldchange", "fold change", "pearsonr", "edgeweight", "vip", "job status",
+        "查询结果", "查看结果", "结果中", "产物", "任务状态",
+    )):
+        return AgentRole.RESULT_QA
 
     if _is_explicit_jobs_listing(message):
         return AgentRole.RESULT_QA
@@ -79,7 +121,7 @@ def _is_explicit_result_request(message: str) -> bool:
         or any(
             marker in text
             for marker in (
-                "result", "artifact", "evidence", "fold change", "log2fc", "padj",
+                "result", "artifact", "evidence", "fold change", "log2fc", "log2foldchange", "padj", "pvalue", "pearsonr", "edgeweight", "vip",
                 "what happened to", "show ", "query ",
                 "\u67e5\u8be2\u7ed3\u679c", "\u67e5\u770b\u7ed3\u679c", "\u7ed3\u679c\u662f",
                 "\u7ed3\u679c\u4e2d", "\u4ea7\u7269", "\u8bc1\u636e",

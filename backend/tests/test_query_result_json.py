@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 import pytest
 from fastapi import HTTPException
 
-from backend.app.agent.grounding import EvidenceGrounder
+from backend.app.agent.grounding import FALLBACK_TEXT, GroundedAnswerPipeline
 from backend.app.agent.schemas import Citation, GroundedAnswer, GroundedClaim
 from backend.app.agent.tools import AgentToolRuntime
 from backend.app.agent.verifier import AnswerVerifier
@@ -212,7 +212,7 @@ def test_figure_json_for_wrong_analysis_type_is_rejected() -> None:
     assert result.error_code == "artifact_not_allowed"
 
 
-def test_json_evidence_passes_existing_grounder_and_verifier() -> None:
+def test_json_explanation_falls_back_to_verified_raw_rows() -> None:
     evidence = _runtime(UPSET_PAYLOAD, filename="upset.json").query_result(
         "job-1",
         "upset.json",
@@ -230,10 +230,14 @@ def test_json_evidence_passes_existing_grounder_and_verifier() -> None:
         ),
     )])
 
-    answer = EvidenceGrounder().ground(evidence, draft)
+    assert AnswerVerifier().verify(draft, [evidence]).verdict.value == "rejected"
+    answer = GroundedAnswerPipeline().answer(evidence, draft)
     verdict = AnswerVerifier().verify(answer, [evidence])
 
     assert verdict.verdict.value == "approved"
+    assert answer.claims[0].text == FALLBACK_TEXT
+    assert "count=8" in answer.claims[1].text
+    assert answer.claims[1].citation.row_ids == [2]
     assert verdict.checks[0].citation_valid
     assert verdict.checks[0].number_matches_evidence
 

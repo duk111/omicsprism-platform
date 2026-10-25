@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from pathlib import PurePosixPath
 from typing import TYPE_CHECKING
+
+from fastapi import HTTPException
 
 from ..graph import (
     GraphState,
@@ -13,7 +16,7 @@ from ..graph import (
     ResultEvidenceRequest,
     ResultQuerier,
 )
-from ..grounding import GroundedAnswerPipeline
+from ..grounding import GroundedAnswerPipeline, fallback_query_context
 from ..message_blocks import job_block_from_summary, text_block
 from ..schemas import AgentEvidenceBlock, GroundedAnswer, ToolName, ToolResult
 
@@ -49,6 +52,7 @@ def result_qa_node(
             return {
                 "response_text": response_text,
                 "response_blocks": [text_block(response_text)],
+                "grounded_answer": None,
             }
 
         budget = state.step_budget.model_copy(
@@ -61,6 +65,7 @@ def result_qa_node(
                 "response_text": response_text,
                 "response_blocks": [text_block(response_text)],
                 "step_budget": budget,
+                "grounded_answer": None,
             }
 
         try:
@@ -68,12 +73,15 @@ def result_qa_node(
                 user_id=state.user_id,
                 job_id=job_ref.job_id,
             ))
-        except LookupError:
+        except (LookupError, HTTPException) as exc:
+            if isinstance(exc, HTTPException) and exc.status_code != 404:
+                raise
             response_text = "The selected Job was not found or is not accessible."
             return {
                 "response_text": response_text,
                 "response_blocks": [text_block(response_text)],
                 "step_budget": budget,
+                "grounded_answer": None,
             }
         _validate_job_summary(state, job_ref, summary)
 
@@ -111,14 +119,16 @@ def result_qa_node(
                 job_id=summary.job_id,
                 query=query,
             ))
-        except LookupError:
+        except (LookupError, HTTPException) as exc:
+            if isinstance(exc, HTTPException) and exc.status_code != 404:
+                raise
             response_text = "The requested result evidence was not found or is not accessible."
             return {
                 **base_update,
                 "response_text": response_text,
                 "response_blocks": [text_block(response_text)],
             }
-        if not _is_groundable_evidence(evidence, summary):
+        if not _is_groundable_evidence(evidence, summary, query.artifact):
             response_text = "The requested artifact did not provide verifiable evidence."
             return {
                 **base_update,
@@ -131,7 +141,7 @@ def result_qa_node(
             draft=state.grounded_answer,
             repair=None,
         )
-        response_text = _answer_text(answer)
+        response_text = _answer_text(answer, evidence)
         blocks = [text_block(response_text)]
         job = job_block_from_summary(summary)
         if job is not None:
@@ -225,12 +235,16 @@ def _validate_runtime_user(runtime: AgentToolRuntime, user_id: str) -> None:
         raise ResultAccessError("result runtime does not belong to the graph user")
 
 
-def _is_groundable_evidence(evidence: ToolResult, summary: JobSummary) -> bool:
+def _is_groundable_evidence(evidence: ToolResult, summary: JobSummary, requested_artifact: str) -> bool:
     return (
         evidence.tool is ToolName.QUERY_RESULT_EVIDENCE
         and evidence.ok
         and evidence.artifact in summary.artifacts
-        and evidence.checksum is not None
+        and bool(evidence.checksum)
+        and (evidence.artifact == requested_artifact or (
+            "/" not in requested_artifact
+            and PurePosixPath(evidence.artifact).name == requested_artifact
+        ))
     )
 
 
@@ -247,13 +261,14 @@ def _job_summary_text(summary: JobSummary) -> str:
     return text[:1200]
 
 
-def _answer_text(answer: GroundedAnswer) -> str:
+def _answer_text(answer: GroundedAnswer, evidence: ToolResult | None = None) -> str:
     lines: list[str] = []
-    length = 0
+    prefix = fallback_query_context(answer, evidence)
+    length = len(prefix)
     for claim in answer.claims:
         extra = len(claim.text) + (1 if lines else 0)
         if length + extra > 1200:
             break
         lines.append(claim.text)
         length += extra
-    return "\n".join(lines) or "The artifact did not contain evidence rows."
+    return prefix + ("\n".join(lines) or "The artifact did not contain evidence rows.")

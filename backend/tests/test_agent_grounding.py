@@ -103,3 +103,12 @@ def test_pipeline_repairs_once_then_falls_back_to_raw_evidence() -> None:
     )
     assert fallback.claims[0].text.startswith("验证未通过")
     assert fallback.claims[1].citation.row_ids == [7]
+
+
+def test_fallback_respects_claim_limit_at_maximum_query_rows() -> None:
+    evidence = _evidence(rows=[{"_row_id": i, "Gene": f"Gene{i}", "PearsonR": "0.71"}
+                              for i in range(1, 51)])
+    answer = GroundedAnswerPipeline().answer(evidence, _answer("GeneZ causes M0123", [1]))
+    assert len(answer.claims) == 50
+    assert answer.claims[0].text.startswith("验证未通过")
+    assert AnswerVerifier().verify(answer, [evidence]).verdict.value == "approved"

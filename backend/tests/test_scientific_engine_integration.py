@@ -13,6 +13,7 @@ from backend.app.main import PREFLIGHT
 from backend.app import job_execution
 from backend.app.job_store import JobStorageService, LocalJsonJobRepository
 from backend.app.models import AnalysisType, JobRecord, JobStatus
+from backend.tests.test_agent_artifact_e2e import assert_copilot_artifact
 
 
 def _job(tmp_path: Path, analysis_type: AnalysisType, params: dict[str, object]) -> JobRecord:
@@ -170,6 +171,7 @@ def test_worker_executes_real_deg_pipeline_and_writes_results(tmp_path: Path) ->
     assert {"gene_id", "log2FoldChange", "pvalue", "padj", "comparison"}.issubset(result.columns)
     assert (output / "plots" / "volcano").exists()
     _assert_strict_json_files(output)
+    assert_copilot_artifact(tmp_path / "copilot", AnalysisType.DEG, tables[0], "gene_id", "padj")
 
 
 def test_worker_executes_real_dem_pipeline_with_missing_values(tmp_path: Path) -> None:
@@ -187,6 +189,7 @@ def test_worker_executes_real_dem_pipeline_with_missing_values(tmp_path: Path) -
     assert {"metabolite_id", "vip", "log2FoldChange", "pvalue", "padj_bh", "dem_status"}.issubset(result.columns)
     assert np.isfinite(result.select_dtypes(include=[np.number]).to_numpy()).all()
     _assert_strict_json_files(output)
+    assert_copilot_artifact(tmp_path / "copilot", AnalysisType.DEM, tables[0], "metabolite_id", "padj_bh")
 
 
 def test_worker_executes_real_gma_pipeline_and_writes_network_tables(tmp_path: Path) -> None:
@@ -205,3 +208,4 @@ def test_worker_executes_real_gma_pipeline_and_writes_network_tables(tmp_path: P
     assert np.isfinite(result.select_dtypes(include=[np.number]).to_numpy()).all()
     assert any(output.rglob("*.png"))
     _assert_strict_json_files(output)
+    assert_copilot_artifact(tmp_path / "copilot", AnalysisType.GMA, network, "Gene", "EdgeWeight")

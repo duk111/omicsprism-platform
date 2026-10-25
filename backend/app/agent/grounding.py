@@ -1,18 +1,24 @@
 from __future__ import annotations
 
+import json
 from collections.abc import Callable
 from typing import Any
 
 from .schemas import Citation, GroundedAnswer, GroundedClaim, RunState, ToolName, ToolResult
-from .verifier import AnswerVerifier
-
-
-NO_EVIDENCE_TEXT = "没有满足阈值的证据"
-FALLBACK_TEXT = "验证未通过，以下为原始证据行，不作解释。"
+from .verifier import AnswerVerifier, FALLBACK_TEXT, NO_EVIDENCE_TEXT, raw_evidence_text
 
 
 class EvidenceGroundingError(ValueError):
     """草稿未绑定到本次工具返回的证据。"""
+
+
+def fallback_query_context(answer: GroundedAnswer, evidence: ToolResult | None) -> str:
+    """Render executed query conditions as data, never as model assertions."""
+    if evidence is None or not answer.claims or answer.claims[0].text != FALLBACK_TEXT:
+        return ""
+    conditions = json.dumps({"filters": evidence.filters, "sort": evidence.sort,
+                             "row_count": evidence.row_count, "truncated": evidence.truncated}, ensure_ascii=False)
+    return "查询条件：" + conditions[:400] + "\n"
 
 
 class EvidenceGrounder:
@@ -43,7 +49,7 @@ class EvidenceGrounder:
             return raw
         return GroundedAnswer(claims=[
             GroundedClaim(text=FALLBACK_TEXT, citation=raw.claims[0].citation),
-            *raw.claims,
+            *raw.claims[:49],
         ])
 
     def update_focus(self, state: RunState, answer: GroundedAnswer) -> None:
@@ -63,9 +69,7 @@ class EvidenceGrounder:
     ) -> GroundedAnswer:
         claims = []
         for row_id, row in indexed_rows:
-            fields = "; ".join(
-                f"{key}={value}" for key, value in row.items() if key != "_row_id"
-            )
+            fields = raw_evidence_text(row)
             claims.append(GroundedClaim(
                 text=fields,
                 citation=Citation(

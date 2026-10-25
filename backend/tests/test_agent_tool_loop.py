@@ -204,7 +204,7 @@ def test_same_tool_with_different_arguments_is_executed_again() -> None:
     ).invoke(_state(user_message="show job status"), _config())
     state = GraphState.model_validate(result)
 
-    assert state.response_text == "Compared both jobs."
+    assert json.loads(state.response_text) == {"job_id": "job-2", "artifacts": []}
     assert [request.arguments["job_id"] for request in requests] == ["job-1", "job-2"]
 
 
@@ -238,7 +238,7 @@ def test_repeated_deterministic_tool_result_uses_model_guidance() -> None:
     ).invoke(_state(user_message="show job status"), _config())
     state = GraphState.model_validate(result)
 
-    assert state.response_text == "The artifact is a volcano plot."
+    assert json.loads(state.response_text) == {"job_id": "job-1", "artifacts": ["volcano.png"]}
     assert len(requests) == 1
     assert len(model.contexts) == 3
     guidance = model.contexts[-1].tool_repetition_guidance
@@ -282,7 +282,7 @@ def test_repeated_transient_tool_failure_is_retried_without_extra_model_step() -
     ).invoke(_state(user_message="show result for GeneA"), _config())
     state = GraphState.model_validate(result)
 
-    assert state.response_text == "Recovered."
+    assert json.loads(state.response_text) == {"job_id": "job-1", "artifacts": ["volcano.png"]}
     assert len(requests) == 2
     assert state.step_budget.used_tool_calls == 2
     assert state.step_budget.used_model_steps == 3
@@ -330,7 +330,8 @@ def test_model_failure_retry_consumes_model_steps_and_then_continues() -> None:
     state = GraphState.model_validate(result)
 
     assert len(model.contexts) == 2
-    assert state.response_text == "recovered"
+    assert state.failure_code == "result_evidence_required"
+    assert state.grounded_answer is None
     assert state.step_budget.used_model_steps == 2
 
 
@@ -428,7 +429,7 @@ def test_list_jobs_request_forces_read_only_tool_before_answer() -> None:
     state = GraphState.model_validate(result)
 
     assert requests and requests[0].tool.value == "list_jobs"
-    assert state.response_text == "One job is available."
+    assert state.response_text == "Available jobs: job-list (succeeded)"
     assert len(model.contexts) == 2
 
 
