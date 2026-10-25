@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from hashlib import sha256
 
 from backend.app.agent.param_resolver import ScopeSpec
 from backend.app.agent.tools import AgentInputFile, AgentToolRuntime
@@ -150,6 +151,7 @@ def test_list_jobs_and_describe_artifacts_are_owner_bound() -> None:
 
 def test_query_artifact_uses_new_tool_name_without_changing_legacy_query() -> None:
     job = _job()
+    job.artifacts[0].checksum = "sha256:" + sha256(b"Gene,padj\nGeneA,0.01\n").hexdigest()
     runtime = AgentToolRuntime(
         "user-1",
         job_store=_Jobs([job]),

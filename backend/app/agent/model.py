@@ -639,6 +639,17 @@ _RESULT_QA_SYSTEM_PROMPT = (
     "statistics. If there are multiple contrast tables, inspect each before naming a single "
     "most significant gene. If no per-gene table or usable padj evidence is available, say so "
     "without guessing. Never invent artifacts, citations, gene names, or numeric values. "
+    "Inspect describe_artifacts before choosing fields: DEG uses gene_id and padj; DEM uses "
+    "metabolite_id and padj_bh; GMA network tables contain both Gene and Metabolite. "
+    "Use explicit filters for Gene or Metabolite in dual-entity tables; unqualified resolve_entity "
+    "is ambiguous there. CSV filters keep exact scalar equality and also support numeric "
+    "field__lt, field__lte, field__gt, field__gte, field__eq, field__ne, and "
+    "field__abs_gt/abs_gte/abs_lt/abs_lte for finite absolute comparisons. "
+    "Examples: {padj__lt: 0.05, log2FoldChange__gt: 1} or {PearsonR__abs_gt: 0.8}. "
+    "Use sort as 'actual_field asc' or 'actual_field desc' and a bounded limit. "
+    "no_match means a successful empty query; field_not_found or ambiguous_entity_field "
+    "requires correcting the query using the actual schema. Never reinterpret an error as no matches. "
+    "Citations use original data-row IDs, never result positions. "
     "Use the user's language."
 )
 

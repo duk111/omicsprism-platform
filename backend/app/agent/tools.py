@@ -9,6 +9,8 @@ from pathlib import Path, PurePosixPath
 from collections import defaultdict
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
+from decimal import Decimal, InvalidOperation
+from operator import eq, ne, lt, le, gt, ge
 from typing import Any, Protocol
 
 from ..models import AnalysisType, FileArtifactInfo, JobRecord
@@ -32,10 +34,19 @@ from .readonly_tools import (
 from .clarification_resolver import stable_option_id
 from .dataset_profile import DatasetProfile, MatrixProfile, MetadataProfile, build_dataset_profiles
 from .schemas import ToolName, ToolResult
+from .verifier import raw_evidence_text
 
 
 MAX_TOOL_ROWS = 50
 MAX_TOOL_BYTES = 32 * 1024
+
+_FILTER_OPERATORS = {"eq": eq, "ne": ne, "lt": lt, "lte": le, "gt": gt, "gte": ge}
+_ENTITY_ALIASES = {
+    AnalysisType.DEG: {"gene_id": "gene_id", "Gene": "gene_id", "gene": "gene_id"},
+    AnalysisType.DEM: {"metabolite_id": "metabolite_id", "Metabolite": "metabolite_id", "metabolite": "metabolite_id"},
+    AnalysisType.GMA: {"Gene": "Gene", "gene": "Gene", "gene_id": "Gene", "Metabolite": "Metabolite", "metabolite": "Metabolite", "metabolite_id": "Metabolite"},
+}
+_STAT_ALIASES = {"padj": "padj_bh"}
 
 _FIGURE_JSON_BY_ANALYSIS = {
     AnalysisType.DEG: frozenset({"volcano.json"}),
@@ -366,10 +377,18 @@ class AgentToolRuntime:
             format_name = "text"
         else:
             format_name = "binary"
-        if self.files is None or format_name not in {"csv", "json"} or (artifact.size_bytes and artifact.size_bytes > 256_000):
+        if self.files is None or format_name not in {"csv", "json"}:
             return ArtifactSchema(format=format_name)
         try:
-            text = self.files.read_artifact_text(job_id, artifact.path)
+            # A header/sample is sufficient, even for a large result. Reuse the
+            # storage stream; read_artifact_text(max_chars=...) reads the tail.
+            if format_name == "csv" and hasattr(self.files, "open_artifact"):
+                with self.files.open_artifact(job_id, artifact.path) as handle:
+                    text = handle.read(32_768).decode("utf-8-sig", errors="replace")
+            elif artifact.size_bytes > 256_000:
+                return ArtifactSchema(format=format_name)
+            else:
+                text = self.files.read_artifact_text(job_id, artifact.path)
         except Exception:
             return ArtifactSchema(format=format_name)
         if len(text) > 32_768:
@@ -481,6 +500,14 @@ class AgentToolRuntime:
         if artifact_info is None:
             return _tool_result(result_tool, rows=[], ok=False, error_code="not_found")
         text = self.files.read_artifact_text(job.id, artifact_info.path)
+        actual_checksum = hashlib.sha256(text.encode("utf-8")).hexdigest()
+        expected_checksum = artifact_info.checksum or "sha256:" + actual_checksum
+        # Storage stores bare digests; older contracts also use sha256: digests
+        # or opaque version tokens. Preserve the registered spelling in citations.
+        digest = (artifact_info.checksum or "").removeprefix("sha256:")
+        if re.fullmatch(r"[0-9a-fA-F]{64}", digest) and digest.lower() != actual_checksum:
+            return _tool_result(result_tool, rows=[], ok=False, error_code="checksum_mismatch",
+                                 artifact=artifact_info.path, checksum=artifact_info.checksum)
         if Path(artifact).suffix.lower() == ".json":
             return _query_json_evidence(
                 text=text,
@@ -493,34 +520,161 @@ class AgentToolRuntime:
                 resolve_entity=resolve_entity,
                 result_tool=result_tool,
             )
-        reader = csv.DictReader(io.StringIO(text))
+        reader = csv.DictReader(io.StringIO(text.removeprefix("\ufeff")))
+        headers = list(reader.fieldnames or [])
+        if not headers or len(set(headers)) != len(headers) or "_row_id" in headers:
+            return _tool_result(result_tool, rows=[], ok=False, error_code="invalid_schema",
+                                artifact=artifact_info.path, checksum=expected_checksum)
         rows = [
             {"_row_id": row_id, **{str(key): value for key, value in row.items() if key is not None}}
             for row_id, row in enumerate(reader, start=1)
         ]
-        effective_filters = dict(filters or {})
-        if resolve_entity:
-            effective_filters.setdefault("Gene", resolve_entity)
-        rows = [row for row in rows if all(str(row.get(key, "")) == str(value) for key, value in effective_filters.items())]
-        if sort:
-            sort_field, _, direction = sort.partition(" ")
-            reverse = direction.strip().lower() == "desc"
-            if not all(sort_field in row for row in rows):
-                return _tool_result(result_tool, rows=[], ok=False, error_code="invalid_sort")
-            rows.sort(key=lambda row: _sort_value(row.get(sort_field)), reverse=reverse)
+        try:
+            effective_filters, effective_sort = _normalize_csv_query(
+                job.analysis_type, headers, filters, sort, resolve_entity,
+            )
+        except ValueError as exc:
+            return _tool_result(result_tool, rows=[], ok=False, error_code=str(exc),
+                                artifact=artifact_info.path, checksum=expected_checksum)
+        rows = [row for row in rows if _row_matches_filters(row, effective_filters)]
+        if effective_sort:
+            sort_field, direction = effective_sort
+            rows = _sort_csv_rows(rows, sort_field, descending=direction == "desc")
         max_rows = min(MAX_TOOL_ROWS, max(1, int(limit or MAX_TOOL_ROWS)))
         selected = rows[:max_rows]
+        # The existing GroundedClaim contract caps each verbatim claim at 1000
+        # characters. Never shorten cells or silently skip a ranked source row.
+        if any(len(raw_evidence_text(row)) > 1000 for row in selected):
+            result = _tool_result(result_tool, rows=[], ok=False,
+                                 artifact=artifact_info.path, checksum=expected_checksum,
+                                 filters=effective_filters,
+                                 sort=(f"{effective_sort[0]} {effective_sort[1]}" if effective_sort else None),
+                                 error_code="result_exceeds_response_limit")
+            result.row_count = len(rows)
+            result.truncated = True
+            return result
         result = _tool_result(
             result_tool,
             rows=selected,
             artifact=artifact_info.path,
-            checksum=artifact_info.checksum or "sha256:" + hashlib.sha256(text.encode("utf-8")).hexdigest(),
+            checksum=expected_checksum,
             filters=effective_filters,
-            sort=sort,
+            sort=(f"{effective_sort[0]} {effective_sort[1]}" if effective_sort else None),
         )
         result.row_count = len(rows)
         result.truncated = result.truncated or len(selected) < len(rows)
+        if not rows:
+            result.error_code = "no_match"
         return result
+
+
+def _csv_field(name: str, headers: Sequence[str], analysis_type: AnalysisType) -> str:
+    if name == "_row_id":
+        raise ValueError("field_not_found")
+    if name in headers:
+        return name
+    aliases = _ENTITY_ALIASES[analysis_type]
+    target = aliases.get(name)
+    candidates = [field for field in headers if target and aliases.get(field) == target]
+    if analysis_type is AnalysisType.DEM and name in _STAT_ALIASES:
+        candidates = [field for field in headers if field == _STAT_ALIASES[name]]
+    if len(candidates) != 1:
+        raise ValueError("field_not_found")
+    return candidates[0]
+
+
+def _normalize_csv_query(
+    analysis_type: AnalysisType,
+    headers: Sequence[str],
+    filters: Mapping[str, Any] | None,
+    sort: str | None,
+    resolve_entity: str | None,
+) -> tuple[dict[str, Any], tuple[str, str] | None]:
+    if not _valid_json_filters(filters):
+        raise ValueError("invalid_filter")
+    normalized: dict[str, Any] = {}
+    for key, value in (filters or {}).items():
+        name, separator, operation = key.rpartition("__")
+        if not separator:
+            name, operation = key, ""
+        else:
+            comparison = operation.removeprefix("abs_")
+            if (comparison not in _FILTER_OPERATORS
+                    or (operation.startswith("abs_") and comparison not in {"lt", "lte", "gt", "gte"})
+                    or _finite_number(value) is None):
+                raise ValueError("invalid_filter")
+        actual = _csv_field(name, headers, analysis_type)
+        if actual in _ENTITY_ALIASES[analysis_type]:
+            if separator:
+                raise ValueError("invalid_filter")
+            value = str(value)
+        canonical = actual + ("__" + operation if separator else "")
+        if canonical in normalized and normalized[canonical] != value:
+            raise ValueError("invalid_filter")
+        normalized[canonical] = value
+    if resolve_entity is not None:
+        entities = [name for name in headers if name in _ENTITY_ALIASES[analysis_type]]
+        # An explicit entity equality can disambiguate a dual-entity GMA table.
+        specified = [name for name in entities if name in normalized]
+        choices = specified or entities
+        if not choices:
+            raise ValueError("entity_field_not_found")
+        if len(choices) != 1:
+            raise ValueError("ambiguous_entity_field")
+        entity_field = choices[0]
+        if entity_field in normalized and str(normalized[entity_field]) != resolve_entity:
+            raise ValueError("invalid_filter")
+        normalized[entity_field] = resolve_entity
+    normalized_sort = None
+    if sort is not None:
+        parts = sort.split()
+        if len(parts) not in {1, 2} or (len(parts) == 2 and parts[1].lower() not in {"asc", "desc"}):
+            raise ValueError("invalid_sort")
+        normalized_sort = (_csv_field(parts[0], headers, analysis_type), parts[1].lower() if len(parts) == 2 else "asc")
+    return normalized, normalized_sort
+
+
+def _finite_number(value: Any) -> Decimal | None:
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        number = Decimal(str(value))
+    except InvalidOperation:
+        return None
+    return number if number.is_finite() else None
+
+
+def _row_matches_filters(row: Mapping[str, Any], filters: Mapping[str, Any]) -> bool:
+    for key, expected in filters.items():
+        name, separator, operation = key.rpartition("__")
+        if not separator:
+            name, operation = key, "eq"
+        actual = row.get(name)
+        if separator or (isinstance(expected, (int, float)) and not isinstance(expected, bool)):
+            left, right = _finite_number(actual), _finite_number(expected)
+            if left is None or right is None:
+                return False
+            if operation.startswith("abs_"):
+                left, operation = left.copy_abs(), operation.removeprefix("abs_")
+            if not _FILTER_OPERATORS[operation](left, right):
+                return False
+        elif str(actual) != str(expected):
+            return False
+    return True
+
+
+def _sort_csv_rows(rows: list[dict[str, Any]], field: str, *, descending: bool) -> list[dict[str, Any]]:
+    # Sorting is stable: equal numbers and unavailable values retain source order.
+    # Unavailable cells remain verbatim in the returned rows, and always sort last.
+    numeric = [(row, _finite_number(row.get(field))) for row in rows]
+    if any(number is not None for _, number in numeric):
+        present = [(row, number) for row, number in numeric if number is not None]
+        present.sort(key=lambda pair: pair[1], reverse=descending)
+        return [row for row, _ in present] + [row for row, number in numeric if number is None]
+    missing = {"", "na", "n/a", "nan", "inf", "-inf", "+inf", "infinity", "-infinity", "+infinity"}
+    present_rows = [row for row in rows if row.get(field) is not None and str(row[field]).lower() not in missing]
+    present_rows.sort(key=lambda row: str(row[field]), reverse=descending)
+    return present_rows + [row for row in rows if row.get(field) is None or str(row[field]).lower() in missing]
 
 
 def _requested_fields(fields: Sequence[str] | None) -> list[str]:
@@ -753,7 +907,13 @@ def _tool_result(
             sort=sort,
             error_code=error_code,
         )
-        if not trimmed or len(result.model_dump_json().encode("utf-8")) <= MAX_TOOL_BYTES:
+        if trimmed and len(result.model_dump_json().encode("utf-8")) <= MAX_TOOL_BYTES:
+            return result
+        if not rows:
+            return result
+        if not trimmed:
+            result.ok = False
+            result.error_code = "result_exceeds_response_limit"
             return result
         trimmed.pop()
 

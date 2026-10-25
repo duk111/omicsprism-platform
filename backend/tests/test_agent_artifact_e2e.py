@@ -59,7 +59,7 @@ def persisted_runtime(tmp_path, analysis_type, content, artifact, owner="user-1"
     return AgentToolRuntime(user_id="user-1", job_store=jobs, files=files), job
 
 
-def invoke(runtime, job, *outputs):
+def invoke(runtime, job, *outputs, user_message="Show current job result"):
     registry = build_readonly_capability_registry(runtime)
     def execute(request, state):
         return registry.invoke(request.tool.value, request.arguments,
@@ -68,7 +68,7 @@ def invoke(runtime, job, *outputs):
                              job_reader_from_runtime(runtime), result_querier_from_runtime(runtime),
                              tool_executor=execute)
     result = graph.invoke(GraphState(thread_id="disk-e2e", user_id="user-1",
-                                    user_message="Show current job result",
+                                    user_message=user_message,
                                     current_job=JobRef(job_id=job.id, owner_id="user-1")),
                           {"configurable": {"thread_id": "disk-e2e"}})
     return GraphState.model_validate(result)

@@ -1,0 +1,23 @@
+{
+  "deg.all.csv": {
+    "source": ".pytest-agent-regression/test_worker_executes_real_deg_0/deg-output/salt_vs_control.all.csv",
+    "source_sha256": "97ff6e250ea6af948322ec87e5ef79b44b0aa8884a2f5a900710a5521c6a7289",
+    "fixture_sha256": "30ccd0253291ef4661c6ba815f9d2b295ed454d5c7826f0601b5f168aea0ede2",
+    "provenance": "Retained real Worker outputs from test_scientific_engine_integration.py; bytes sampled without synthesizing cells.",
+    "engine_commit": "a17ee2291789cdc0ee2db62baa0713106d521a12"
+  },
+  "dem.all.csv": {
+    "source": ".pytest-agent-regression/test_worker_executes_real_dem_0/dem-output/salt_vs_control.all.csv",
+    "source_sha256": "ee2f284fbe4a3b8f128d445f26345689d87b265effe337f80483fac693880262",
+    "fixture_sha256": "c68f048c8e648f1fc02d146bbfd4471d50c02a0b20db0c112342549a64aba9c9",
+    "provenance": "Retained real Worker outputs from test_scientific_engine_integration.py; bytes sampled without synthesizing cells.",
+    "engine_commit": "a17ee2291789cdc0ee2db62baa0713106d521a12"
+  },
+  "T02_High_Confidence_Network.csv": {
+    "source": ".pytest-agent-regression/test_worker_executes_real_gma_0/gma-output/T02_High_Confidence_Network.csv",
+    "source_sha256": "7bf8db729d01ecd353f3a511d55502421cfd30a688314d0e82e11d583fa7d578",
+    "fixture_sha256": "3e0abcbe262343c4dac045d98d076cffc9a8a9fb79de346d0d102cc795613c8f",
+    "provenance": "Retained real Worker outputs from test_scientific_engine_integration.py; bytes sampled without synthesizing cells.",
+    "engine_commit": "a17ee2291789cdc0ee2db62baa0713106d521a12"
+  }
+}

@@ -1,0 +1,9 @@
+Source,Target,Interaction,Gene,Metabolite,PearsonR,PearsonFDR,SpearmanRho,SpearmanFDR,MIScore,ScreenSupportCount,ModelSupportCount,RRARank,EdgeWeight,Sign,EdgeTier
+gene_0,metab_0,association,gene_0,metab_0,0.999999999999936,1.2001066806988093e-12,1.0,1.000088900582341e-12,0.0,3,2,1,0.9999999999999999,positive,high_confidence
+gene_10,metab_0,association,gene_10,metab_0,0.9999999999999587,1.2001066806988093e-12,1.0,1.000088900582341e-12,0.0,2,2,2,0.8916666666666666,positive,high_confidence
+gene_2,metab_0,association,gene_2,metab_0,1.0,1.2001066806988093e-12,1.0,1.000088900582341e-12,0.0,2,2,3,0.8166666666666667,positive,high_confidence
+gene_4,metab_0,association,gene_4,metab_0,0.9999999999998869,1.2001066806988093e-12,1.0,1.000088900582341e-12,0.0,2,1,5,0.5666666666666667,positive,high_confidence
+gene_6,metab_0,association,gene_6,metab_0,0.9999999999999964,1.2001066806988093e-12,1.0,1.000088900582341e-12,0.0,2,1,6,0.4916666666666666,positive,high_confidence
+gene_8,metab_0,association,gene_8,metab_0,0.9999999999978493,4.3014480866077065e-12,1.0,1.000088900582341e-12,0.0,2,1,7,0.41666666666666663,positive,high_confidence
+gene_0,metab_2,association,gene_0,metab_2,0.9999999999999031,1.2001066806988093e-12,1.0,1.000088900582341e-12,0.0,3,2,1,0.9999999999999999,positive,high_confidence
+gene_10,metab_2,association,gene_10,metab_2,0.9999999999999313,1.2001066806988093e-12,1.0,1.000088900582341e-12,0.0,2,2,2,0.8916666666666666,positive,high_confidence

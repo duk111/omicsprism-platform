@@ -45,11 +45,22 @@ class GetJobRequest(ReadOnlyToolModel):
 class QueryArtifactRequest(ReadOnlyToolModel):
     job_id: str = Field(min_length=1, max_length=200)
     artifact: str = Field(min_length=1, max_length=500)
-    filters: dict[str, ToolParamValue] = Field(default_factory=dict, max_length=8)
+    filters: dict[str, ToolParamValue] = Field(
+        default_factory=dict, max_length=8,
+        description=("CSV: field=value uses exact equality (numeric scalar values compare numerically). "
+                     "Finite numeric comparisons use field__lt/lte/gt/gte/eq/ne; "
+                     "absolute comparisons use field__abs_gt/abs_gte/abs_lt/abs_lte. "
+                     "JSON keeps exact equality only. Inspect describe_artifacts for actual fields."),
+    )
     field_path: str | None = Field(default=None, max_length=200)
     sort: str | None = Field(default=None, max_length=100)
     limit: int | None = Field(default=None, ge=1, le=50)
-    resolve_entity: str | None = Field(default=None, max_length=200)
+    resolve_entity: str | None = Field(
+        default=None, max_length=200,
+        description=("Exact entity ID in an unambiguous observed entity column. "
+                     "For GMA tables containing both Gene and Metabolite, use an explicit "
+                     "filters entry for the intended entity type instead."),
+    )
 
 
 class MetadataFieldDescription(ReadOnlyToolModel):

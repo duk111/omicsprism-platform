@@ -118,6 +118,11 @@ def _is_explicit_result_request(message: str) -> bool:
     return (
         _is_explicit_jobs_listing(message)
         or _is_explicit_job_status_request(message)
+        or bool(re.search(
+            r"(?:查询|查看)\s*(?:基因|代谢物)\s*[A-Za-z0-9_-]+.*(?:结果|差异分析)|"
+            r"(?:query|lookup)\s+(?:gene|metabolite)\s+[A-Za-z0-9_-]+.*(?:result|analysis)",
+            message, re.IGNORECASE,
+        ))
         or any(
             marker in text
             for marker in (
