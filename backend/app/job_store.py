@@ -332,7 +332,10 @@ class JobStorageService:
             return self._locks[job_id]
 
     def get_for_user(self, job_id: str, user_id: str) -> JobRecord:
-        return self.repository.get(job_id, user_id)
+        job = self.repository.get(job_id, user_id)
+        if job.deleted_at is not None:
+            raise HTTPException(status_code=404, detail="Job not found")
+        return job
 
     def get_internal(self, job_id: str) -> JobRecord:
         return self.repository.get_internal(job_id)

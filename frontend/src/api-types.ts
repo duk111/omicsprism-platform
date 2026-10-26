@@ -217,6 +217,7 @@ export interface AgentTurnCreateRequest {
   message: string;
   input_bundle_id?: string | null;
   focus_job_ids?: string[];
+  result_view?: ResultViewReference | null;
 }
 
 export interface AgentTurnListResponse {
@@ -631,4 +632,11 @@ export interface ValidationError {
   type: string;
   input?: unknown;
   ctx?: Record<string, unknown>;
+}
+
+export interface ResultViewReference {
+  job_id: string;
+  analysis_type: "DEG" | "DEM" | "GMA";
+  result_type: "overview" | "figure" | "table";
+  artifact?: string | null;
 }

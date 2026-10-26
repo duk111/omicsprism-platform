@@ -626,6 +626,10 @@ _ANALYSIS_SYSTEM_PROMPT = (
 )
 
 _RESULT_QA_SYSTEM_PROMPT = (
+    "result_view is a validated UI locator, not evidence. Query the selected table artifact "
+    "for view-specific questions. For figures, first discover the registered source data; "
+    "never infer scientific facts or a source-table mapping from a figure name. "
+    "If the source is ambiguous, ask which result table to query. "
     "You are the OmicsPrism result QA agent. Use only the supplied ownership-bound Job "
     "references, current user_message, recent_messages, in-scope Job IDs, and artifact index. "
     "Use tool_call with list_jobs, describe_artifacts, or query_artifact when evidence is "

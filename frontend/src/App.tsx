@@ -9,6 +9,8 @@ import { ANALYSIS_LABELS, STATUS_LABELS, formatDateTime } from "./app/jobs/jobUt
 import { useJobProgressSubscription } from "./app/jobs/useJobProgressSubscription";
 import { loadExample } from "./app/examples";
 import "./App.css";
+import "./copilot/result-copilot.css";
+import type { ResultCopilotContext } from "./copilot/CopilotPage";
 
 const CopilotPage = lazy(() => import("./copilot/CopilotPage"));
 const FigureViewer = lazy(() => import("./viewer/FigureViewer"));
@@ -145,7 +147,7 @@ function JobResultsRoute() {
   const navigate = useNavigate();
   const { jobId } = useParams();
   if (!jobId) return <Navigate to="/jobs" replace />;
-  return <ResultsPage jobId={jobId} onBack={() => navigate("/jobs")} onProgress={() => navigate(`/jobs/${encodeURIComponent(jobId)}`)} />;
+  return <ResultsPage key={jobId} jobId={jobId} onBack={() => navigate("/jobs")} onProgress={() => navigate(`/jobs/${encodeURIComponent(jobId)}`)} />;
 }
 
 /* ------------------------------------------------------------------ */
@@ -1221,6 +1223,23 @@ function ResultsPage({ jobId, onBack, onProgress }: { jobId: string; onBack: () 
   const [images, setImages] = useState<ImageInfo[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [selectedImage, setSelectedImage] = useState<ImageInfo | null>(null);
+  const [copilotOpened, setCopilotOpened] = useState(false);
+  const [copilotVisible, setCopilotVisible] = useState(false);
+  const [currentView, setCurrentView] = useState<Pick<ResultCopilotContext, "resultType" | "title" | "artifact">>({ resultType: "overview", title: "结果总览" });
+  const askCopilot = () => { setCopilotOpened(true); setCopilotVisible(true); };
+  const viewFigure = (image: ImageInfo) => {
+    setCurrentView({ resultType: "figure", title: figureTypeLabel(image.name), artifact: image.path });
+    setSelectedImage(image);
+  };
+
+  useEffect(() => {
+    if (!copilotVisible) return;
+    const close = (event: KeyboardEvent) => {
+      if (event.key === "Escape" && !selectedImage) setCopilotVisible(false);
+    };
+    document.addEventListener("keydown", close);
+    return () => document.removeEventListener("keydown", close);
+  }, [copilotVisible, selectedImage]);
 
   useEffect(() => {
     async function load() {
@@ -1268,7 +1287,7 @@ function ResultsPage({ jobId, onBack, onProgress }: { jobId: string; onBack: () 
   }
 
   return (
-    <main className="page">
+    <main className={`page results-page${copilotVisible ? " with-copilot" : ""}`}>
       <section className="panel">
         <div className="panel-head">
           <div>
@@ -1276,7 +1295,7 @@ function ResultsPage({ jobId, onBack, onProgress }: { jobId: string; onBack: () 
             <h1>{resultsTitle}</h1>
           </div>
           <div className="row-actions compact-actions">
-            <a className="secondary" href={publicUrl(`/copilot?job_id=${encodeURIComponent(jobId)}`)}>Ask Copilot</a>
+            <button className="secondary" type="button" disabled={!job} aria-expanded={copilotVisible} aria-controls="results-copilot" onClick={askCopilot}>询问 Copilot</button>
             {archiveUrl && <a className="primary" href={archiveUrl}>Download ZIP</a>}
             <button className="secondary" type="button" onClick={onProgress}>Log</button>
             <button className="secondary" type="button" onClick={onBack}>Back</button>
@@ -1288,6 +1307,23 @@ function ResultsPage({ jobId, onBack, onProgress }: { jobId: string; onBack: () 
           {files?.report_links?.interactive && <a className="secondary" href={assetUrl(files.report_links.interactive)}>Interactive report</a>}
         </div>
 
+        <label className="result-view-picker">当前结果
+          <select aria-label="当前结果" value={currentView.artifact ?? ""} onChange={event => {
+            const path = event.target.value;
+            const image = images.find(item => item.path === path);
+            const table = tableFiles.find(item => item.path === path);
+            if (image) viewFigure(image);
+            else {
+              setSelectedImage(null);
+              setCurrentView(table ? { resultType: "table", title: table.name, artifact: table.path } : { resultType: "overview", title: "结果总览" });
+            }
+          }}>
+            <option value="">结果总览</option>
+            {images.map(image => <option key={image.path} value={image.path}>{image.name}</option>)}
+            {tableFiles.filter(file => file.name.endsWith(".csv")).map(file => <option key={file.path} value={file.path}>{file.name}</option>)}
+          </select>
+        </label>
+
         {isCorrelation ? (
           <>
             {images.length > 0 && (
@@ -1295,7 +1331,7 @@ function ResultsPage({ jobId, onBack, onProgress }: { jobId: string; onBack: () 
                 <h2>Visualizations</h2>
                 <div className="result-figure-grid">
                   {images.map(img => (
-                    <button key={img.path} className="result-figure-card" type="button" onClick={() => setSelectedImage(img)}>
+                    <button key={img.path} className="result-figure-card" type="button" onClick={() => viewFigure(img)}>
                       <div className="result-figure-thumb">
                         <img src={assetUrl(img.thumbnail_url)} alt={img.name} loading="lazy" />
                       </div>
@@ -1338,7 +1374,7 @@ function ResultsPage({ jobId, onBack, onProgress }: { jobId: string; onBack: () 
                     <div className="result-accordion-body">
                       <div className="result-figure-grid">
                         {group.images.map(img => (
-                          <button key={img.path} className="result-figure-card" type="button" onClick={() => setSelectedImage(img)}>
+                          <button key={img.path} className="result-figure-card" type="button" onClick={() => viewFigure(img)}>
                             <div className="result-figure-thumb">
                               <img src={assetUrl(img.thumbnail_url)} alt={img.name} loading="lazy" />
                             </div>
@@ -1377,8 +1413,11 @@ function ResultsPage({ jobId, onBack, onProgress }: { jobId: string; onBack: () 
           </>
         )}
 
-        {selectedImage && <Suspense fallback={null}><FigureViewer image={selectedImage} onClose={() => setSelectedImage(null)} /></Suspense>}
+        {selectedImage && <Suspense fallback={null}><FigureViewer image={selectedImage} onClose={() => setSelectedImage(null)} onAskCopilot={askCopilot} /></Suspense>}
       </section>
+      {copilotOpened && job && <aside id="results-copilot" className="results-copilot" aria-label="结果 Copilot" hidden={!copilotVisible}>
+        <Suspense fallback={<p>Opening Copilot...</p>}><CopilotPage embedded context={{ jobId, analysisType: job.analysis_type, ...currentView }} onClose={() => setCopilotVisible(false)} /></Suspense>
+      </aside>}
     </main>
   );
 }

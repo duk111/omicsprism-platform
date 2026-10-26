@@ -24,6 +24,7 @@ from .schemas import (
     AgentTurnResponse,
     GroundedAnswer,
     RunFocus,
+    ResultViewReference,
     ToolName,
     ToolResult,
 )
@@ -745,6 +746,7 @@ class GraphState(BaseModel):
     current_job: JobRef | None = None
     recent_jobs: list[JobRef] = Field(default_factory=list, max_length=20)
     result_selection: ResultSelection | None = None
+    result_view: ResultViewReference | None = None
     result_context_start: datetime | None = None
     decision: AgentDecision | None = None
     response_text: str | None = Field(default=None, max_length=1200)

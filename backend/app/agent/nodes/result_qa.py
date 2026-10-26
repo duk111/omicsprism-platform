@@ -107,6 +107,12 @@ def result_qa_node(
             raise ResultAccessError("query_result action is missing its typed query")
 
         query = decision.result_query
+        from ..view_context import view_allows_query
+        if not view_allows_query(state, summary.job_id, query.artifact):
+            response_text = "Please select the result table you want to query, or switch to the result overview."
+            return {**base_update, "response_text": response_text,
+                    "response_blocks": [text_block(response_text)],
+                    "outcome": "unresolved", "failure_code": "result_evidence_required"}
         if query.artifact not in summary.artifacts:
             response_text = f"Artifact {query.artifact} is not available for Job {summary.job_id}."
             return {

@@ -14,6 +14,7 @@ from ..analysis_specs import (
 )
 from .dataset_profile import MetadataProfile
 from .param_resolver import ScopeSpec
+from .schemas import ResultViewReference
 
 
 ScalarValue = str | int | float | bool | None
@@ -288,6 +289,7 @@ class ResultQaModelContext(BaseModel):
     focus: ResultFocusContext = Field(default_factory=ResultFocusContext)
     job_artifacts: dict[str, list[str]] = Field(default_factory=dict, max_length=20)
     result_selection: dict[str, object] | None = None
+    result_view: ResultViewReference | None = None
     job_continuation: JobContinuationContext | None = None
     tool_repetition_guidance: str | None = Field(default=None, max_length=5000)
     tool_observations: list[ToolObservationContext] = Field(
@@ -490,6 +492,9 @@ class ContextAssembler:
             job_artifacts={key: value for key, value in fact_index.job_artifacts.items()
                            if not in_scope_job_ids or key in in_scope_job_ids},
             result_selection=selection.model_dump(mode="json", exclude={"owner_id"}) if selection is not None else None,
+            result_view=(getattr(state, "result_view", None)
+                         if getattr(getattr(state, "result_view", None), "job_id", None) == selected_id
+                         else None),
             job_continuation=(
                 JobContinuationContext(
                     job_id=str(getattr(continuation, "job_id", "")),

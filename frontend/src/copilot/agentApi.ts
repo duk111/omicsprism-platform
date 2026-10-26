@@ -16,6 +16,7 @@ import type {
   GraphConfirmationResumeRequest,
   GraphPendingInterrupt,
   GraphTurnResult,
+  ResultViewReference,
 } from "../api-types";
 
 const root = "/api/agent/threads";
@@ -51,9 +52,9 @@ export const agentApi = {
     apiFetchJson(`${root}/${encodeURIComponent(threadId)}/trace?limit=${limit}`) as Promise<AgentTraceEventListResponse>,
   listTurns: (threadId: string, after?: string) =>
     apiFetchJson(`${root}/${encodeURIComponent(threadId)}/turns${after ? `?after=${encodeURIComponent(after)}` : ""}`) as Promise<AgentTurnListResponse>,
-  createTurn: (threadId: string, message: string, inputBundleId: string | null, focusJobIds: string[]) =>
+  createTurn: (threadId: string, message: string, inputBundleId: string | null, focusJobIds: string[], resultView?: ResultViewReference) =>
     apiFetchJson(`${root}/${encodeURIComponent(threadId)}/turns`, {
-      ...json("POST", { message, input_bundle_id: inputBundleId, focus_job_ids: focusJobIds }),
+      ...json("POST", { message, input_bundle_id: inputBundleId, focus_job_ids: focusJobIds, ...(resultView ? { result_view: resultView } : {}) }),
       headers: { "Content-Type": "application/json", "Idempotency-Key": createClientId() },
     }) as Promise<AgentTurnResponse | GraphTurnResult>,
   resumeTurn: (threadId: string, checkpointTurnId: string, request: GraphResumeRequest) => {

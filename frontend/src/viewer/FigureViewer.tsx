@@ -7,6 +7,7 @@ import "./FigureViewer.css";
 interface Props {
   image: ImageInfo;
   onClose: () => void;
+  onAskCopilot?: () => void;
 }
 
 type DownloadFormat = "png" | "svg" | "pdf";
@@ -83,7 +84,7 @@ function buildInteractiveUrl(jobId: string, target: InteractiveTarget | null): s
   return `${publicUrl(`/interactive/${jobId}/${target.pageId}`)}${suffix}`;
 }
 
-export default function FigureViewer({ image, onClose }: Props) {
+export default function FigureViewer({ image, onClose, onAskCopilot }: Props) {
   const [zoom, setZoom] = useState(1);
   const [pan, setPan] = useState({ x: 0, y: 0 });
   const [isDragging, setIsDragging] = useState(false);
@@ -165,6 +166,7 @@ export default function FigureViewer({ image, onClose }: Props) {
 
   const handleKey = useCallback(
     (e: KeyboardEvent) => {
+      if (e.target instanceof HTMLElement && e.target.closest("input, textarea, select, [contenteditable='true']")) return;
       if (e.key === "Escape") onClose();
       if (e.key === "+" || e.key === "=") zoomIn();
       if (e.key === "-") zoomOut();
@@ -214,6 +216,7 @@ export default function FigureViewer({ image, onClose }: Props) {
             </button>
           </div>
           <div className="fv-toolbar-right">
+            {onAskCopilot && <button type="button" className="secondary" onClick={onAskCopilot}>询问 Copilot</button>}
             <button className="fv-close-btn" title="Close (Esc)" onClick={onClose}>
               <svg width="18" height="18" viewBox="0 0 18 18" fill="none"><path d="M4 4l10 10M14 4L4 14" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"/></svg>
             </button>

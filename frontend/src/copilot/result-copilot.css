@@ -1,0 +1,30 @@
+.results-page.with-copilot { padding-right: 496px; max-width: none; }
+.results-page > .panel { min-width: 0; }
+.results-copilot { position: fixed; inset: 70px 0 0 auto; width: 472px; z-index: 220; border-left: 1px solid #cbd8d2; box-shadow: -5px 0 24px #163a2314; background: white; }
+.results-copilot[hidden] { display: none; }
+.copilot-page.copilot-embedded { display: block; height: 100%; min-height: 0; }
+.copilot-embedded .conversation-panel { height: 100%; display: flex; flex-direction: column; min-height: 0; }
+.copilot-embedded .conversation-header { flex: 0 0 auto; padding: 12px 16px; }
+.copilot-embedded .conversation-header h2 { font-size: 18px; max-width: none; }
+.copilot-embedded .conversation-kicker { display: block; }
+.copilot-embedded .message-scroll { flex: 1; min-height: 0; padding: 16px; }
+.copilot-embedded .composer-zone { padding: 10px 12px 16px; }
+.copilot-embedded .copilot-empty { margin: 28px auto; }
+.copilot-embedded .copilot-empty h2 { font-size: 18px; }
+.result-copilot-context { display: grid; gap: 5px; padding: 12px 16px; border-bottom: 1px solid #d9dfdc; background: #f0f7f4; font-size: 13px; overflow-wrap: anywhere; }
+.result-copilot-context small { color: #65716c; font-size: 11px; line-height: 1.5; }
+.result-copilot-context code { font-size: 11px; }
+.context-suggestions { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 10px; }
+.context-suggestions button { padding: 6px 9px; border: 1px solid #cbd8d2; border-radius: 6px; background: #f4faf7; color: #17664d; text-align: left; font: inherit; font-size: 12px; }
+.result-view-picker { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; margin: 16px 0; }
+.result-view-picker select { max-width: 100%; min-height: 36px; padding: 6px; border: 1px solid #cbd8d2; border-radius: 4px; }
+.with-copilot .fv-overlay { right: 472px; }
+@media (max-width: 1100px) {
+  .results-page.with-copilot { padding-right: 20px; }
+  .results-copilot { width: min(472px, 100vw); }
+  .with-copilot .fv-overlay { right: 0; }
+}
+@media (max-width: 720px) {
+  .results-copilot { top: 58px; }
+  .copilot-embedded .connection-state { font-size: 11px; }
+}

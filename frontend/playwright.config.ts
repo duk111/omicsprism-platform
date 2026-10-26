@@ -2,6 +2,7 @@ import { defineConfig, devices } from "@playwright/test";
 
 export default defineConfig({
   testDir: "./e2e",
+  testIgnore: "result-copilot.spec.ts", // Dedicated config starts the real Scripted Model server.
   outputDir: "./test-results",
   reporter: "line",
   use: { baseURL: "http://127.0.0.1:4178", trace: "retain-on-failure" },

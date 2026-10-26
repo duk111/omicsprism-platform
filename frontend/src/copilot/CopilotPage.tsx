@@ -10,6 +10,21 @@ import { GraphInterruptPanel } from "./GraphInterruptPanel";
 import { MessageBlocks } from "./MessageBlocks";
 import { TracePanel } from "./TracePanel";
 import "./copilot.css";
+import type { AnalysisType } from "../api-types";
+
+export type ResultCopilotContext = {
+  jobId: string;
+  analysisType: AnalysisType;
+  resultType: "overview" | "figure" | "table";
+  title: string;
+  artifact?: string;
+};
+type CopilotProps = { context?: ResultCopilotContext; embedded?: boolean; onClose?: () => void };
+const RESULT_SUGGESTIONS: Record<AnalysisType, string[]> = {
+  deg: ["哪些基因差异最显著？", "当前结果中上调最明显的基因有哪些？"],
+  dem: ["哪些代谢物具有显著差异？", "当前结果中变化幅度最大的代谢物有哪些？"],
+  gma: ["当前结果中有哪些重要的基因—代谢物关联？", "当前结果中哪些网络模块值得关注？"],
+};
 
 const INPUT_FIELDS = ["counts", "metadata", "transcriptome", "metabolome", "group"] as const;
 type InputField = typeof INPUT_FIELDS[number];
@@ -41,9 +56,14 @@ function loadPinnedThreadIds(): string[] {
 type Attachment = { id: string; file: File; field: InputField };
 type PendingGraph = GraphPendingInterrupt;
 
-export default function CopilotPage() {
-  const [searchParams, setSearchParams] = useSearchParams();
-  const focusJobId = searchParams.get("job_id");
+export default function CopilotPage(props: CopilotProps) {
+  const [searchParams] = useSearchParams();
+  const focusJobId = props.context?.jobId ?? searchParams.get("job_id");
+  // Job changes dispose the old transport and all of its asynchronous state.
+  return <CopilotConversation key={focusJobId ?? "general"} {...props} focusJobId={focusJobId} />;
+}
+
+function CopilotConversation({ context, embedded = false, onClose, focusJobId }: CopilotProps & { focusJobId: string | null }) {
   const [threads, setThreads] = useState<AgentThreadResponse[]>([]);
   const [activeId, setActiveId] = useState<string | null>(null);
   const [run, setRun] = useState<AgentRunResponse | null>(null);
@@ -71,6 +91,8 @@ export default function CopilotPage() {
   const initialized = useRef(false);
   const fileInput = useRef<HTMLInputElement>(null);
   const messageEnd = useRef<HTMLDivElement>(null);
+  const activeThreadRef = useRef(activeId);
+  activeThreadRef.current = activeId;
 
   const refreshTrace = useCallback(async (threadId: string) => {
     setTraceLoading(true);
@@ -93,6 +115,7 @@ export default function CopilotPage() {
       agentApi.listJobWaits(threadId),
       agentApi.listTrace(threadId),
     ]);
+    if (activeThreadRef.current !== threadId) return;
     setRun(detail.run); setMessages(messageList.messages); setTurns(turnList.turns);
     setPendingGraph(interrupt); setJobWaits(waitList.waits);
     setTraceEvents(traceList.events);
@@ -103,9 +126,8 @@ export default function CopilotPage() {
     setThreads(current => [created, ...current.filter(item => item.thread_id !== created.thread_id)]);
     setPendingGraph(null); setGraphBusy(false); setJobWaits([]); setTraceEvents([]);
     setActiveId(created.thread_id); setRailOpen(false); setNotice(null);
-    if (focusIds.length) setSearchParams({}, { replace: true });
     return created.thread_id;
-  }, [setSearchParams]);
+  }, []);
 
   useEffect(() => {
     if (initialized.current) return;
@@ -133,7 +155,13 @@ export default function CopilotPage() {
     let fallback: number | undefined;
     const source = new EventSource(agentApi.streamUrl(activeId), { withCredentials: true });
     const accept = (event: MessageEvent) => {
-      const payload = JSON.parse(event.data) as AgentStreamEvent;
+      if (activeThreadRef.current !== activeId) return;
+      let payload: AgentStreamEvent;
+      try {
+        payload = JSON.parse(event.data) as AgentStreamEvent;
+        if (!payload || !["message.created", "job.updated", "turn.updated", "interrupt.updated"].includes(payload.event_type)) throw new Error("Unknown Copilot event");
+      }
+      catch { setNotice("Could not read a Copilot update. Reconnecting..."); source.onerror?.(new Event("error")); return; }
       setConnection("live");
       if (payload.event_type === "message.created") setMessages(current => upsert(current, payload.data as AgentMessageResponse, "message_id"));
       else if (payload.event_type === "job.updated") setJobWaits(current => upsert(current, payload.data as AgentJobWaitResponse, "wait_id"));
@@ -152,7 +180,7 @@ export default function CopilotPage() {
     source.addEventListener("job.updated", accept);
     source.addEventListener("turn.updated", accept);
     source.addEventListener("interrupt.updated", accept);
-    source.onopen = () => setConnection("live");
+    source.onopen = () => { setConnection("live"); if (fallback) { window.clearInterval(fallback); fallback = undefined; } };
     source.onerror = () => {
       setConnection(navigator.onLine ? "recovering" : "offline");
       if (!fallback) fallback = window.setInterval(() => recover(activeId).catch(() => setConnection("offline")), 3000);
@@ -165,7 +193,7 @@ export default function CopilotPage() {
   const pendingTurn = turns.some(turn => turn.status === "queued" || turn.status === "running");
   const pendingTurnRecord = turns.find(turn => turn.status === "queued" || turn.status === "running");
   const activeJobWaits = jobWaits.filter(wait => wait.wait_status === "waiting" || wait.wait_status === "resume_queued");
-  const focusIds = focusJobId ? [focusJobId] : run?.focus.in_scope_job_ids ?? [];
+  const focusIds = context ? [context.jobId] : run?.focus.in_scope_job_ids ?? (focusJobId ? [focusJobId] : []);
   const checkpointLabel = run ? `Version ${run.version}` : "Ready";
   const visibleThreads = useMemo(() => [...threads].sort((left, right) => {
     const leftPinned = pinnedThreadIds.includes(left.thread_id) ? 1 : 0;
@@ -176,12 +204,17 @@ export default function CopilotPage() {
 
   async function send() {
     const text = draft.trim();
-    if (!text || sending || pendingTurn) return;
+    if (!text || sending || pendingTurn || loading) return;
     setSending(true); setNotice(null);
     try {
       const threadId = activeId || await createThread(focusJobId ? [focusJobId] : []);
       const bundle = attachments.length ? await agentApi.uploadBundle(threadId, attachments) : null;
-      const result = await agentApi.createTurn(threadId, text, bundle?.bundle_id ?? null, focusIds);
+      const result = await agentApi.createTurn(threadId, text, bundle?.bundle_id ?? null, focusIds, context ? {
+        job_id: context.jobId,
+        analysis_type: context.analysisType.toUpperCase() as "DEG" | "DEM" | "GMA",
+        result_type: context.resultType,
+        artifact: context.artifact ?? null,
+      } : undefined);
       setDraft(""); setAttachments([]);
       if (isGraphTurnResult(result)) applyGraphResult(result);
       else setTurns(current => upsert(current, result, "turn_id"));
@@ -297,7 +330,8 @@ export default function CopilotPage() {
   const activeThread = threads.find(item => item.thread_id === activeId);
   const statusLabel = useMemo(() => connection === "live" ? "Live" : connection === "offline" ? "Offline" : "Reconnecting", [connection]);
 
-  return <main className="copilot-page">
+  return <div className={`copilot-page${embedded ? " copilot-embedded" : ""}`}>
+    {!embedded && <>
     <button className="copilot-rail-toggle" type="button" aria-label="Open conversations" onClick={() => setRailOpen(true)}><Menu size={20} /></button>
     <aside className={`copilot-rail${railOpen ? " rail-open" : ""}`} aria-label="Conversations">
       <div className="rail-heading"><div><span>Workspace</span><h1>Copilot</h1></div><button type="button" title="Close conversations" aria-label="Close conversations" onClick={() => setRailOpen(false)}><X size={19} /></button></div>
@@ -330,8 +364,16 @@ export default function CopilotPage() {
       })}</div>
     </aside>
 
+    </>}
     <section className="conversation-panel">
-      <header className="conversation-header"><div><span className="conversation-kicker">OmicsPrism Copilot</span><h2>{activeThread?.title || "New conversation"}</h2></div><div className={`connection-state ${connection}`} title="Connection status">{connection === "live" ? <Wifi size={15} /> : <WifiOff size={15} />}{statusLabel}</div></header>
+      <header className="conversation-header"><div><span className="conversation-kicker">OmicsPrism Copilot</span><h2>{embedded ? "询问 Copilot" : activeThread?.title || "New conversation"}</h2></div><div className={`connection-state ${connection}`} title="Connection status">{connection === "live" ? <Wifi size={15} /> : <WifiOff size={15} />}{statusLabel}</div>{onClose && <button type="button" className="icon-button" aria-label="关闭 Copilot" onClick={onClose}><X size={19} /></button>}</header>
+      {context && <div className="result-copilot-context" aria-label="当前结果上下文">
+        <strong>当前分析：{context.analysisType.toUpperCase()}</strong>
+        <span>当前任务：{context.jobId}</span>
+        <span>当前结果：{context.title}</span>
+        {context.artifact && <code>{context.artifact}</code>}
+        <small>关闭后保留对话；刷新或离开页面后重新打开将新建对话。历史对话可在 Copilot 页面查看。</small>
+      </div>}
       <div className="message-scroll" aria-live="polite">
         {loading ? <EmptyState loading /> : messages.length === 0 ? <EmptyState /> : messages.map(message => <article className={`copilot-message ${message.role}`} key={message.message_id}><div className="message-author">{message.role === "assistant" ? <Bot size={16} /> : null}{message.role === "assistant" ? "Copilot" : "You"}</div><div className="message-body"><MessageBlocks message={message} onRetry={() => setDraft(latestUserText(messages))} /></div></article>)}
         {pendingGraph && <GraphInterruptPanel interrupt={pendingGraph.interrupt} busy={graphBusy} onResume={request => void resumeGraph(request)} />}
@@ -341,14 +383,15 @@ export default function CopilotPage() {
         <div ref={messageEnd} />
       </div>
       <div className="composer-zone">
+        {context && <div className="context-suggestions" aria-label="建议问题">{RESULT_SUGGESTIONS[context.analysisType].map(question => <button key={question} type="button" onClick={() => setDraft(question)}>{question}</button>)}</div>}
         {attachments.length > 0 && <div className="attachment-tray">{attachments.map(item => <div className="attachment-item" key={item.id}><FilePlus2 size={16} /><span title={item.file.name}>{item.file.name}</span><label>Role<select value={item.field} title={INPUT_FIELD_DESCRIPTIONS[item.field]} aria-label={`Role for ${item.file.name}`} onChange={event => setAttachments(current => current.map(entry => entry.id === item.id ? { ...entry, field: event.target.value as InputField } : entry))}>{INPUT_FIELDS.map(field => <option key={field} value={field}>{INPUT_FIELD_LABELS[field]}</option>)}</select><span className="data-type-help attachment-help" tabIndex={0} aria-label={`About ${INPUT_FIELD_LABELS[item.field]}`}><CircleHelp size={14} aria-hidden="true" /><span className="data-type-tooltip" role="tooltip">{INPUT_FIELD_DESCRIPTIONS[item.field]}</span></span><ChevronDown size={14} /></label><button type="button" aria-label={`Remove ${item.file.name}`} onClick={() => setAttachments(current => current.filter(entry => entry.id !== item.id))}><X size={15} /></button></div>)}</div>}
-        <div className="composer"><input ref={fileInput} hidden type="file" multiple accept=".csv,text/csv" onChange={event => { addFiles(event.target.files); event.target.value = ""; }} /><button type="button" className="icon-button" title="Attach CSV files" aria-label="Attach CSV files" onClick={() => fileInput.current?.click()}><Paperclip size={19} /></button><textarea value={draft} rows={1} placeholder="Ask about an analysis or result" aria-label="Message Copilot" onChange={event => setDraft(event.target.value)} onKeyDown={event => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); void send(); } }} />{pendingTurn ? <button type="button" className="stop-composer-button" aria-label="Stop request" title="Stop request" disabled={canceling || !pendingTurnRecord} onClick={() => void cancelPendingTurn()}><Square size={17} fill="currentColor" /></button> : <button type="button" className="send-button" aria-label="Send message" title="Send message" disabled={!draft.trim() || sending} onClick={() => void send()}><Send size={18} /></button>}</div>
+        <div className="composer"><input ref={fileInput} hidden type="file" multiple accept=".csv,text/csv" onChange={event => { addFiles(event.target.files); event.target.value = ""; }} /><button type="button" className="icon-button" title="Attach CSV files" aria-label="Attach CSV files" onClick={() => fileInput.current?.click()}><Paperclip size={19} /></button><textarea value={draft} rows={1} placeholder="Ask about an analysis or result" aria-label="Message Copilot" onChange={event => setDraft(event.target.value)} onKeyDown={event => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); void send(); } }} />{pendingTurn ? <button type="button" className="stop-composer-button" aria-label="Stop request" title="Stop request" disabled={canceling || !pendingTurnRecord} onClick={() => void cancelPendingTurn()}><Square size={17} fill="currentColor" /></button> : <button type="button" className="send-button" aria-label="Send message" title="Send message" disabled={!draft.trim() || sending || loading} onClick={() => void send()}><Send size={18} /></button>}</div>
       </div>
     </section>
 
-    <aside className="copilot-context" aria-label="Conversation context"><section><span className="context-label">Checkpoint</span><strong>{checkpointLabel}</strong><p>Graph checkpoint</p></section><section><span className="context-label">Focused jobs</span>{focusIds.length ? <ul>{focusIds.map(id => <li key={id}><a href={`/jobs/${encodeURIComponent(id)}`}>{id.slice(0, 8)}...</a></li>)}</ul> : <p>No job selected</p>}</section><section><span className="context-label">Input roles</span><p>Assign each CSV its role before sending. Copilot validates the files before confirmation.</p></section><TracePanel events={traceEvents} loading={traceLoading} onRefresh={() => { if (activeId) void refreshTrace(activeId); }} /></aside>
-    {railOpen && <button className="rail-backdrop" type="button" aria-label="Close conversations" onClick={() => setRailOpen(false)} />}
-  </main>;
+    {!embedded && <aside className="copilot-context" aria-label="Conversation context"><section><span className="context-label">Checkpoint</span><strong>{checkpointLabel}</strong><p>Graph checkpoint</p></section><section><span className="context-label">Focused jobs</span>{focusIds.length ? <ul>{focusIds.map(id => <li key={id}><a href={`/jobs/${encodeURIComponent(id)}`}>{id.slice(0, 8)}...</a></li>)}</ul> : <p>No job selected</p>}</section><section><span className="context-label">Input roles</span><p>Assign each CSV its role before sending. Copilot validates the files before confirmation.</p></section><TracePanel events={traceEvents} loading={traceLoading} onRefresh={() => { if (activeId) void refreshTrace(activeId); }} /></aside>}
+    {!embedded && railOpen && <button className="rail-backdrop" type="button" aria-label="Close conversations" onClick={() => setRailOpen(false)} />}
+  </div>;
 }
 
 function JobWaitingState({ wait, canceling, onCancel }: { wait: AgentJobWaitResponse; canceling: boolean; onCancel: () => void }) {

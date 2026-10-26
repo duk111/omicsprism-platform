@@ -509,6 +509,8 @@ def create_agent_router(
             ))
         focus_job_ids = payload.focus_job_ids or focus.in_scope_job_ids
         _require_owned_jobs(ctx, focus_job_ids, user_id)
+        from .view_context import validate_result_view
+        result_view = validate_result_view(ctx.job_store, payload.result_view, focus_job_ids, user_id)
         turn_id = f"turn-{uuid4()}"
         trace_id = f"trace-{uuid4()}"
         turn_input = AgentTurnInput(
@@ -518,6 +520,7 @@ def create_agent_router(
             # Only explicit focus changes belong to this turn. An empty list
             # tells the runtime to retain the checkpoint focus.
             focus_job_ids=list(payload.focus_job_ids),
+            result_view=result_view,
         )
         now = datetime.now(timezone.utc)
         turn = AgentTurnRecord(

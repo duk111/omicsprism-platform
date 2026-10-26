@@ -7,6 +7,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from .graph import DatasetProfileRef, GraphResumeRequest, GraphState
 from .job_events import AgentJobCompletionEvent
+from .schemas import ResultViewReference
 
 
 class AgentTurnInput(BaseModel):
@@ -19,6 +20,7 @@ class AgentTurnInput(BaseModel):
     dataset_profiles: list[DatasetProfileRef] = Field(default_factory=list, max_length=6)
     # An empty list means that the existing thread focus remains unchanged.
     focus_job_ids: list[str] = Field(default_factory=list, max_length=20)
+    result_view: ResultViewReference | None = None
 
     @model_validator(mode="after")
     def _profiles_require_bundle_reference(self) -> "AgentTurnInput":

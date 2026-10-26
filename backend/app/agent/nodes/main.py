@@ -829,6 +829,11 @@ def _execute_tool_request(
         if (state.focus.in_scope_job_ids and job_id is not None
                 and job_id not in state.focus.in_scope_job_ids):
             raise ValueError("requested Job is outside the current focus")
+        from ..view_context import view_allows_query
+        if request.tool is ToolName.QUERY_ARTIFACT and not view_allows_query(
+            state, job_id, request.arguments.get("artifact")
+        ):
+            raise ValueError("requested artifact is outside the selected result table")
         result = tool_executor(request, state)
         summary = _serialize_tool_result(result)
         evidence = _as_grounding_evidence(result)

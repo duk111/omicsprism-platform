@@ -229,10 +229,20 @@ class AgentThreadListResponse(ContractModel):
     threads: list[AgentThreadResponse]
     next_cursor: str | None = None
 
+class ResultViewReference(ContractModel):
+    """A UI locator, never scientific evidence or a storage path to open."""
+
+    job_id: str = Field(min_length=1, max_length=200)
+    analysis_type: Literal["DEG", "DEM", "GMA"]
+    result_type: Literal["overview", "figure", "table"]
+    artifact: str | None = Field(default=None, min_length=1, max_length=500)
+
+
 class AgentTurnCreateRequest(ContractModel):
     message: str = Field(min_length=1, max_length=4000)
     input_bundle_id: str | None = None
     focus_job_ids: list[str] = Field(default_factory=list, max_length=20)
+    result_view: ResultViewReference | None = None
 
 class AgentTurnRecord(ContractModel):
     turn_id: str = Field(min_length=1)

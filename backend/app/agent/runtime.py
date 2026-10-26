@@ -322,6 +322,13 @@ class AgentRuntime:
                 recent_jobs = [item for item in recent_jobs if item.job_id != job_id]
                 recent_jobs.append(JobRef(job_id=job_id, owner_id=item.user_id))
         reset_at = datetime.now(timezone.utc) if switched_focus else current.result_context_start
+        from .view_context import validate_result_view
+        result_view = validate_result_view(
+            self.context.job_store, turn_input.result_view, focus.in_scope_job_ids, item.user_id
+        ) if turn_input.result_view is not None else None
+        switched_view = result_view != current.result_view
+        if switched_view:
+            focus = focus.model_copy(update={"resolved_entities": {}, "last_citation": None})
         job_store = getattr(self.context, "job_store", None)
         read_owned = getattr(job_store, "get_for_user", None)
         if callable(read_owned):
@@ -374,7 +381,8 @@ class AgentRuntime:
                 else None if turn_input.focus_job_ids
                 else current.current_job
             ),
-            "result_selection": None if switched_focus else current.result_selection,
+            "result_selection": None if switched_focus or switched_view else current.result_selection,
+            "result_view": result_view,
             "result_context_start": reset_at,
             "recent_messages": build_recent_messages([])[0] if switched_focus else current.recent_messages,
             "conversation_summary": None if switched_focus else current.conversation_summary,
