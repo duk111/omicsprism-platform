@@ -28,6 +28,7 @@ from ..graph import (
     ToolObservation,
 )
 from ..context import ContextAssembler, AgentControlContext
+from ..result_context import is_result_followup, selection_from_evidence, selection_matches_scope
 from ..schemas import AgentEvidenceBlock, GroundedAnswer, ToolName, ToolResult
 from ..message_blocks import text_block
 from ..trace import TraceRecorder, stable_hash
@@ -79,6 +80,95 @@ def _run_agent_loop(
         latest_evidence: ToolResult | None = None
         latest_fact: tuple[ToolName, str] | None = None
         result_scope = role == AgentRole.RESULT_QA or AgentRole.RESULT_QA in state.visited_roles
+        if role == AgentRole.RESULT_QA and is_result_followup(state.user_message) and state.result_selection is None:
+            return _ask_user_update(
+                "没有可验证的上轮查询对象，请指定 Job、结果表或基因/代谢物。", budget, observations,
+                outcome="unresolved", failure_code="result_evidence_required",
+            )
+        if (
+            role == AgentRole.RESULT_QA
+            and state.result_selection is not None
+            and is_result_followup(state.user_message)
+            and tool_executor is not None
+        ):
+            selection = state.result_selection
+            if not selection_matches_scope(state):
+                return {**_ask_user_update(
+                    "请先指定当前 Job 和要继续查询的结果。", budget, observations,
+                    outcome="unresolved", failure_code="route_ambiguous",
+                ), "result_selection": None}
+            if budget.used_tool_calls >= budget.max_tool_calls:
+                return _ask_user_update(_budget_question(observations), budget, observations)
+            request = ToolCallRequest(
+                tool=ToolName.QUERY_ARTIFACT,
+                arguments=dict(selection.arguments),
+            )
+            summary, tool_outcome, retryable, tool_error_code, latest_evidence = _execute_tool_request(
+                request, state, tool_executor, trace_recorder,
+            )
+            observations.append(ToolObservation(
+                tool=request.tool,
+                call_id="followup-requery",
+                arguments=dict(request.arguments),
+                assistant_message={},
+                summary=summary,
+                arguments_hash=_arguments_hash(request.arguments),
+                outcome=tool_outcome,
+                retryable=retryable,
+                retry_count=0,
+            ))
+            budget = _advance_tool_budget(budget)
+            actual_ids = ([int(row.get("_row_id", index)) for index, row in enumerate(latest_evidence.rows, 1)]
+                          if latest_evidence is not None else [])
+            if (latest_evidence is None or tool_outcome == "failed"
+                    or latest_evidence.checksum != selection.checksum
+                    or latest_evidence.artifact != selection.artifact
+                    or actual_ids != selection.row_ids):
+                return {**_ask_user_update(
+                    "原结果已变化、已删除或无权限访问，无法继续引用。请重新选择 Job 和结果。",
+                    budget, observations, outcome="unresolved", failure_code="result_evidence_required",
+                ), "result_selection": None}
+            # Requery the original top-k before comparing: applying a new sort
+            # to the entire artifact would silently change what 'among them' means.
+            selected_ids = selection.selected_row_ids or selection.row_ids
+            rows = [row for index, row in enumerate(latest_evidence.rows, 1)
+                    if int(row.get("_row_id", index)) in selected_ids]
+            text = state.user_message.casefold()
+            fields = list(dict.fromkeys(key for row in rows for key in row if key != "_row_id"))
+            matched_fields = [field for field in fields if field.casefold() in text]
+            maximum = bool(re.search(r"最大|最高|largest|highest|maximum|\bmax\b", text))
+            minimum = bool(re.search(r"最小|最低|smallest|lowest|minimum|\bmin\b", text))
+            if (maximum or minimum) and len(matched_fields) == 1:
+                from ..tools import _finite_number
+                field = matched_fields[0]
+                numeric = [(row, _finite_number(row.get(field))) for row in rows]
+                available = [(row, value) for row, value in numeric if value is not None]
+                if not available:
+                    return _ask_user_update(
+                        "上轮选择的记录中没有可比较的有限数值。", budget, observations,
+                        outcome="unresolved", failure_code="result_evidence_required",
+                    )
+                extreme = (max if maximum else min)(value for _, value in available)
+                rows = [row for row, value in available if value == extreme]
+            elif maximum or minimum:
+                return _ask_user_update("请指定要比较的结果字段。", budget, observations,
+                                        outcome="unresolved", failure_code="route_ambiguous")
+            elif re.search(r"它|\bits\b", text) and len(rows) != 1:
+                return _ask_user_update("上轮包含多个记录，请指定基因或代谢物。", budget, observations,
+                                        outcome="unresolved", failure_code="route_ambiguous")
+            fresh = latest_evidence.model_copy(update={"rows": rows})
+            answer = pipeline.answer(fresh)
+            response_text = _grounded_answer_text(answer, fresh)
+            return {
+                "decision": AgentDecision(action="grounded_answer", grounded_answer=answer),
+                "grounded_answer": answer, "response_text": response_text,
+                "response_blocks": [text_block(response_text), AgentEvidenceBlock(claims=answer.claims)],
+                "result_selection": selection.model_copy(update={
+                    "selected_row_ids": [int(row["_row_id"]) for row in rows],
+                }),
+                "step_budget": budget, "tool_observations": observations[-12:],
+                "outcome": "completed", "failure_code": None,
+            }
         while True:
             if (
                 budget.used_model_steps >= budget.max_model_steps
@@ -314,6 +404,7 @@ def _run_agent_loop(
                         "grounded_answer": None,
                         "step_budget": budget,
                         "tool_observations": observations,
+                        "result_selection": working_state.result_selection,
                     }
                 if decision.tool is ToolName.QUERY_ARTIFACT and latest_evidence is not None:
                     answer = pipeline.answer(latest_evidence, draft=None, repair=None)
@@ -328,6 +419,7 @@ def _run_agent_loop(
                         ],
                         "step_budget": budget,
                         "tool_observations": observations,
+                        "result_selection": working_state.result_selection,
                     }
                 if decision.tool in {
                     ToolName.DESCRIBE_METADATA,
@@ -374,6 +466,7 @@ def _run_agent_loop(
                     ],
                     "step_budget": budget,
                     "tool_observations": observations,
+                    "result_selection": working_state.result_selection,
                 }
             if result_scope and decision.action in {"answer", "ask_user"}:
                 # Free prose (including a clarification) is not a scientific
@@ -388,6 +481,7 @@ def _run_agent_loop(
                         "response_blocks": [text_block(response_text), AgentEvidenceBlock(claims=answer.claims)],
                         "outcome": "completed", "failure_code": None,
                         "step_budget": budget, "tool_observations": observations,
+                        "result_selection": working_state.result_selection,
                     }
                 if latest_fact is not None and latest_fact[0] in {ToolName.LIST_JOBS, ToolName.DESCRIBE_ARTIFACTS}:
                     tool, summary = latest_fact
@@ -457,6 +551,10 @@ def _run_agent_loop(
                 trace_recorder,
             )
             latest_evidence = evidence
+            result_selection = working_state.result_selection
+            if request.tool is ToolName.QUERY_ARTIFACT:
+                result_selection = (selection_from_evidence(state.user_id, request.arguments, evidence)
+                                    if evidence is not None else None)
             if request.tool is ToolName.QUERY_ARTIFACT:
                 latest_fact = None
             elif tool_outcome == "ok":
@@ -483,6 +581,7 @@ def _run_agent_loop(
             working_state = state.model_copy(update={
                 "tool_observations": observations,
                 "step_budget": budget,
+                "result_selection": result_selection,
             })
 
     def run(state: GraphState) -> dict[str, object]:
@@ -520,18 +619,27 @@ def route_node(state: GraphState, route_model: MainDecisionModel | None = None) 
     from ..graph import RouteClassification, RouteDecision, RouteTarget
 
     target = route(state)
+    updated_budget = state.step_budget
     source = "reroute" if state.decision is not None and state.decision.action == "reroute" else "rule"
     reason = "deterministic route rule"
     if target is None:
         source = "classifier"
         reason = "semantic classification required"
+        if updated_budget.used_model_steps >= updated_budget.max_model_steps:
+            return _route_terminal(
+                state, outcome="unresolved", failure_code="route_ambiguous",
+                question="这轮请求已达到模型调用上限，请明确说明要执行的操作。",
+                source=source, reason="classifier step budget exhausted",
+            )
         try:
             if route_model is None:
                 raise ValueError("route classifier is unavailable")
             classification_context = ContextAssembler().assemble_for_router(state)
-            classification = RouteClassification.model_validate(
-                route_model(classification_context, role=AgentRole.ROUTER)
-            )
+            try:
+                raw_classification = route_model(classification_context, role=AgentRole.ROUTER)
+            finally:
+                updated_budget = _advance_model_budget(state.step_budget, getattr(route_model, "last_usage", None))
+            classification = RouteClassification.model_validate(raw_classification)
             if classification.confidence < 0.72:
                 target = RouteTarget.AMBIGUOUS
                 reason = "classifier confidence below threshold"
@@ -539,7 +647,7 @@ def route_node(state: GraphState, route_model: MainDecisionModel | None = None) 
                 target = RouteTarget(classification.target)
         except ValidationError:
             return _route_terminal(
-                state,
+                state.model_copy(update={"step_budget": updated_budget}),
                 outcome="failed",
                 failure_code="role_schema_validation_failed",
                 question="我无法可靠判断这条请求的处理路径，请重新说明你的目标。",
@@ -548,7 +656,7 @@ def route_node(state: GraphState, route_model: MainDecisionModel | None = None) 
             )
         except Exception:
             return _route_terminal(
-                state,
+                state.model_copy(update={"step_budget": updated_budget}),
                 outcome="failed",
                 failure_code="model_unavailable",
                 question="意图分类服务暂时不可用，请稍后重试。",
@@ -565,18 +673,25 @@ def route_node(state: GraphState, route_model: MainDecisionModel | None = None) 
         reason=reason,
     )
     if target is RouteTarget.AMBIGUOUS:
+        question = (
+            "你希望查询哪个 Job 的结果？"
+            if _is_result_reference(state.user_message) and (state.current_job or state.recent_jobs)
+            else "请先选择一个有权限访问的 Job，再查询任务结果。"
+            if _is_result_reference(state.user_message)
+            else "我还不能确定你指的是哪个 Job 或结果。请告诉我希望使用的 Job。"
+        )
         return _route_terminal(
-            state,
+            state.model_copy(update={"step_budget": updated_budget}),
             outcome="unresolved",
             failure_code="route_ambiguous",
-            question="我还不能可靠判断这条请求属于哪类操作。你可以说明是解释概念、评估数据能力、开始分析，还是查询已有结果。",
+            question=question,
             source=source,
             reason=reason,
             route_decision=route_decision,
         )
     if target is RouteTarget.UNSUPPORTED:
         return _route_terminal(
-            state,
+            state.model_copy(update={"step_budget": updated_budget}),
             outcome="unsupported",
             failure_code="unsupported_request",
             question="当前平台不支持这类请求。",
@@ -604,6 +719,7 @@ def route_node(state: GraphState, route_model: MainDecisionModel | None = None) 
     return {
         "visited_roles": visited,
         "route_decision": route_decision,
+        "step_budget": updated_budget,
     }
 
 
@@ -625,6 +741,7 @@ def _route_terminal(
         "response_blocks": [text_block(question)],
         "outcome": outcome,
         "failure_code": failure_code,
+        "step_budget": state.step_budget,
         "route_decision": route_decision or RouteDecision(
             target=(
                 RouteTarget.UNSUPPORTED if outcome == "unsupported"
@@ -664,6 +781,11 @@ def _control_context(state: GraphState) -> AgentControlContext:
     return ContextAssembler().assemble_control(state)
 
 
+def _is_result_reference(message: str) -> bool:
+    text = message.casefold()
+    return any(token in text for token in (
+        "result", "artifact", "gene", "metabolite", "结果", "基因", "代谢物", "这个", "刚才", "其中", "它",
+    ))
 def _arguments_hash(arguments: dict[str, object]) -> str:
     return stable_hash(arguments)
 
@@ -702,6 +824,11 @@ def _execute_tool_request(
     tool_error_code: str | None = None
     evidence: ToolResult | None = None
     try:
+        # Explicit UI focus bounds tool access independently of model/history.
+        job_id = request.arguments.get("job_id")
+        if (state.focus.in_scope_job_ids and job_id is not None
+                and job_id not in state.focus.in_scope_job_ids):
+            raise ValueError("requested Job is outside the current focus")
         result = tool_executor(request, state)
         summary = _serialize_tool_result(result)
         evidence = _as_grounding_evidence(result)

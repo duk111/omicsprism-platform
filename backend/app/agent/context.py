@@ -101,6 +101,21 @@ class ResultFocusContext(BaseModel):
     in_scope_job_ids: list[str] = Field(default_factory=list, max_length=20)
 
 
+class ResultSelection(BaseModel):
+    """A bounded query locator from a tool, never a cached scientific answer."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    job_id: str = Field(min_length=1, max_length=200)
+    owner_id: str = Field(min_length=1, max_length=200)
+    artifact: str = Field(min_length=1, max_length=500)
+    checksum: str = Field(min_length=1, max_length=200)
+    arguments: dict[str, object] = Field(max_length=8)
+    row_ids: list[int] = Field(max_length=50)
+    selected_row_ids: list[int] = Field(default_factory=list, max_length=50)
+    entities: dict[str, list[str]] = Field(default_factory=dict, max_length=4)
+
+
 class JobContinuationContext(BaseModel):
     """Structured completion fact visible to result QA."""
 
@@ -272,6 +287,7 @@ class ResultQaModelContext(BaseModel):
     recent_jobs: list[JobContextRef] = Field(default_factory=list, max_length=20)
     focus: ResultFocusContext = Field(default_factory=ResultFocusContext)
     job_artifacts: dict[str, list[str]] = Field(default_factory=dict, max_length=20)
+    result_selection: dict[str, object] | None = None
     job_continuation: JobContinuationContext | None = None
     tool_repetition_guidance: str | None = Field(default=None, max_length=5000)
     tool_observations: list[ToolObservationContext] = Field(
@@ -442,7 +458,19 @@ class ContextAssembler:
             for job_id in (getattr(focus, "in_scope_job_ids", []) or [])
             if str(job_id)
         ][:20]
+        # A new focus is authoritative even for checkpoints from older clients.
+        if in_scope_job_ids:
+            recent_jobs = [job for job in recent_jobs if job.job_id in in_scope_job_ids]
+            if current_job is not None and current_job.job_id not in in_scope_job_ids:
+                current_job = None
+            if current_job is None and len(in_scope_job_ids) == 1:
+                current_job = next((job for job in recent_jobs if job.job_id == in_scope_job_ids[0]), None)
         fact_index = self._fact_index(state)
+        selection = getattr(state, "result_selection", None)
+        selected_id = (in_scope_job_ids[0] if len(in_scope_job_ids) == 1 else
+                       current_job.job_id if current_job is not None and not in_scope_job_ids else None)
+        if selection is not None and (selection.job_id != selected_id or selection.owner_id != getattr(state, "user_id", None)):
+            selection = None
         continuation = getattr(state, "job_continuation", None)
         return ResultQaModelContext(
             trace_id=str(getattr(state, "trace_id", "") or "trace-local"),
@@ -459,7 +487,9 @@ class ContextAssembler:
             current_job=current_job,
             recent_jobs=recent_jobs,
             focus=ResultFocusContext(in_scope_job_ids=in_scope_job_ids),
-            job_artifacts=dict(fact_index.job_artifacts),
+            job_artifacts={key: value for key, value in fact_index.job_artifacts.items()
+                           if not in_scope_job_ids or key in in_scope_job_ids},
+            result_selection=selection.model_dump(mode="json", exclude={"owner_id"}) if selection is not None else None,
             job_continuation=(
                 JobContinuationContext(
                     job_id=str(getattr(continuation, "job_id", "")),

@@ -31,6 +31,7 @@ from .validation import ContrastPreview, DatasetRef, Issue, ValidationReport
 from .context import (
     ConversationMemory,
     RecentMessages,
+    ResultSelection,
 )
 
 
@@ -743,6 +744,8 @@ class GraphState(BaseModel):
     dataset_profiles: list[DatasetProfileRef] = Field(default_factory=list, max_length=6)
     current_job: JobRef | None = None
     recent_jobs: list[JobRef] = Field(default_factory=list, max_length=20)
+    result_selection: ResultSelection | None = None
+    result_context_start: datetime | None = None
     decision: AgentDecision | None = None
     response_text: str | None = Field(default=None, max_length=1200)
     # Nodes populate this only from typed, ownership-bound facts. Runtime
@@ -782,6 +785,8 @@ class GraphState(BaseModel):
             references.append(self.job_continuation)
         if any(reference.owner_id != self.user_id for reference in references):
             raise ValueError("graph references must belong to user_id")
+        if self.result_selection is not None and self.result_selection.owner_id != self.user_id:
+            raise ValueError("result selection must belong to user_id")
         if self.pending_plan is not None and self.pending_plan.thread_id != self.thread_id:
             raise ValueError("pending plan must belong to thread_id")
         return self

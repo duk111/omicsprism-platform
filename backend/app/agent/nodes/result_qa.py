@@ -17,6 +17,7 @@ from ..graph import (
     ResultQuerier,
 )
 from ..grounding import GroundedAnswerPipeline, fallback_query_context
+from ..result_context import job_scope, selection_from_evidence
 from ..message_blocks import job_block_from_summary, text_block
 from ..schemas import AgentEvidenceBlock, GroundedAnswer, ToolName, ToolResult
 
@@ -136,6 +137,10 @@ def result_qa_node(
                 "response_blocks": [text_block(response_text)],
             }
 
+        base_update["result_selection"] = selection_from_evidence(
+            state.user_id, {"job_id": summary.job_id, **query.model_dump(mode="json")}, evidence,
+        )
+
         answer = pipeline.answer(
             evidence,
             draft=state.grounded_answer,
@@ -203,12 +208,12 @@ def result_querier_from_runtime(runtime: AgentToolRuntime) -> ResultQuerier:
 def _resolve_job_ref(state: GraphState) -> JobRef | None:
     decision = state.decision
     if decision is not None and decision.job_id:
+        if state.focus.in_scope_job_ids and decision.job_id not in state.focus.in_scope_job_ids:
+            return None
         return JobRef(job_id=decision.job_id, owner_id=state.user_id)
-    if state.current_job is not None:
-        return state.current_job
-    unique = {item.job_id: item for item in state.recent_jobs}
-    if len(unique) == 1:
-        return next(iter(unique.values()))
+    scope = job_scope(state)
+    if len(scope) == 1:
+        return JobRef(job_id=scope[0], owner_id=state.user_id)
     return None
 
 

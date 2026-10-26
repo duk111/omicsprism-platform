@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from collections.abc import Callable
 from typing import Any
 
@@ -341,11 +342,24 @@ def _resolve_pending_turn(
             "This request reached the execution step limit. Please start the analysis again with a narrower request.",
             state.step_budget,
         )
+    reply = state.user_message
+    specs = param_specs_for_analysis(pending.analysis_type)
+    if re.search(r"(?:\u521a\u624d|\u4e0a\u6b21|previous|that).*(?:\u9608\u503c|threshold)", reply, re.IGNORECASE):
+        # A scalar pronoun can name only one editable cutoff in this plan.
+        cutoffs = [name for name in specs if name.endswith("_cutoff")]
+        named = [name for name in cutoffs if name in pending.question]
+        requested = [name for name in cutoffs if pending.proposal is not None and name in pending.proposal.requested_params]
+        candidates = named or requested or cutoffs
+        if len(candidates) != 1:
+            return {**_ask_user_update(
+                "计划中存在多个阈值，请指定要修改的参数。", state.step_budget,
+            ), "pending_analysis": pending}
+        reply = re.sub(r"\u9608\u503c|threshold", candidates[0], reply, flags=re.IGNORECASE)
     request = ClarificationResolverInput(
-        user_reply=state.user_message,
+        user_reply=reply,
         pending_question=pending.question,
         options=pending.options,
-        param_spec=param_specs_for_analysis(pending.analysis_type),
+        param_spec=specs,
         recent_messages=list(state.recent_messages.messages),
     )
     result = resolver(request)

@@ -97,6 +97,10 @@ def assert_copilot_artifact(tmp_path, analysis_type, artifact_path, entity_field
                         "citation": {"artifact": path, "checksum": checksum,
                                      "row_ids": [rows.index(row) + 1]}}]}}})
     assert result.grounded_answer is not None
+    assert result.result_selection is not None
+    assert result.result_selection.job_id == job.id
+    assert result.result_selection.checksum == checksum
+    assert result.result_selection.row_ids == [rows.index(row) + 1]
     assert result.grounded_answer.claims[0].text == f"{entity} has {statistic} {value}"
     source = runtime.query_result(job.id, path, filters={entity_field: entity}, limit=1)
     assert AnswerVerifier().verify(result.grounded_answer, [source]).verdict.value == "approved"

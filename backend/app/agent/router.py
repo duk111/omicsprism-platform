@@ -8,90 +8,54 @@ from .graph import AgentRole, GraphState, RouteTarget
 
 
 def route(state: GraphState) -> AgentRole | RouteTarget | None:
-    """Return a high-confidence deterministic role, or defer to the classifier."""
+    """Prefer explicit intent, then ownership-bound Job and query context."""
+    from .result_context import is_result_followup, job_scope
 
     message = state.user_message
-    has_jobs = bool(state.current_job or state.recent_jobs)
     pending = state.pending_analysis
-
+    active_pending = pending is not None and pending.status == "active"
     if state.decision is not None and state.decision.action == "reroute":
-        target = state.decision.reroute_to
-        if target is not None:
-            return AgentRole(target)
-
+        return AgentRole(state.decision.reroute_to) if state.decision.reroute_to else None
     if state.turn_origin == "job_continuation":
         return AgentRole.RESULT_QA
 
-    # Definitions of result terminology do not assert facts about a Job.
-    # Keep this anchored: "what is padj for GeneA in this job" is not a definition.
-    if re.fullmatch(
-        r"\s*(?:what is|what are|define|explain|什么是|什么叫|解释)\s*(?:(?:a|an|the)\s+)?"
-        r"(?:padj|padj_bh|pvalue|log2foldchange|log2fc|fold change|fdr|vip)\s*[?？。.]?\s*",
-        message, re.IGNORECASE,
-    ):
-        return AgentRole.QA
-
-    # History can identify a result follow-up, but cannot serve as new evidence.
-    if has_jobs and re.search(
-        r"explain|elaborate|rewrite|shorter|summari[sz]e|再解释|继续解释|简短|总结|改写", message, re.IGNORECASE,
-    ) and any(
-        item.role == "assistant" and re.search(
-            r"(?:gene_id|metabolite_id)\s*=|(?:padj(?:_bh)?|log2FoldChange|PearsonR|EdgeWeight)\s*(?:=|is|为)?\s*[+-]?\d",
-            item.text,
-        )
-        for item in state.recent_messages.messages[-2:]
-    ):
-        return AgentRole.RESULT_QA
-
-    if re.search(r"which.*(?:gene|metabolite)|哪些.*(?:基因|代谢物)|哪个.*(?:基因|代谢物)", message, re.IGNORECASE) and any(
-        marker in message.casefold() for marker in ("significant", "upregulated", "downregulated", "显著", "上调", "下调")
-    ):
-        return AgentRole.RESULT_QA
-
-    if pending is not None and pending.status == "active":
-        if has_jobs and _is_explicit_result_request(message):
-            return AgentRole.RESULT_QA
-        if _is_explicit_knowledge_question(message):
-            return AgentRole.QA
-        if _is_explicit_analysis_request(message) or _is_analysis_followup(message):
-            return AgentRole.ANALYSIS
+    edit = bool(re.search(r"\u6539\u6210|\u6539\u4e3a|\u4fee\u6539|\u8c03\u6574|\b(?:set|update|modify)\b|\bchange\s+(?:the\s+)?(?:cutoff|threshold|parameter)", message, re.I))
+    cancel = bool(re.search(r"\u53d6\u6d88|\u653e\u5f03|\u7b97\u4e86|\b(?:cancel|stop|discard)\b", message, re.I))
+    if active_pending and (edit or cancel):
         return AgentRole.ANALYSIS
-
-    # A result question without a selected Job still needs the result boundary.
-    # Parameter edits and explicit new-analysis commands keep their existing path.
-    if not has_jobs and not re.match(
-        r"\s*(?:run\b|start\b|perform\b|execute\b|analyze\b|compare\b|运行|开始|执行|比较)",
-        message, re.IGNORECASE,
-    ) and re.search(
-        r"show\b|query\b|lookup\b|job\b|current\b|my\b|\b(?:Gene|Met)[A-Za-z0-9_-]+\b|当前|我的|查询|查看|任务状态",
-        message, re.IGNORECASE,
-    ) and any(marker in message.casefold() for marker in (
-        "result", "artifact", "padj", "pvalue", "log2fc", "log2foldchange", "fold change", "pearsonr", "edgeweight", "vip", "job status",
-        "查询结果", "查看结果", "结果中", "产物", "任务状态",
-    )):
-        return AgentRole.RESULT_QA
-
-    if _is_explicit_jobs_listing(message):
-        return AgentRole.RESULT_QA
-
-    if has_jobs and _is_explicit_result_request(message):
-        return AgentRole.RESULT_QA
-
+    if active_pending and _is_analysis_followup(message) and not re.search(r"result|\u7ed3\u679c", message, re.I):
+        return AgentRole.ANALYSIS
+    deictic = is_result_followup(message)
+    scope = job_scope(state)
+    anchored = bool(re.search(r"current|this (?:job|result)|result (?:for|in)|job status|\u5f53\u524d|\u7ed3\u679c\u4e2d|\u8fd9\u4e2a|\u4efb\u52a1\u72b6\u6001|\u67e5\u8be2|\u67e5\u770b", message, re.I)) or bool(re.search(r"\b(?:Gene|Met)[A-Z0-9][A-Za-z0-9_-]*\b", message))
+    definition = bool(re.search(r"what (?:is|are|does)|define|\bmean\b|difference between|clarify that i mean|how (?:does|do|should)|\u4ec0\u4e48\u662f|\u8868\u793a\u4ec0\u4e48|\u600e\u4e48\u533a\u5206|\u539f\u7406|\u6982\u5ff5", message, re.I))
+    if definition and not anchored and not deictic:
+        return AgentRole.QA
+    explicit_operation = bool(re.search(r"^(?:run|start|perform|execute|analy[sz]e|compare|inspect|plan)\b|\u914d\u7f6e|\u5e2e\u6211\u5206\u6790|\u8fd0\u884c|\u6267\u884c|\u5f00\u59cb|\u6bd4\u8f83", message, re.I))
     if _is_explicitly_unsupported(message):
         return RouteTarget.UNSUPPORTED
-
     if _is_capability_request(message):
         return AgentRole.ANALYSIS
-
-    if _is_explicit_analysis_request(message) or _is_analysis_followup(message):
+    if explicit_operation and not anchored and not (deictic and re.search(r"result|\u7ed3\u679c", message, re.I)):
         return AgentRole.ANALYSIS
-
-    if _is_new_dataset_message(message):
+    if _needs_semantic_classification(message, state) and not scope:
+        return None
+    if deictic:
+        return AgentRole.RESULT_QA if len(scope) == 1 else RouteTarget.AMBIGUOUS
+    history_result = any(item.role == "assistant" and re.search(r"(?:gene_id|metabolite_id)\s*=|(?:padj(?:_bh)?|log2FoldChange|PearsonR|EdgeWeight)\s*(?:=|is|\u4e3a)?\s*[+-]?\d", item.text) for item in state.recent_messages.messages[-2:])
+    if history_result and re.search(r"explain|elaborate|rewrite|shorter|summari[sz]e|\u518d\u89e3\u91ca|\u7ee7\u7eed\u89e3\u91ca|\u7b80\u77ed|\u603b\u7ed3|\u6539\u5199", message, re.I):
+        return AgentRole.RESULT_QA if len(scope) <= 1 else RouteTarget.AMBIGUOUS
+    significant = bool(re.search(r"significant|upregulated|downregulated|\u663e\u8457|\u4e0a\u8c03|\u4e0b\u8c03", message, re.I))
+    if _is_explicit_result_request(message) or significant or anchored:
+        return AgentRole.RESULT_QA
+    if active_pending:
+        return AgentRole.QA if _is_explicit_knowledge_question(message) else AgentRole.ANALYSIS
+    if _is_new_dataset_message(message) or _is_analysis_followup(message):
         return AgentRole.ANALYSIS
-
     if _needs_semantic_classification(message, state):
         return None
-
+    if _is_explicit_analysis_request(message):
+        return AgentRole.ANALYSIS
     return AgentRole.QA
 
 

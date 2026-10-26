@@ -306,16 +306,38 @@ class AgentRuntime:
         focus = current.focus
         version = current.version
         recent_jobs = list(current.recent_jobs)
+        switched_focus = bool(turn_input.focus_job_ids and
+                              set(turn_input.focus_job_ids) != set(focus.in_scope_job_ids))
         existing_memory = current.conversation_memory
         corrections = list(existing_memory.user_corrections)
         if _is_explicit_correction(turn_input.message):
             corrections.append(turn_input.message[:400])
         if turn_input.focus_job_ids:
             focus = focus.model_copy(update={"in_scope_job_ids": list(turn_input.focus_job_ids)})
+            if switched_focus:
+                focus = focus.model_copy(update={"resolved_entities": {}, "last_citation": None})
             version += 1
+            recent_jobs = [job for job in recent_jobs if job.job_id in turn_input.focus_job_ids]
             for job_id in turn_input.focus_job_ids:
                 recent_jobs = [item for item in recent_jobs if item.job_id != job_id]
                 recent_jobs.append(JobRef(job_id=job_id, owner_id=item.user_id))
+        reset_at = datetime.now(timezone.utc) if switched_focus else current.result_context_start
+        job_store = getattr(self.context, "job_store", None)
+        read_owned = getattr(job_store, "get_for_user", None)
+        if callable(read_owned):
+            # API checks focus before enqueueing; recheck at execution time too.
+            ids = set(focus.in_scope_job_ids) | {job.job_id for job in recent_jobs}
+            if current.current_job is not None and not switched_focus:
+                ids.add(current.current_job.job_id)
+            for job_id in ids:
+                read_owned(job_id, item.user_id)
+        if switched_focus:
+            existing_memory = type(existing_memory)(
+                context_version="memory.v1:focus-reset",
+                current_job_id=turn_input.focus_job_ids[0] if len(turn_input.focus_job_ids) == 1 else None,
+                recent_job_ids=list(turn_input.focus_job_ids),
+            )
+            corrections = []
         has_new_inputs = bool(turn_input.dataset_profiles)
         inherited_profiles = (
             list(current.dataset_profiles)
@@ -346,6 +368,16 @@ class AgentRuntime:
                 else current.active_input_bundle_id if inherited_profiles else None
             ),
             "recent_jobs": recent_jobs[-20:],
+            "current_job": (
+                next((job for job in recent_jobs if job.job_id == turn_input.focus_job_ids[0]), None)
+                if len(turn_input.focus_job_ids) == 1
+                else None if turn_input.focus_job_ids
+                else current.current_job
+            ),
+            "result_selection": None if switched_focus else current.result_selection,
+            "result_context_start": reset_at,
+            "recent_messages": build_recent_messages([])[0] if switched_focus else current.recent_messages,
+            "conversation_summary": None if switched_focus else current.conversation_summary,
             # Per-turn state must never leak into the next user message.
             "decision": None,
             "response_text": None,
@@ -368,6 +400,8 @@ class AgentRuntime:
             "conversation_memory": existing_memory.model_copy(update={
                 "user_corrections": corrections[-12:],
                 "preferences": dict(focus.preferences),
+                **({"current_job_id": turn_input.focus_job_ids[0] if len(turn_input.focus_job_ids) == 1 else None,
+                    "citation_refs": []} if switched_focus else {}),
             }),
         })
         try:
@@ -376,12 +410,18 @@ class AgentRuntime:
                 user_id=item.user_id,
                 limit=100,
             )
+            if reset_at is not None:
+                messages = [record for record in messages if getattr(record, "created_at", reset_at) >= reset_at]
             recent, summary = build_recent_messages(messages)
             ledger_memory = ContextAssembler().assemble_control(merged).conversation_memory
             merged = merged.model_copy(update={
                 "recent_messages": recent,
-                "conversation_summary": summary or current.conversation_summary,
-                "conversation_memory": ledger_memory,
+                "conversation_summary": None if switched_focus else (summary or current.conversation_summary),
+                "conversation_memory": (
+                    ledger_memory.model_copy(update={"current_job_id": turn_input.focus_job_ids[0] if len(turn_input.focus_job_ids) == 1 else None,
+                                                     "citation_refs": []})
+                    if switched_focus and turn_input.focus_job_ids else ledger_memory
+                ),
             })
         except Exception:
             # Message history is an optimization for prompting; checkpoint

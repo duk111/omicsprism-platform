@@ -165,7 +165,7 @@ export default function CopilotPage() {
   const pendingTurn = turns.some(turn => turn.status === "queued" || turn.status === "running");
   const pendingTurnRecord = turns.find(turn => turn.status === "queued" || turn.status === "running");
   const activeJobWaits = jobWaits.filter(wait => wait.wait_status === "waiting" || wait.wait_status === "resume_queued");
-  const focusIds = run?.focus.in_scope_job_ids ?? [];
+  const focusIds = focusJobId ? [focusJobId] : run?.focus.in_scope_job_ids ?? [];
   const checkpointLabel = run ? `Version ${run.version}` : "Ready";
   const visibleThreads = useMemo(() => [...threads].sort((left, right) => {
     const leftPinned = pinnedThreadIds.includes(left.thread_id) ? 1 : 0;

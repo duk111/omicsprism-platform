@@ -16,6 +16,7 @@ from pathlib import Path
 from time import perf_counter
 from typing import Any, Literal
 from uuid import uuid4
+from types import SimpleNamespace
 
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.types import Command
@@ -87,6 +88,7 @@ class EvalEnvironment(EvalV2Model):
     focus_job_ids: list[str] = Field(default_factory=list, max_length=5)
     jobs: list[EvalJobFixture] = Field(default_factory=list, max_length=5)
     fingerprint_changes_on_resume: bool = False
+    inherit_result_context: bool = False
 
 
 class EvalTurn(EvalV2Model):
@@ -144,6 +146,11 @@ class EvalExpectation(EvalV2Model):
     release_gate: bool = True
     known_gap_reason: str | None = Field(default=None, max_length=500)
     self_test_violation: Literal["citation", "numeric", "ownership"] | None = None
+    expected_routes: list[str] = Field(default_factory=list, max_length=8)
+    expected_row_ids: list[int] | None = None
+    expected_final_job_id: str | None = None
+    response_contains: list[str] = Field(default_factory=list, max_length=8)
+    response_excludes: list[str] = Field(default_factory=list, max_length=8)
 
     @model_validator(mode="after")
     def validate_shape(self) -> "EvalExpectation":
@@ -305,6 +312,9 @@ class EvalTrialResult(EvalV2Model):
     cached_tokens: int = Field(default=0, ge=0)
     prompt_tokens: int = Field(default=0, ge=0)
     completion_tokens: int = Field(default=0, ge=0)
+    route_targets: list[str] = Field(default_factory=list, max_length=8)
+    reroute_count: int = Field(default=0, ge=0)
+    per_turn_model_calls: list[int] = Field(default_factory=list, max_length=8)
 
 
 class EvalCaseResult(EvalV2Model):
@@ -685,6 +695,7 @@ class _GraphEnvironment:
     jobs: dict[str, EvalJobFixture]
     user_id: str
     fingerprint_changes_on_resume: bool
+    inherit_result_context: bool = False
     loader_calls: int = 0
     submitted: list[object] = field(default_factory=list)
     tool_requests: list[ToolCallRequest] = field(default_factory=list)
@@ -726,11 +737,14 @@ def _run_graph_trial(
     final_state: GraphState | None = None
     failure_code: str | None = None
     conversation_history: list[RecentMessage] = []
+    route_targets: list[str] = []
+    reroute_count = 0
+    per_turn_model_calls: list[int] = []
     try:
         for index, turn in enumerate(case.turns, start=1):
+            calls_before = len([event for event in events if event.event_type == "model.call"])
             if turn.kind == "message":
-                result = graph.invoke(
-                    _graph_state(
+                input_state = _graph_state(
                         case=case,
                         environment=environment,
                         trace_id=trace_id,
@@ -738,9 +752,20 @@ def _run_graph_trial(
                         message=turn.message or "",
                         focus_ids=turn.focus_job_ids or case.environment.focus_job_ids,
                         recent_messages=_eval_recent_messages(conversation_history),
-                    ),
-                    config,
                 )
+                if case.environment.inherit_result_context and final_state is not None:
+                    from .runtime import AgentRuntime
+                    from .queue import AgentTurnInput, AgentTurnWorkItem
+                    worker = AgentRuntime.__new__(AgentRuntime)
+                    worker.context = SimpleNamespace(product_store=SimpleNamespace(list_messages=lambda **_: []))
+                    input_state = worker._merge_turn_input(AgentTurnWorkItem(
+                        thread_id=final_state.thread_id, user_id=environment.user_id,
+                        turn_id=f"eval-turn-{case.case_id}-{index}", trace_id=trace_id,
+                        input=AgentTurnInput(message=turn.message or "", focus_job_ids=turn.focus_job_ids),
+                    ), GraphState.model_validate(final_state.model_dump(mode="json")), f"eval-run-{case.case_id}")
+                    if not turn.focus_job_ids or turn.focus_job_ids == final_state.focus.in_scope_job_ids:
+                        input_state = input_state.model_copy(update={"recent_messages": _eval_recent_messages(conversation_history)})
+                result = graph.invoke(input_state, config)
             else:
                 result = graph.invoke(
                     Command(resume=_resume_payload(graph, config, turn.resume_payload or {})),
@@ -752,6 +777,8 @@ def _run_graph_trial(
                 final_state = None
             else:
                 final_state = GraphState.model_validate(result)
+                route_targets.append(final_state.route_decision.target.value if final_state.route_decision else "unknown")
+                reroute_count += max(0, len(final_state.visited_roles) - 1)
                 if (
                     final_state.pending_analysis is not None
                     and final_state.pending_analysis.status == "active"
@@ -764,6 +791,7 @@ def _run_graph_trial(
                     interrupt_kind = "clarification"
                 else:
                     terminal = "completed"
+            per_turn_model_calls.append(len([event for event in events if event.event_type == "model.call"]) - calls_before)
             if turn.kind == "message":
                 conversation_history.append(RecentMessage(
                     role="user",
@@ -812,6 +840,17 @@ def _run_graph_trial(
         grounded=grounded,
         failure_code=failure_code,
     )
+    expected = case.expected
+    if expected.expected_routes:
+        matched = matched and route_targets == expected.expected_routes
+    if expected.expected_final_job_id is not None:
+        matched = matched and final_state is not None and final_state.current_job is not None and final_state.current_job.job_id == expected.expected_final_job_id
+    if expected.expected_row_ids is not None:
+        ids = list(dict.fromkeys(row_id for claim in (grounded.claims if grounded else []) for row_id in claim.citation.row_ids))
+        matched = matched and ids == expected.expected_row_ids
+    response = final_state.response_text or "" if final_state else ""
+    matched = matched and all(text in response for text in expected.response_contains)
+    matched = matched and not any(text in response for text in expected.response_excludes)
     if matched:
         outcome: Literal["passed", "failed", "known_gap"] = "passed"
     elif case.expected.release_gate:
@@ -867,6 +906,9 @@ def _run_graph_trial(
         cached_tokens=sum(event.cached_tokens or 0 for event in model_events),
         prompt_tokens=sum(event.prompt_tokens or 0 for event in model_events),
         completion_tokens=sum(event.completion_tokens or 0 for event in model_events),
+        route_targets=route_targets,
+        reroute_count=reroute_count,
+        per_turn_model_calls=per_turn_model_calls,
     )
 
 
@@ -888,6 +930,7 @@ def _graph_environment(spec: EvalEnvironment) -> _GraphEnvironment:
         jobs={job.job_id: job for job in spec.jobs},
         user_id=spec.user_id,
         fingerprint_changes_on_resume=spec.fingerprint_changes_on_resume,
+        inherit_result_context=spec.inherit_result_context,
     )
 
 
@@ -1049,12 +1092,16 @@ def _result_querier(environment: _GraphEnvironment):
             raise LookupError(request.job_id) from exc
         if request.query.artifact not in fixture.artifacts:
             raise LookupError(request.query.artifact)
+        if case_owner := fixture.owner_id:
+            if case_owner != request.user_id:
+                raise LookupError(request.job_id)
+        rows = _selected_fixture_rows(fixture, request.query.model_dump()) if environment.inherit_result_context else fixture.evidence_rows
         return ToolResult(
             tool=ToolName.QUERY_RESULT_EVIDENCE,
             ok=True,
-            rows=fixture.evidence_rows,
+            rows=rows,
             truncated=False,
-            row_count=len(fixture.evidence_rows),
+            row_count=len(rows),
             artifact=request.query.artifact,
             checksum=fixture.checksum,
             filters=request.query.filters,
@@ -1087,13 +1134,16 @@ def _tool_executor(environment: _GraphEnvironment, policy: EvalToolPolicy):
                 "tested_level": "salt",
                 "reference_level": "control",
             }])
-        fixture = next(iter(environment.jobs.values()), None)
+        fixture = (environment.jobs.get(str(request.arguments.get("job_id", "")))
+                   if environment.inherit_result_context else next(iter(environment.jobs.values()), None))
         if fixture is None:
             return ToolResult(
                 tool=request.tool, ok=False, rows=[], truncated=False, row_count=0,
                 artifact=None, checksum=None, filters={}, sort=None,
                 error_code="no_fixture_job",
             )
+        if fixture.owner_id and fixture.owner_id != environment.user_id:
+            raise LookupError(fixture.job_id)
         if request.tool is ToolName.DESCRIBE_ARTIFACTS:
             return _tool_result(
                 request.tool,
@@ -1102,7 +1152,8 @@ def _tool_executor(environment: _GraphEnvironment, policy: EvalToolPolicy):
         return ToolResult(
             tool=ToolName.QUERY_ARTIFACT,
             ok=True,
-            rows=fixture.evidence_rows,
+            rows=(_selected_fixture_rows(fixture, request.arguments)
+                  if environment.inherit_result_context else fixture.evidence_rows),
             truncated=False,
             row_count=len(fixture.evidence_rows),
             artifact=fixture.artifacts[0] if fixture.artifacts else None,
@@ -1112,6 +1163,22 @@ def _tool_executor(environment: _GraphEnvironment, policy: EvalToolPolicy):
             error_code=None,
         )
     return execute
+
+
+def _selected_fixture_rows(fixture: EvalJobFixture, arguments: dict) -> list[dict[str, Any]]:
+    """Scripted fixture selection uses the production PR8 numeric predicates.
+
+    Disk/repository/ownership behavior is tested separately with real artifacts.
+    """
+    from .tools import _row_matches_filters, _sort_csv_rows
+    rows = [row for row in fixture.evidence_rows if _row_matches_filters(row, arguments.get("filters") or {})]
+    if arguments.get("resolve_entity"):
+        entity = arguments["resolve_entity"]
+        rows = [row for row in rows if any(row.get(key) == entity for key in ("gene_id", "metabolite_id", "Gene", "Metabolite"))]
+    if arguments.get("sort"):
+        parts = arguments["sort"].split()
+        rows = _sort_csv_rows(rows, parts[0], descending=len(parts) > 1 and parts[1].lower() == "desc")
+    return rows[:int(arguments.get("limit") or 50)]
 
 
 def _tool_result(tool: ToolName, *, rows: list[dict[str, Any]]) -> ToolResult:
