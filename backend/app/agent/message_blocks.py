@@ -4,7 +4,15 @@ from urllib.parse import quote
 
 from ..models import JobStatus
 from .graph import JobSummary
-from .schemas import AgentJobBlock, AgentTextBlock
+from .schemas import AgentEvidenceBlock, AgentJobBlock, AgentTextBlock, GroundedAnswer
+
+
+def grounded_blocks(answer: GroundedAnswer, explanation: str = "") -> list[AgentEvidenceBlock | AgentTextBlock]:
+    """Show each verified claim once, retaining its citation in the existing block."""
+    blocks: list[AgentEvidenceBlock | AgentTextBlock] = [AgentEvidenceBlock(claims=answer.claims)]
+    if explanation:
+        blocks.append(text_block(explanation))
+    return blocks
 
 
 def text_block(text: str) -> AgentTextBlock:

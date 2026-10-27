@@ -473,15 +473,15 @@ def test_successful_continuation_reads_the_completed_job_and_returns_grounded_ev
         message for message in messages
         if message.message_id == f"assistant-{continuation.turn_id}"
     )
-    assert "GeneA" in continuation_message.blocks[0].text
-    assert "2.5" in continuation_message.blocks[0].text
-    assert isinstance(continuation_message.blocks[1], AgentJobBlock)
-    assert continuation_message.blocks[1].job_id == summary.job_id
-    assert continuation_message.blocks[1].status is JobStatus.SUCCEEDED
-    assert isinstance(continuation_message.blocks[2], AgentEvidenceBlock)
-    assert continuation_message.blocks[2].claims[0].citation.artifact == artifact
-    assert continuation_message.blocks[2].claims[0].citation.checksum == evidence.checksum
-    assert continuation_message.blocks[2].claims[0].citation.row_ids == [7]
+    evidence_block = next(block for block in continuation_message.blocks if isinstance(block, AgentEvidenceBlock))
+    job_block = next(block for block in continuation_message.blocks if isinstance(block, AgentJobBlock))
+    assert "GeneA" in evidence_block.claims[0].text
+    assert "2.5" in evidence_block.claims[0].text
+    assert job_block.job_id == summary.job_id
+    assert job_block.status is JobStatus.SUCCEEDED
+    assert evidence_block.claims[0].citation.artifact == artifact
+    assert evidence_block.claims[0].citation.checksum == evidence.checksum
+    assert evidence_block.claims[0].citation.row_ids == [7]
     assert reader_requests == [
         JobLookupRequest(user_id=turn.user_id, job_id=summary.job_id),
         JobLookupRequest(user_id=turn.user_id, job_id=summary.job_id),

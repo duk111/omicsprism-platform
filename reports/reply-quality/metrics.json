@@ -1,0 +1,24 @@
+{
+  "before": {
+    "cases": 20,
+    "model_http_calls": 39,
+    "mean_latency_ms": 2137.32,
+    "p50_latency_ms": 2285.27,
+    "p95_latency_ms_nearest_rank": 3502.12,
+    "grounded_answers": 7,
+    "approved_grounded_answers": 7,
+    "exact_text_evidence_duplicate_turns": 7,
+    "graph_accounted_model_steps": 42
+  },
+  "after": {
+    "cases": 20,
+    "model_http_calls": 40,
+    "mean_latency_ms": 2175.72,
+    "p50_latency_ms": 2232.53,
+    "p95_latency_ms_nearest_rank": 3442.31,
+    "grounded_answers": 9,
+    "approved_grounded_answers": 9,
+    "exact_text_evidence_duplicate_turns": 0,
+    "graph_accounted_model_steps": 42
+  }
+}

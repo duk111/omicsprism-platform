@@ -23,6 +23,12 @@ def is_result_followup(message: str) -> bool:
     """Only deictic expressions reuse a selection, never a newly named entity."""
     if re.search(r"\b(?:Gene|Met)[A-Za-z0-9_-]+\b", message, re.IGNORECASE):
         return False
+    # In a self-contained question, "its name" can refer to the gene being
+    # requested in this same message. Explicit subset references still reuse
+    # the prior selection ("which gene among them ...").
+    if (re.search(r"\b(?:which|what)\s+(?:gene|metabolite)\b", message, re.I)
+            and not re.search(r"\b(?:among them|of (?:these|those|them)|their)\b", message, re.I)):
+        return False
     return bool(re.search(
         r"其中|它(?:们)?|这个|刚才|上述|这(?:些|五个)|"
         r"\b(?:its|their|among them|of (?:these|those|them)|that result|these results)\b",

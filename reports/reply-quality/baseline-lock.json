@@ -1,0 +1,7 @@
+{
+  "cases": 20,
+  "model_http_calls": 39,
+  "mean_latency_ms": 2137.324,
+  "baseline_sha256": "630de4408d17ab2422c82afc8cc099f9d6995a5c22a77669d327b56ff45a9efb",
+  "production_code_changed": false
+}

@@ -16,10 +16,11 @@ from ..graph import (
     ResultEvidenceRequest,
     ResultQuerier,
 )
-from ..grounding import GroundedAnswerPipeline, fallback_query_context
+from ..grounding import GroundedAnswerPipeline, fallback_query_context, metric_explanation
+from ..verifier import raw_evidence_text
 from ..result_context import job_scope, selection_from_evidence
-from ..message_blocks import job_block_from_summary, text_block
-from ..schemas import AgentEvidenceBlock, GroundedAnswer, ToolName, ToolResult
+from ..message_blocks import grounded_blocks, job_block_from_summary, text_block
+from ..schemas import GroundedAnswer, ToolName, ToolResult
 
 if TYPE_CHECKING:
     from ..tools import AgentToolRuntime
@@ -151,13 +152,13 @@ def result_qa_node(
             evidence,
             draft=state.grounded_answer,
             repair=None,
+            user_message=state.user_message,
         )
-        response_text = _answer_text(answer, evidence)
-        blocks = [text_block(response_text)]
+        response_text = _answer_text(answer, evidence, state.user_message)
+        blocks = grounded_blocks(answer, fallback_query_context(answer, evidence) + metric_explanation(state.user_message, evidence))
         job = job_block_from_summary(summary)
         if job is not None:
             blocks.append(job)
-        blocks.append(AgentEvidenceBlock(claims=answer.claims))
         return {
             **base_update,
             "grounded_answer": answer,
@@ -272,7 +273,7 @@ def _job_summary_text(summary: JobSummary) -> str:
     return text[:1200]
 
 
-def _answer_text(answer: GroundedAnswer, evidence: ToolResult | None = None) -> str:
+def _answer_text(answer: GroundedAnswer, evidence: ToolResult | None = None, user_message: str = "") -> str:
     lines: list[str] = []
     prefix = fallback_query_context(answer, evidence)
     length = len(prefix)
@@ -282,4 +283,7 @@ def _answer_text(answer: GroundedAnswer, evidence: ToolResult | None = None) -> 
             break
         lines.append(claim.text)
         length += extra
-    return prefix + ("\n".join(lines) or "The artifact did not contain evidence rows.")
+    raw = "\n".join(raw_evidence_text(row) for row in evidence.rows) if evidence is not None and evidence.rows else ""
+    text = prefix + (raw or (lines[0] if lines else "The artifact did not contain evidence rows."))
+    note = metric_explanation(user_message, evidence)
+    return text + "\n" + note if note and len(text) + len(note) < 1200 else text

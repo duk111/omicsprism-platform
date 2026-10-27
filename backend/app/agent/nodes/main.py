@@ -11,7 +11,8 @@ from pydantic import BaseModel
 
 from pydantic import ValidationError
 
-from ..grounding import GroundedAnswerPipeline, fallback_query_context
+from ..grounding import GroundedAnswerPipeline, fallback_query_context, metric_explanation
+from ..verifier import raw_evidence_text
 from ..graph import (
     AgentDecision,
     AgentRole,
@@ -29,8 +30,8 @@ from ..graph import (
 )
 from ..context import ContextAssembler, AgentControlContext
 from ..result_context import is_result_followup, selection_from_evidence, selection_matches_scope
-from ..schemas import AgentEvidenceBlock, GroundedAnswer, ToolName, ToolResult
-from ..message_blocks import text_block
+from ..schemas import GroundedAnswer, ToolName, ToolResult
+from ..message_blocks import grounded_blocks, text_block
 from ..trace import TraceRecorder, stable_hash
 from ..router import _is_explicit_jobs_listing as _router_is_explicit_jobs_listing
 from ..model import ModelBoundaryError
@@ -157,12 +158,12 @@ def _run_agent_loop(
                 return _ask_user_update("上轮包含多个记录，请指定基因或代谢物。", budget, observations,
                                         outcome="unresolved", failure_code="route_ambiguous")
             fresh = latest_evidence.model_copy(update={"rows": rows})
-            answer = pipeline.answer(fresh)
-            response_text = _grounded_answer_text(answer, fresh)
+            answer = pipeline.answer(fresh, user_message=state.user_message)
+            response_text = _grounded_answer_text(answer, fresh, state.user_message)
             return {
                 "decision": AgentDecision(action="grounded_answer", grounded_answer=answer),
                 "grounded_answer": answer, "response_text": response_text,
-                "response_blocks": [text_block(response_text), AgentEvidenceBlock(claims=answer.claims)],
+                "response_blocks": grounded_blocks(answer, metric_explanation(state.user_message, fresh)),
                 "result_selection": selection.model_copy(update={
                     "selected_row_ids": [int(row["_row_id"]) for row in rows],
                 }),
@@ -407,16 +408,13 @@ def _run_agent_loop(
                         "result_selection": working_state.result_selection,
                     }
                 if decision.tool is ToolName.QUERY_ARTIFACT and latest_evidence is not None:
-                    answer = pipeline.answer(latest_evidence, draft=None, repair=None)
-                    response_text = _grounded_answer_text(answer, latest_evidence)
+                    answer = pipeline.answer(latest_evidence, draft=None, repair=None, user_message=state.user_message)
+                    response_text = _grounded_answer_text(answer, latest_evidence, state.user_message)
                     return {
                         "decision": AgentDecision(action="grounded_answer"),
                         "grounded_answer": answer,
                         "response_text": response_text,
-                        "response_blocks": [
-                            text_block(response_text),
-                            AgentEvidenceBlock(claims=answer.claims),
-                        ],
+                        "response_blocks": grounded_blocks(answer, metric_explanation(state.user_message, latest_evidence)),
                         "step_budget": budget,
                         "tool_observations": observations,
                         "result_selection": working_state.result_selection,
@@ -455,15 +453,13 @@ def _run_agent_loop(
                     latest_evidence,
                     draft=decision.grounded_answer,
                     repair=None,
+                    user_message=state.user_message,
                 )
                 return {
                     "decision": decision,
                     "grounded_answer": answer,
-                    "response_text": _grounded_answer_text(answer, latest_evidence),
-                    "response_blocks": [
-                        text_block(_grounded_answer_text(answer, latest_evidence)),
-                        AgentEvidenceBlock(claims=answer.claims),
-                    ],
+                    "response_text": _grounded_answer_text(answer, latest_evidence, state.user_message),
+                    "response_blocks": grounded_blocks(answer, fallback_query_context(answer, latest_evidence) + metric_explanation(state.user_message, latest_evidence)),
                     "step_budget": budget,
                     "tool_observations": observations,
                     "result_selection": working_state.result_selection,
@@ -472,13 +468,13 @@ def _run_agent_loop(
                 # Free prose (including a clarification) is not a scientific
                 # data boundary. Never recover evidence from serialized history.
                 if latest_evidence is not None:
-                    answer = pipeline.answer(latest_evidence)
-                    response_text = _grounded_answer_text(answer, latest_evidence)
+                    answer = pipeline.answer(latest_evidence, user_message=state.user_message)
+                    response_text = _grounded_answer_text(answer, latest_evidence, state.user_message)
                     return {
                         "decision": AgentDecision(action="grounded_answer", grounded_answer=answer),
                         "grounded_answer": answer,
                         "response_text": response_text,
-                        "response_blocks": [text_block(response_text), AgentEvidenceBlock(claims=answer.claims)],
+                        "response_blocks": grounded_blocks(answer, metric_explanation(state.user_message, latest_evidence)),
                         "outcome": "completed", "failure_code": None,
                         "step_budget": budget, "tool_observations": observations,
                         "result_selection": working_state.result_selection,
@@ -976,7 +972,7 @@ def _contains_internal_action(value: str) -> bool:
     return bool(re.search(r"(?<![A-Za-z0-9_])(ask_user|tool_call|reroute)(?![A-Za-z0-9_])", value, re.IGNORECASE))
 
 
-def _grounded_answer_text(answer: GroundedAnswer, evidence: ToolResult | None = None) -> str:
+def _grounded_answer_text(answer: GroundedAnswer, evidence: ToolResult | None = None, user_message: str = "") -> str:
     lines: list[str] = []
     prefix = fallback_query_context(answer, evidence)
     length = len(prefix)
@@ -986,7 +982,12 @@ def _grounded_answer_text(answer: GroundedAnswer, evidence: ToolResult | None = 
             break
         lines.append(claim.text)
         length += extra
-    return prefix + ("\n".join(lines) or "The artifact did not contain evidence rows.")
+    # Keep the durable response_text compatible with the existing audit/API
+    # contract; the visible response blocks carry the concise projection.
+    raw = "\n".join(raw_evidence_text(row) for row in evidence.rows) if evidence is not None and evidence.rows else ""
+    text = prefix + (raw or (lines[0] if lines else "The artifact did not contain evidence rows."))
+    note = metric_explanation(user_message, evidence)
+    return text + "\n" + note if note and len(text) + len(note) < 1200 else text
 
 
 def _as_grounding_evidence(result: object) -> ToolResult | None:

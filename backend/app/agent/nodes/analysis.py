@@ -551,6 +551,15 @@ def _missing_inputs_message(state: GraphState) -> str:
             if analysis_type else ""
         )
     )
+    if analysis_type:
+        module = next((item for item in AnalysisSpecRegistry().analysis_catalog() if item.id == analysis_type), None)
+        if module is not None:
+            inputs = " + ".join(module.required_inputs)
+            if _is_chinese(state.user_message):
+                return (f"{analysis_type} 需要 {inputs}。请上传这些文件；"
+                        "读取后会核对分组、样本数和参数，并请你确认后再运行。")
+            return (f"{analysis_type} requires {inputs}. Please upload these files; "
+                    "the groups, sample counts and parameters will be checked for your confirmation before execution.")
     if _is_chinese(state.user_message):
         return (
             f"{identified or '我先根据你的请求定位分析模块，但目前还不能唯一确定模块。'}"

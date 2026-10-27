@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from collections.abc import Callable
 from typing import Any
 
@@ -114,11 +115,12 @@ class GroundedAnswerPipeline:
         evidence: ToolResult,
         draft: GroundedAnswer | None = None,
         repair: Callable[[GroundedAnswer, Any], GroundedAnswer] | None = None,
+        user_message: str = "",
     ) -> GroundedAnswer:
         # 模型草稿引用非法（错 artifact/checksum、行号不在本轮证据里）是常见的
         # 语义错误，不是系统故障：降级到原始证据展示，不要把整个 turn 打掉。
         try:
-            candidate = self.grounder.ground(evidence, draft)
+            candidate = self.grounder.ground(evidence, draft or _concise_draft(evidence, user_message))
         except EvidenceGroundingError:
             return self.grounder.fallback(evidence)
         verdict = self.verifier.verify(candidate, [evidence])
@@ -132,6 +134,61 @@ class GroundedAnswerPipeline:
             if repaired is not None and self.verifier.verify(repaired, [evidence]).verdict.value == "approved":
                 return repaired
         return self.grounder.fallback(evidence)
+
+
+def _concise_draft(evidence: ToolResult, user_message: str) -> GroundedAnswer | None:
+    """Project explicitly requested numeric fields; the original verifier still decides."""
+    if not user_message or not evidence.rows:
+        return None
+    from .verifier import _decimal
+
+    chinese = any("\u4e00" <= char <= "\u9fff" for char in user_message)
+    claims = []
+    indexed = _indexed_rows(evidence)
+    # Keep multi-row result sets as canonical raw evidence. A compact claim is
+    # only safe when the user asked for a single entity/row's fields.
+    if len(indexed) != 1:
+        return None
+    for row_id, row in indexed:
+        # Preserve both endpoints and string annotations of network rows.
+        entities = [key for key in ("gene_id", "metabolite_id", "Gene", "Metabolite") if key in row]
+        if len(entities) != 1:
+            return None
+        fields = [key for key in row if key != "_row_id" and key not in entities
+                  and re.search(rf"(?<![A-Za-z0-9_]){re.escape(key)}(?![A-Za-z0-9_])", user_message, re.I)
+                  and _decimal(str(row[key])) is not None]
+        if not fields:
+            return None
+        entity = str(row[entities[0]])
+        text = (entity + " 的 " + "，".join(f"{field} 为 {row[field]}" for field in fields) + "。"
+                if chinese else entity + " has " + " and ".join(f"{field} {row[field]}" for field in fields) + ".")
+        claims.append(GroundedClaim(text=text, citation=Citation(
+            artifact=evidence.artifact or "", checksum=evidence.checksum or "", row_ids=[row_id])))
+    return GroundedAnswer(claims=claims)
+
+
+def metric_explanation(user_message: str, evidence: ToolResult | None) -> str:
+    """General definitions only, never an interpretation of an individual row."""
+    if evidence is None or not evidence.ok or not evidence.rows:
+        return ""
+    wants_explanation = re.search(r"解释|代表|含义|意味|因果|证明|explain|interpret|mean|caus|prov", user_message, re.I)
+    if not wants_explanation:
+        return ""
+    chinese = any("\u4e00" <= char <= "\u9fff" for char in user_message)
+    definitions = {
+        "log2FoldChange": ("log2FoldChange 表示相对参考组、以 2 为底的对数倍数变化；正负方向取决于 tested/reference 的定义。",
+                           "log2FoldChange is the base-two log fold change relative to the reference; its sign depends on the tested/reference definition."),
+        "padj": ("padj 是多重检验校正后的 p 值，不表示变化幅度。",
+                 "padj is a p-value adjusted for multiple testing, not a measure of effect size."),
+        "padj_bh": ("padj_bh 是经 Benjamini–Hochberg 方法校正的 p 值，不表示变化幅度。",
+                    "padj_bh is a Benjamini–Hochberg adjusted p-value, not a measure of effect size."),
+        "PearsonR": ("PearsonR 衡量线性相关性；相关性本身不能证明因果关系或调控机制。",
+                     "PearsonR measures linear correlation; correlation alone does not establish causation or a regulatory mechanism."),
+    }
+    fields = {key for row in evidence.rows for key in row}
+    notes = [pair[0 if chinese else 1] for field, pair in definitions.items()
+             if field in fields and re.search(rf"(?<![A-Za-z0-9_]){re.escape(field)}(?![A-Za-z0-9_])", user_message, re.I)]
+    return " ".join(notes)
 
 
 def _indexed_rows(evidence: ToolResult) -> list[tuple[int, dict[str, Any]]]:

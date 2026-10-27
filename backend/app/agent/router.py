@@ -28,7 +28,7 @@ def route(state: GraphState) -> AgentRole | RouteTarget | None:
     deictic = is_result_followup(message)
     scope = job_scope(state)
     anchored = bool(re.search(r"current|this (?:job|result)|result (?:for|in)|job status|\u5f53\u524d|\u7ed3\u679c\u4e2d|\u8fd9\u4e2a|\u4efb\u52a1\u72b6\u6001|\u67e5\u8be2|\u67e5\u770b", message, re.I)) or bool(re.search(r"\b(?:Gene|Met)[A-Z0-9][A-Za-z0-9_-]*\b", message))
-    definition = bool(re.search(r"what (?:is|are|does)|define|\bmean\b|difference between|clarify that i mean|how (?:does|do|should)|\u4ec0\u4e48\u662f|\u8868\u793a\u4ec0\u4e48|\u600e\u4e48\u533a\u5206|\u539f\u7406|\u6982\u5ff5", message, re.I))
+    definition = bool(re.search(r"what (?:is|are|does)|define|\bmean\b|difference between|clarify that i mean|how (?:does|do|should)|\u4ec0\u4e48\u662f|\u662f\u4ec0\u4e48|\u8bf4\u660e\u4ec0\u4e48|\u5982\u4f55\u89e3\u91ca|\u8868\u793a\u4ec0\u4e48|\u600e\u4e48\u533a\u5206|\u539f\u7406|\u6982\u5ff5", message, re.I))
     if definition and not anchored and not deictic:
         return AgentRole.QA
     explicit_operation = bool(re.search(r"^(?:run|start|perform|execute|analy[sz]e|compare|inspect|plan)\b|\u914d\u7f6e|\u5e2e\u6211\u5206\u6790|\u8fd0\u884c|\u6267\u884c|\u5f00\u59cb|\u6bd4\u8f83", message, re.I))
